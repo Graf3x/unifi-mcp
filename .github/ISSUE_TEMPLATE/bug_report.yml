@@ -1,0 +1,46 @@
+name: Bug report
+description: Something doesn't work as the README says.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please leave out API keys, certificates, sign-in codes, tokens and anything that identifies your network.
+        Security problems go through the Security tab (Report a vulnerability), not here.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The image tag (`docker compose images unifi-mcp`) or the commit you built, e.g. 0.3.0.
+    validations:
+      required: true
+  - type: dropdown
+    id: setup
+    attributes:
+      label: Setup
+      options:
+        - "Guide 1: quick local"
+        - "Guide 2: claude.ai with a sign-in code"
+        - "Guide 3: Google sign-in"
+        - Tailscale
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: unifi
+    attributes:
+      label: UniFi Network version and console model
+      placeholder: e.g. Network 11.0, UDM Pro
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+      description: The tool or question you used helps a lot.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Startup line and relevant log lines
+      description: "`docker compose logs unifi-mcp`. Check for anything private before pasting."
+      render: text

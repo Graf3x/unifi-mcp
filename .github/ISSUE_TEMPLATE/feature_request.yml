@@ -1,0 +1,20 @@
+name: Feature request
+description: A question Claude can't answer yet, or something setup should make easier.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: ask
+    attributes:
+      label: What you'd like to ask Claude or do
+      placeholder: e.g. "Which clients roamed the most today?"
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it matters
+  - type: textarea
+    id: api
+    attributes:
+      label: Where the data lives, if you know
+      description: An API operation, or the page in the UniFi app that shows it.

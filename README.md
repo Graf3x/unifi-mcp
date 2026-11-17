@@ -1,9 +1,41 @@
 # UniFi Network MCP
 
-An MCP server for the UniFi Network API (v11.0.97), generated from the OpenAPI document in `openapi/`. Built with .NET 10
-and the official `ModelContextProtocol` SDK. It runs as a container next to your UniFi console and can be added to Claude
-(claude.ai, Claude Desktop, the phone apps) as a custom connector. You sign in with a one-time code from the server's log
-or with your Google account, and clients that send a fixed header can use an access token instead.
+[![test and image](https://github.com/Graf3x/unifi-mcp/actions/workflows/image.yml/badge.svg)](https://github.com/Graf3x/unifi-mcp/actions/workflows/image.yml)
+[![version](https://img.shields.io/github/v/tag/Graf3x/unifi-mcp?label=version)](https://github.com/Graf3x/unifi-mcp/tags)
+[![image](https://img.shields.io/badge/image-ghcr.io%2Fgraf3x%2Funifi--mcp-blue)](https://github.com/Graf3x/unifi-mcp/pkgs/container/unifi-mcp)
+[![license](https://img.shields.io/github/license/Graf3x/unifi-mcp)](LICENSE)
+
+Ask Claude about your UniFi network: who is connected, why the internet dropped last night, which switch port the
+printer is on, which access point is fighting for a channel. This is an MCP server for the UniFi Network API that runs
+next to your console, read-only unless you turn writes on.
+
+It is built with .NET 10 and the official `ModelContextProtocol` SDK, from the UniFi Network API's OpenAPI document
+(v11.0.97, in `openapi/`). Add it to Claude (claude.ai, Claude Desktop, the phone apps) as a custom connector, or to
+Claude Code directly. You sign in with a one-time code from the server's log or with your Google account, and clients
+that send a fixed header can use an access token instead.
+
+**Contents:** [What you can ask](#what-you-can-ask), [Tools](#tools), [Safety](#safety), [Setup](#setup),
+[Settings reference](#settings-reference), [FAQ](#faq), [Develop](#develop)
+
+## What you can ask
+
+| Ask Claude | It uses |
+|---|---|
+| Who is on the guest network right now? | `who_is_on_network_faq` |
+| Which switch port is the office printer plugged into? | `client_path_faq` |
+| Is the NAS getting the fixed IP I reserved for it? | `dhcp_reservation_faq` |
+| Did the internet drop out this week, and how bad was the packet loss? | `internet_health_faq` |
+| Are any access points on a busy or noisy channel? | `wifi_health_faq` |
+| Do any switch ports show errors, drops or a flapping link? | `device_diagnostics_faq` |
+| Why does my laptop keep losing Wi-Fi? | `client_diagnostics_faq`, `system_log` |
+| Who signed in to the console in the last day? | `system_log` |
+| Which devices are offline or have firmware updates waiting? | `network_health_faq` |
+| What ports are forwarded to the internet? | `list_port_forwards` |
+| With writes on: add a DNS record so `nas.home` points at 192.168.1.20 | `create_dns_policy`, after a preview you confirm |
+
+Anything else the API offers, Claude finds with `search_operations` and runs with `call_read_operation`.
+
+## Tools
 
 - All 73 API operations. The 41 reads run through one tool, `call_read_operation` (its `operation` lists them), which
   keeps the tool list short: Claude picks tools less well past 30 to 50. The 32 writes are a destructive tool each,
@@ -305,6 +337,68 @@ To build from your checkout instead of pulling the published image, uncomment `b
 With `UNIFI_ALLOW_WRITES=true` the write tools appear; each still previews until called with `confirm` set to its own
 name. Set it back to `false` and restart to make the server read-only.
 
+## Settings reference
+
+All settings come from the environment (`.env` with Docker Compose). After changing one, run `docker compose up -d`.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `UNIFI_URL` | `https://192.168.1.1` | The console's address as the server reaches it. https only. |
+| `UNIFI_SITE` | `default` | The site tools use when they don't name one. |
+| `UNIFI_API_KEY` | none | Network API key ([Before you start](#before-you-start-two-values-from-your-console)). |
+| `UNIFI_CERT_SHA256` | none | Pinned fingerprints of the console's public key or certificate, comma separated. |
+| `UNIFI_CERT_TRUST` | `pin` | `ca` checks a CA-issued certificate instead of a pin. |
+| `UNIFI_ALLOW_WRITES` | `false` | Exactly `true` lists the write tools; see [Writes](#writes). |
+| `MCP_PUBLIC_BASE_URL` | none | The connector's public origin, e.g. `https://unifi.example.com`. |
+| `MCP_SIGNIN` | `google` | `code` or `google`; `.env.example` sets `code`. |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | none | Google OAuth web client, for `google` sign-in. |
+| `MCP_ALLOWED_GOOGLE_EMAILS` | none | Google addresses allowed to sign in, comma separated. |
+| `MCP_ACCESS_TOKEN` | none | Optional fixed token for clients that send a header; at least 32 characters. |
+| `UNIFI_MCP_DATA_KEY` | none | Wraps the connector's signing keys in `./data`. Generate once and keep it. |
+| `MCP_ALLOWED_LOGINS` | none | Logins allowed on the tailnet socket, or in [guide 1](#guide-1-quick-local-setup). |
+| `TUNNEL_TOKEN` | none | Read by the `cloudflared` container, not the server. |
+| `PUID`, `PGID` | `1000` | The user and group the containers run as. |
+
+<details>
+<summary>Advanced: files and listeners</summary>
+
+| Variable | Default | What it does |
+|---|---|---|
+| `UNIFI_API_KEY_FILE` | `/config/unifi-api-key` | Read when `UNIFI_API_KEY` is empty. |
+| `UNIFI_CERT_SHA256_FILE` | `/config/cert-sha256` | Read when `UNIFI_CERT_SHA256` is empty; re-read on each new connection. |
+| `MCP_ALLOWED_LOGINS_FILE` | `/config/allowed-logins` | Read when `MCP_ALLOWED_LOGINS` is empty. |
+| `MCP_ALLOWED_GOOGLE_EMAILS_FILE` | `/config/allowed-google-emails` | Read when `MCP_ALLOWED_GOOGLE_EMAILS` is empty. |
+| `MCP_LISTEN` | `unix:/run/unifi-mcp/mcp.sock` | The tailnet listener. A TCP address is refused unless it is loopback and `MCP_ALLOW_LOOPBACK_TCP=true`. |
+| `MCP_PUBLIC_LISTEN` | `unix:/run/unifi-mcp/public.sock` | The connector's listener. |
+| `MCP_ALLOW_LOOPBACK_TCP` | `false` | Allows a loopback `MCP_LISTEN`, as in guide 1. |
+| `MCP_DATA_DIR` | `/data` | Where the connector keeps its sign-in store and keys. |
+
+</details>
+
+## FAQ
+
+**Does it need a UI.com account or cloud access?** No. The server talks to the console over your network with a local
+API key. Claude reaches the server only the way you set up: locally, through your Cloudflare tunnel, or over Tailscale.
+
+**Can Claude change my network?** Only if you set `UNIFI_ALLOW_WRITES=true`. Even then each change first comes back as a
+preview, and is sent only when Claude calls the tool again with `confirm`. You see that in the conversation.
+
+**Will it slow the console down?** The official API is made for this. The diagnostics tools also read the console's
+internal API, which is not, so those calls are limited to 30 a minute and repeats within 10 seconds come from a cache.
+
+**Does it keep my network data?** No. `./data` holds only the connector's sign-in records and keys, the keys wrapped with
+`UNIFI_MCP_DATA_KEY`. Console answers go to Claude in the conversation; the diagnostics tools leave out the secrets the
+internal API returns, such as device keys.
+
+**I have several sites.** Every tool takes `siteId` (a UUID or a site name); `UNIFI_SITE` sets the default.
+
+**Which UniFi versions work?** It is built against UniFi Network's Integration API 11.0.97 and tested on UniFi Network 11.
+The diagnostics use internal endpoints Ubiquiti can change without notice; if one moves, that tool says so and the rest
+keep working.
+
+**Can I use another MCP client?** Yes, any client that speaks MCP over Streamable HTTP. With guide 1, Tailscale or the
+access token it only needs to send a header.
+
 ## Owner's Fleet setup
 
 <details>
@@ -411,9 +505,14 @@ Pushing a `v*` tag runs `.github/workflows/image.yml`: tests, then a multi-arch 
 `ghcr.io/<owner>/unifi-mcp` as the version, `<major>.<minor>` and `latest`. Bump `<Version>` in `src/UnifiMcp/UnifiMcp.csproj`
 to match.
 
+Issues and pull requests are welcome; [CONTRIBUTING.md](CONTRIBUTING.md) covers the conventions, and
+[SECURITY.md](SECURITY.md) how to report a vulnerability privately. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+
 ## Credits
 
 Developed with [Claude Code](https://claude.com/claude-code) and Claude Opus 5.5, by [Anthropic](https://www.anthropic.com).
+
+Not affiliated with or endorsed by Ubiquiti Inc. UniFi is a trademark of Ubiquiti Inc.
 
 ## License
 
