@@ -35,7 +35,7 @@ public static class McpHost
         configure?.Invoke(builder);
 
         var pin = new PinState();
-        var client = new UnifiClient(settings, unifi ?? CertPin.CreateHandler(settings.CertPin, pin), pin);
+        var client = new UnifiClient(settings, unifi ?? CertPin.CreateHandler(settings.CertPins, settings.Trust, pin), pin);
         var catalog = OpenApiCatalog.Load();
         // Reads share one tool; each write is its own destructive tool, listed only when writes are on.
         var tools = new List<McpServerTool> { new ReadOperationTool(catalog, client) };

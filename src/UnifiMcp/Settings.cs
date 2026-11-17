@@ -11,11 +11,20 @@ public enum SignInMode
     Code,
 }
 
+/// <summary>How the console's TLS certificate is checked (UNIFI_CERT_TRUST).</summary>
+public enum CertTrust
+{
+    /// <summary>Against the pinned fingerprints in UNIFI_CERT_SHA256: the certificate's or its public key's. The default.</summary>
+    Pin,
+    /// <summary>The usual way: a chain to a CA the system trusts, issued for the host in UNIFI_URL.</summary>
+    Ca,
+}
+
 /// <summary>
 /// Everything the server needs to know. The API key and certificate pin come first from the environment
 /// (UNIFI_API_KEY and UNIFI_CERT_SHA256, set from .env, fleet-key or any other source), else from owner-supplied files
 /// in the bind-mounted /config folder, which are read on each use; allow-lists likewise come from the environment or files. A missing value means "not configured", never a guessed default:
-/// there is no default pin and no way to turn certificate checks off.
+/// there is no default pin and no way to turn certificate checks off (UNIFI_CERT_TRUST=ca still checks, against a CA).
 /// </summary>
 public sealed partial record Settings
 {
@@ -24,6 +33,7 @@ public sealed partial record Settings
     public string ApiKeyFile { get; init; } = "/config/unifi-api-key";
     public string CertPinFile { get; init; } = "/config/cert-sha256";
     public string? CertSha256 { get; init; }
+    public CertTrust Trust { get; init; } = CertTrust.Pin;
     public string AllowedLoginsFile { get; init; } = "/config/allowed-logins";
     public string? AllowedLoginsValue { get; init; }
     public bool AllowWrites { get; init; }
@@ -72,6 +82,12 @@ public sealed partial record Settings
             "code" => SignInMode.Code,
             _ => throw new ArgumentException("MCP_SIGNIN must be google or code."),
         };
+        var trust = Blank(env("UNIFI_CERT_TRUST"))?.ToLowerInvariant() switch
+        {
+            null or "pin" => CertTrust.Pin,
+            "ca" => CertTrust.Ca,
+            _ => throw new ArgumentException("UNIFI_CERT_TRUST must be pin or ca."),
+        };
         var accessToken = Blank(env("MCP_ACCESS_TOKEN"));
         if (accessToken is { Length: < MinAccessTokenLength })
             throw new ArgumentException($"MCP_ACCESS_TOKEN must be at least {MinAccessTokenLength} characters.");
@@ -79,6 +95,7 @@ public sealed partial record Settings
         {
             BaseUrl = parsed,
             SignIn = signIn,
+            Trust = trust,
             AccessToken = accessToken,
             Site = Blank(env("UNIFI_SITE")) ?? d.Site,
             ApiKeyFile = Blank(env("UNIFI_API_KEY_FILE")) ?? d.ApiKeyFile,
@@ -104,12 +121,19 @@ public sealed partial record Settings
     /// <summary>The UniFi API key: the environment value if set, else the owner-supplied file.</summary>
     public string? ApiKey() => Blank(ApiKeyValue) ?? ReadFile(ApiKeyFile);
 
-    /// <summary>The pinned SHA-256 of the console's certificate as 64 upper-case hex digits, or null if unset or malformed.</summary>
-    public string? CertPin()
+    /// <summary>
+    /// The pinned SHA-256 fingerprints, each 64 upper-case hex digits: of the console's certificate or of its public key
+    /// (SubjectPublicKeyInfo). Several may be listed, separated by commas or white space, so a new one can be added before
+    /// the old one is removed. Null if unset, or if any entry is malformed (a typo must not quietly drop a pin).
+    /// </summary>
+    public IReadOnlyList<string>? CertPins()
     {
         var raw = Blank(CertSha256) ?? ReadFile(CertPinFile);
-        var hex = raw?.Replace(":", "", StringComparison.Ordinal).Trim().ToUpperInvariant();
-        return hex is not null && Sha256Hex().IsMatch(hex) ? hex : null;
+        if (raw is null) return null;
+        var pins = raw.Split([',', ';', ' ', '\t', '\n', '\r'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(p => p.Replace(":", "", StringComparison.Ordinal).ToUpperInvariant())
+            .Distinct().ToList();
+        return pins.Count > 0 && pins.All(p => Sha256Hex().IsMatch(p)) ? pins : null;
     }
 
     public IReadOnlyList<string> AllowedLogins() =>
@@ -141,7 +165,7 @@ public sealed partial record Settings
           .Append($"AllowLoopbackTcp = {AllowLoopbackTcp}, ApiKeyValue = {Mask(ApiKeyValue)}, PublicListen = {PublicListen}, ")
           .Append($"PublicBaseUrl = {PublicBaseUrl}, GoogleClientId = {GoogleClientId}, GoogleClientSecret = {Mask(GoogleClientSecret)}, ")
           .Append($"GoogleAuthority = {GoogleAuthority}, AllowedGoogleEmailsFile = {AllowedGoogleEmailsFile}, ")
-          .Append($"DataDir = {DataDir}, DataKey = {Mask(DataKey)}, SignIn = {SignIn}, AccessToken = {Mask(AccessToken)}");
+          .Append($"DataDir = {DataDir}, DataKey = {Mask(DataKey)}, SignIn = {SignIn}, AccessToken = {Mask(AccessToken)}, Trust = {Trust}");
         return true;
     }
 
@@ -152,7 +176,8 @@ public sealed partial record Settings
     {
         var missing = new List<string>();
         if (ApiKey() is null) missing.Add($"API key: set UNIFI_API_KEY in the environment (for example in .env, or with fleet-key) to the UniFi Network API key, or put the key in {ApiKeyFile}");
-        if (CertPin() is null) missing.Add($"certificate pin: set UNIFI_CERT_SHA256 in the environment to the console's SHA-256 certificate fingerprint (64 hex digits), or put it in {CertPinFile}");
+        if (Trust == CertTrust.Pin && CertPins() is null)
+            missing.Add($"certificate pin: set UNIFI_CERT_SHA256 in the environment to the SHA-256 fingerprint of the console's certificate or of its public key (64 hex digits; list several separated by commas), or put it in {CertPinFile}. If the console has a certificate from a trusted CA, set UNIFI_CERT_TRUST=ca instead");
         return missing;
     }
 

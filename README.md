@@ -19,7 +19,8 @@ or with your Google account, and clients that send a fixed header can use an acc
 
 - Read-only by default. Write tools exist only when `UNIFI_ALLOW_WRITES` is exactly `true`; each is marked destructive and
   needs `confirm` set to its own tool name, otherwise it returns a preview and sends nothing.
-- TLS to the console uses a SHA-256 certificate pin. There is no default pin and no way to turn verification off.
+- TLS to the console is pinned to a SHA-256 fingerprint of its certificate or public key, or, with `UNIFI_CERT_TRUST=ca`,
+  checked against a trusted CA. There is no default pin and no way to turn verification off.
 - The API key comes from the `UNIFI_API_KEY` environment variable, falling back to `/config/unifi-api-key` only when the
   variable is unset or empty. It is never logged or returned, and is scrubbed from console errors.
 - No published ports. The server listens on two Unix sockets:
@@ -63,19 +64,35 @@ Every guide needs these.
 **The API key.** In UniFi Network, open Settings, Control Plane, Integrations and create an API key (the menu may move
 between versions).
 
-**The console's certificate fingerprint.** The console uses a self-signed certificate, so the server pins its SHA-256
-fingerprint instead of trusting a CA. Read it from the network:
+**The console's key fingerprint.** The console uses a self-signed certificate, so the server pins a SHA-256 fingerprint
+instead of trusting a CA. Pin the certificate's public key: if the console re-issues its certificate with the same key,
+the pin keeps working. Read it from the network:
 
 ```sh
-openssl s_client -connect 192.168.1.1:443 </dev/null 2>/dev/null | openssl x509 -noout -fingerprint -sha256
+openssl s_client -connect 192.168.1.1:443 </dev/null 2>/dev/null \
+  | openssl x509 -pubkey -noout | openssl pkey -pubin -outform der | openssl dgst -sha256
 ```
 
-then confirm it on the console itself (SSH in and run
-`openssl x509 -in /data/unifi-core/config/unifi-core.crt -noout -fingerprint -sha256`), so you are not pinning something
-in the middle. Colons in the value are fine.
+then confirm it on the console itself, so you are not pinning something in the middle. SSH in and run
+`openssl x509 -in /data/unifi-core/config/unifi-core.crt -pubkey -noout | openssl pkey -pubin -outform der | openssl dgst -sha256`.
+The value goes in `UNIFI_CERT_SHA256`.
 
-When the console regenerates its certificate (often after a firmware update), tool calls fail with "does not match the
-pin" and name the fingerprint it presented. Confirm it on the console, update `UNIFI_CERT_SHA256`, and restart the server.
+`UNIFI_CERT_SHA256` also accepts the fingerprint of the whole certificate (`openssl x509 -noout -fingerprint -sha256`;
+colons are fine), and several fingerprints separated by commas.
+
+**When the certificate changes.** A console can generate a new certificate, and sometimes a new key, after a firmware
+update or a restart. Tool calls then fail with "does not match the pin" and name both fingerprints the console presented.
+Confirm one on the console and add it to `UNIFI_CERT_SHA256` (the old and new can sit side by side, comma separated),
+then restart the server. If the pin comes from the file `/config/cert-sha256` instead (with the variable unset), edit
+the file: it is read on every new connection, so no restart is needed.
+
+**Or: a certificate from a trusted CA.** If you give the console a certificate from a public CA such as Let's Encrypt,
+set `UNIFI_CERT_TRUST=ca` and leave `UNIFI_CERT_SHA256` empty. The server then checks the certificate the usual way
+(a valid chain, issued for the host name), so renewals need nothing from you. `UNIFI_URL` must use that host name
+(`https://unifi.example.com`), and it must resolve to the console from where the server runs. UniFi OS 4.1 and later
+can take your own certificate in its settings, under Control Plane, Console, Certificates (the menu may move between
+versions). Tools such as [unifi-os-cert-deployer](https://github.com/mafredri/unifi-os-cert-deployer) automate issuing
+and renewing one.
 
 ### Guide 1: Quick local setup
 
@@ -280,6 +297,8 @@ To build from your checkout instead of pulling the published image, uncomment `b
   hostname exactly.
 - The tunnel never connects: the host may be blocked from Cloudflare on outbound port 7844.
 - "does not match the pin": the console has a new certificate; see [Before you start](#before-you-start-two-values-from-your-console).
+- "not trusted" with `UNIFI_CERT_TRUST=ca`: the console's certificate is not from a CA the server trusts, has expired, or was not
+  issued for the host in `UNIFI_URL`; the message says which.
 
 ## Writes
 
@@ -319,7 +338,8 @@ The Network API key, the console's certificate pin, and the Google and Cloudflar
 .\fleet-key allow UNIFI_CERT_SHA256 unifi-mcp
 ```
 
-When the console regenerates its certificate, run `fleet-key set UNIFI_CERT_SHA256` again with the new fingerprint;
+When the console regenerates its certificate, run `fleet-key set UNIFI_CERT_SHA256` again with the new fingerprint (or the
+old and new, comma separated);
 Fleet redeploys the app with the new value. `config/cert-sha256` still works as a fallback while the key is unset.
 
 ```sh

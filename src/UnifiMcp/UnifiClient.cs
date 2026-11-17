@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Net.Security;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
@@ -17,34 +18,52 @@ public sealed record UnifiResponse(int Status, string Body)
     public bool Ok => Status is >= 200 and < 300;
 }
 
-/// <summary>The fingerprint of the last certificate refused for not matching the pin, for a useful error.</summary>
+/// <summary>A certificate the console presented and the server refused: its fingerprints and, in CA mode, why.</summary>
+public sealed record RejectedCertificate(string Certificate, string Key, SslPolicyErrors Errors = SslPolicyErrors.None);
+
+/// <summary>The last certificate refused, for a useful error.</summary>
 public sealed class PinState
 {
-    public string? Rejected { get; set; }
+    public RejectedCertificate? Rejected { get; set; }
 }
 
 /// <summary>
-/// TLS to the console. Its certificate is self-signed, so it is pinned by SHA-256 of the DER instead of trusted by CA.
-/// With no pin nothing matches, so verification cannot be off. Redirects are never followed, so the key cannot be sent elsewhere.
+/// TLS to the console. Its certificate is usually self-signed, so by default it is pinned: a pin is the SHA-256 of the
+/// certificate's DER or of its public key (SubjectPublicKeyInfo, which survives a re-issued certificate that keeps its
+/// key), and several may be listed. With no pin nothing matches, so verification cannot be off. With
+/// UNIFI_CERT_TRUST=ca the usual chain and host-name checks apply instead. Redirects are never followed, so the key
+/// cannot be sent elsewhere.
 /// </summary>
 public static class CertPin
 {
     public static string Fingerprint(X509Certificate cert) => Convert.ToHexString(SHA256.HashData(cert.GetRawCertData()));
 
-    public static bool Matches(X509Certificate? cert, string? pin) =>
-        cert is not null && !string.IsNullOrEmpty(pin) && string.Equals(Fingerprint(cert), pin, StringComparison.OrdinalIgnoreCase);
+    public static string KeyFingerprint(X509Certificate cert)
+    {
+        if (cert is X509Certificate2 c2) return Convert.ToHexString(SHA256.HashData(c2.PublicKey.ExportSubjectPublicKeyInfo()));
+        using var copy = X509CertificateLoader.LoadCertificate(cert.GetRawCertData());
+        return Convert.ToHexString(SHA256.HashData(copy.PublicKey.ExportSubjectPublicKeyInfo()));
+    }
 
-    public static SocketsHttpHandler CreateHandler(Func<string?> pin, PinState state) => new()
+    public static bool Matches(X509Certificate? cert, IReadOnlyCollection<string>? pins)
+    {
+        if (cert is null || pins is not { Count: > 0 }) return false;
+        var certPin = Fingerprint(cert);
+        var keyPin = KeyFingerprint(cert);
+        return pins.Any(p => string.Equals(p, certPin, StringComparison.OrdinalIgnoreCase) || string.Equals(p, keyPin, StringComparison.OrdinalIgnoreCase));
+    }
+
+    public static SocketsHttpHandler CreateHandler(Func<IReadOnlyCollection<string>?> pins, CertTrust trust, PinState state) => new()
     {
         AllowAutoRedirect = false,
         UseProxy = false,
         SslOptions =
         {
-            RemoteCertificateValidationCallback = (_, cert, _, _) =>
+            RemoteCertificateValidationCallback = (_, cert, _, errors) =>
             {
-                if (Matches(cert, pin())) return true;
-                if (cert is not null) state.Rejected = Fingerprint(cert);
-                return false;
+                var ok = trust == CertTrust.Ca ? cert is not null && errors == SslPolicyErrors.None : Matches(cert, pins());
+                if (!ok && cert is not null) state.Rejected = new(Fingerprint(cert), KeyFingerprint(cert), errors);
+                return ok;
             },
         },
     };
@@ -213,9 +232,10 @@ public sealed class UnifiClient(Settings settings, HttpMessageHandler handler, P
         {
             var seen = pin.Rejected;
             pin.Rejected = null;
-            throw new UnifiError(seen is not null
-                ? $"The console's certificate does not match the pin, so nothing was sent. It presented SHA-256 {seen}; compare that with the console, then set UNIFI_CERT_SHA256 to it and restart the server (for example in .env, or with fleet-key), or put it in {settings.CertPinFile} if that variable is unset."
-                : Scrub($"Could not reach the console: {ex.Message}", key));
+            throw new UnifiError(seen is null ? Scrub($"Could not reach the console: {ex.Message}", key)
+                : settings.Trust == CertTrust.Ca
+                ? $"The console's certificate is not trusted ({seen.Errors}), so nothing was sent. With UNIFI_CERT_TRUST=ca it needs a certificate from a CA this server trusts, issued for {settings.BaseUrl.Host} (the host in UNIFI_URL). It presented certificate SHA-256 {seen.Certificate}."
+                : $"The console's certificate does not match the pin, so nothing was sent. It presented certificate SHA-256 {seen.Certificate} with public key SHA-256 {seen.Key}; compare one with the console, then set UNIFI_CERT_SHA256 to it and restart the server (for example in .env, or with fleet-key), or put it in {settings.CertPinFile} if that variable is unset. Several pins can be listed, separated by commas.");
         }
         catch (TaskCanceledException) when (!ct.IsCancellationRequested)
         {

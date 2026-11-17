@@ -8,6 +8,18 @@ public class ClientTests
     private UnifiClient Client(bool writes = false, bool key = true, bool pin = true, PinState? state = null) =>
         new(Harness.NewSettings(_dir, writes, key, pin), _fake, state ?? new PinState());
 
+    [Fact]
+    public async Task An_untrusted_certificate_in_ca_mode_names_the_host_and_the_reason()
+    {
+        var state = new PinState { Rejected = new("FEEDFACE", "CAFEBABE", System.Net.Security.SslPolicyErrors.RemoteCertificateNameMismatch) };
+        _fake.Throw = new HttpRequestException("handshake failed");
+        var client = new UnifiClient(Harness.NewSettings(_dir) with { Trust = CertTrust.Ca }, _fake, state);
+        var ex = await Assert.ThrowsAsync<UnifiError>(() => client.SendAsync(HttpMethod.Get, "/v1/info", null, default));
+        Assert.Contains("not trusted (RemoteCertificateNameMismatch)", ex.Message);
+        Assert.Contains("UNIFI_CERT_TRUST=ca", ex.Message);
+        Assert.Contains(Harness.NewSettings(_dir).BaseUrl.Host, ex.Message);
+    }
+
     [Theory]
     [InlineData(false, true)]
     [InlineData(true, false)]
@@ -58,10 +70,11 @@ public class ClientTests
     [Fact]
     public async Task A_pin_mismatch_names_the_fingerprint_the_console_presented()
     {
-        var state = new PinState { Rejected = "FEEDFACE" };
+        var state = new PinState { Rejected = new("FEEDFACE", "CAFEBABE") };
         _fake.Throw = new HttpRequestException("handshake failed");
         var ex = await Assert.ThrowsAsync<UnifiError>(() => Client(state: state).SendAsync(HttpMethod.Get, "/v1/info", null, default));
         Assert.Contains("FEEDFACE", ex.Message);
+        Assert.Contains("CAFEBABE", ex.Message);
         Assert.Contains("pin", ex.Message);
         // Where to change it: the environment variable itself (fleet-key at most as an example), else the file.
         Assert.Matches(@"(?<!fleet-key )set UNIFI_CERT_SHA256", ex.Message);

@@ -55,7 +55,7 @@ public class SettingsTests
             "UNIFI_CERT_SHA256_FILE" => Path.Combine(dir, "p"),
             _ => null,
         });
-        Assert.Equal(new string('B', 64), s.CertPin());
+        Assert.Equal([new string('B', 64)], s.CertPins());
     }
 
     [Fact]
@@ -64,7 +64,7 @@ public class SettingsTests
         var dir = Directory.CreateTempSubdirectory().FullName;
         File.WriteAllText(Path.Combine(dir, "p"), "not-a-fingerprint");
         var s = new Settings { ApiKeyFile = Path.Combine(dir, "k"), CertPinFile = Path.Combine(dir, "p") };
-        Assert.Null(s.CertPin());
+        Assert.Null(s.CertPins());
         Assert.Contains(s.Missing(), m => m.Contains("certificate"));
     }
 
@@ -72,7 +72,40 @@ public class SettingsTests
     public void Pin_accepts_colons_and_lower_case()
     {
         var colons = string.Join(":", Enumerable.Repeat("ab", 32));
-        Assert.Equal(string.Concat(Enumerable.Repeat("AB", 32)), new Settings { CertSha256 = colons }.CertPin());
+        Assert.Equal(string.Concat(Enumerable.Repeat("AB", 32)), new Settings { CertSha256 = colons }.CertPins()!.Single());
+    }
+
+    [Fact]
+    public void Several_pins_split_on_commas_and_white_space()
+    {
+        var a = new string('a', 64);
+        var b = string.Join(":", Enumerable.Repeat("bc", 32));
+        Assert.Equal([new string('A', 64), string.Concat(Enumerable.Repeat("BC", 32))], new Settings { CertSha256 = $"{a}, {b}\n{a}" }.CertPins());
+    }
+
+    [Fact]
+    public void One_malformed_pin_in_a_list_makes_the_whole_value_missing()
+    {
+        var s = new Settings { CertSha256 = $"{new string('a', 64)},typo", CertPinFile = "/nonexistent/p" };
+        Assert.Null(s.CertPins());
+        Assert.Contains(s.Missing(), m => m.Contains("certificate pin"));
+    }
+
+    [Fact]
+    public void Ca_trust_needs_no_pin()
+    {
+        var s = Settings.FromEnvironment(k => k == "UNIFI_CERT_TRUST" ? "CA" : null) with { CertPinFile = "/nonexistent/p" };
+        Assert.Equal(CertTrust.Ca, s.Trust);
+        Assert.DoesNotContain(s.Missing(), m => m.Contains("certificate"));
+        Assert.Equal(CertTrust.Pin, Settings.FromEnvironment(_ => null).Trust);
+        Assert.Throws<ArgumentException>(() => Settings.FromEnvironment(k => k == "UNIFI_CERT_TRUST" ? "off" : null));
+    }
+
+    [Fact]
+    public void The_missing_pin_message_offers_ca_trust()
+    {
+        var s = new Settings { CertPinFile = "/nonexistent/p" };
+        Assert.Contains(s.Missing(), m => m.Contains("UNIFI_CERT_TRUST=ca") && m.Contains("public key"));
     }
 
     [Fact]
@@ -219,7 +252,7 @@ public class CertPinTests
     public void The_pinned_certificate_matches()
     {
         using var cert = NewCert();
-        Assert.True(CertPin.Matches(cert, CertPin.Fingerprint(cert)));
+        Assert.True(CertPin.Matches(cert, [CertPin.Fingerprint(cert)]));
     }
 
     [Fact]
@@ -227,16 +260,60 @@ public class CertPinTests
     {
         using var a = NewCert();
         using var b = NewCert();
-        Assert.False(CertPin.Matches(a, CertPin.Fingerprint(b)));
+        Assert.False(CertPin.Matches(a, [CertPin.Fingerprint(b), CertPin.KeyFingerprint(b)]));
     }
 
-    [Theory]
-    [InlineData(null)]
-    [InlineData("")]
-    public void No_pin_matches_nothing(string? pin)
+    [Fact]
+    public void No_pin_matches_nothing()
     {
         using var cert = NewCert();
-        Assert.False(CertPin.Matches(cert, pin));
+        Assert.False(CertPin.Matches(cert, null));
+        Assert.False(CertPin.Matches(cert, []));
+        Assert.False(CertPin.Matches(cert, [""]));
+    }
+
+    [Fact]
+    public void A_key_pin_survives_a_reissued_certificate_with_the_same_key()
+    {
+        using var rsa = RSA.Create(2048);
+        X509Certificate2 Issue(string cn) => new CertificateRequest(cn, rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1)
+            .CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+        using var before = Issue("CN=udm");
+        using var after = Issue("CN=udm-renewed");
+        Assert.NotEqual(CertPin.Fingerprint(before), CertPin.Fingerprint(after));
+        Assert.False(CertPin.Matches(after, [CertPin.Fingerprint(before)]));
+        Assert.True(CertPin.Matches(after, [CertPin.KeyFingerprint(before)]));
+    }
+
+    [Fact]
+    public void The_key_pin_is_the_sha256_of_the_subject_public_key_info()
+    {
+        // The same value `openssl x509 -pubkey -noout | openssl pkey -pubin -outform der | openssl dgst -sha256` prints.
+        using var cert = NewCert();
+        Assert.Equal(Convert.ToHexString(SHA256.HashData(cert.PublicKey.ExportSubjectPublicKeyInfo())), CertPin.KeyFingerprint(cert));
+        using var plain = new X509Certificate(cert.RawData);
+        Assert.Equal(CertPin.KeyFingerprint(cert), CertPin.KeyFingerprint(plain));
+    }
+
+    [Fact]
+    public void Any_of_several_pins_matches()
+    {
+        using var old = NewCert();
+        using var current = NewCert();
+        Assert.True(CertPin.Matches(current, [CertPin.Fingerprint(old), CertPin.Fingerprint(current)]));
+    }
+
+    [Fact]
+    public void Ca_mode_accepts_only_a_certificate_with_no_policy_errors_and_ignores_pins()
+    {
+        using var cert = NewCert();
+        var state = new PinState();
+        using var handler = CertPin.CreateHandler(() => [CertPin.Fingerprint(cert)], CertTrust.Ca, state);
+        var check = handler.SslOptions.RemoteCertificateValidationCallback!;
+        Assert.True(check(this, cert, null, System.Net.Security.SslPolicyErrors.None));
+        Assert.False(check(this, cert, null, System.Net.Security.SslPolicyErrors.RemoteCertificateNameMismatch));
+        Assert.Equal(System.Net.Security.SslPolicyErrors.RemoteCertificateNameMismatch, state.Rejected!.Errors);
+        Assert.False(check(this, null, null, System.Net.Security.SslPolicyErrors.None));
     }
 
     [Fact]
@@ -245,24 +322,24 @@ public class CertPinTests
         using var presented = NewCert();
         using var pinned = NewCert();
         var state = new PinState();
-        using var handler = CertPin.CreateHandler(() => CertPin.Fingerprint(pinned), state);
+        using var handler = CertPin.CreateHandler(() => [CertPin.Fingerprint(pinned)], CertTrust.Pin, state);
         var ok = handler.SslOptions.RemoteCertificateValidationCallback!(this, presented, null, System.Net.Security.SslPolicyErrors.RemoteCertificateChainErrors);
         Assert.False(ok);
-        Assert.Equal(CertPin.Fingerprint(presented), state.Rejected);
+        Assert.Equal(new RejectedCertificate(CertPin.Fingerprint(presented), CertPin.KeyFingerprint(presented), System.Net.Security.SslPolicyErrors.RemoteCertificateChainErrors), state.Rejected);
     }
 
     [Fact]
     public void Handler_accepts_the_pinned_self_signed_certificate_despite_chain_errors()
     {
         using var cert = NewCert();
-        using var handler = CertPin.CreateHandler(() => CertPin.Fingerprint(cert), new PinState());
+        using var handler = CertPin.CreateHandler(() => [CertPin.Fingerprint(cert)], CertTrust.Pin, new PinState());
         Assert.True(handler.SslOptions.RemoteCertificateValidationCallback!(this, cert, null, System.Net.Security.SslPolicyErrors.RemoteCertificateChainErrors));
     }
 
     [Fact]
     public void Handler_never_follows_redirects_or_uses_a_proxy()
     {
-        using var handler = CertPin.CreateHandler(() => null, new PinState());
+        using var handler = CertPin.CreateHandler(() => null, CertTrust.Pin, new PinState());
         Assert.False(handler.AllowAutoRedirect);
         Assert.False(handler.UseProxy);
     }
