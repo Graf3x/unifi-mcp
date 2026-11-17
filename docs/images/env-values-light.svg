@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 448" width="1000" height="448" role="img" aria-label="Where each value in .env comes from">
+<title>Where each value in .env comes from</title>
+<style>
+  text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; }
+  .t { font-size: 15px; font-weight: 600; fill: #1F2328; }
+  .s { font-size: 12.5px; fill: #59636E; }
+  .m { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; font-size: 12px; fill: #1F2328; }
+  .mm { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; font-size: 12px; fill: #59636E; }
+  .l { font-size: 13px; font-weight: 600; fill: #59636E; }
+  .tag { font-size: 11.5px; font-weight: 600; }
+  .n { font-size: 12px; font-weight: 700; fill: #FFFFFF; }
+  .halo { paint-order: stroke; stroke: #FFFFFF; stroke-width: 5px; stroke-linejoin: round; }
+</style>
+<path d="M330 72 C 480 72, 472 92, 622 92" fill="none" stroke="#9A6700" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M330 72 C 480 72, 472 118, 622 118" fill="none" stroke="#9A6700" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M330 127 C 480 127, 472 144, 622 144" fill="none" stroke="#9A6700" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M330 127 C 480 127, 472 170, 622 170" fill="none" stroke="#9A6700" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M330 182 C 480 182, 472 196, 622 196" fill="none" stroke="#9A6700" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M330 237 C 480 237, 472 248, 622 248" fill="none" stroke="#9A6700" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M330 292 C 480 292, 472 274, 622 274" fill="none" stroke="#9A6700" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M330 347 C 480 347, 472 300, 622 300" fill="none" stroke="#9A6700" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/><path d="M330 347 C 480 347, 472 300, 622 300" fill="none" stroke="#FFFFFF" stroke-width="2.2" stroke-dasharray="5 7" stroke-linecap="butt"/>
+<path d="M330 347 C 480 347, 472 326, 622 326" fill="none" stroke="#9A6700" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/><path d="M330 347 C 480 347, 472 326, 622 326" fill="none" stroke="#FFFFFF" stroke-width="2.2" stroke-dasharray="5 7" stroke-linecap="butt"/>
+<path d="M330 347 C 480 347, 472 352, 622 352" fill="none" stroke="#9A6700" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/><path d="M330 347 C 480 347, 472 352, 622 352" fill="none" stroke="#FFFFFF" stroke-width="2.2" stroke-dasharray="5 7" stroke-linecap="butt"/>
+<path d="M330 402 C 480 402, 472 378, 622 378" fill="none" stroke="#9A6700" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M330 237 C 480 237, 472 404, 622 404" fill="none" stroke="#9A6700" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="20" y="48" width="310" height="48" rx="8" fill="#F6F8FA" stroke="#D0D7DE" stroke-width="1.5"/>
+<text class="t" x="34" y="68" style="font-size:14px">Your shell</text>
+<text class="mm" x="34" y="85">id -u and id -g</text>
+<rect x="20" y="103" width="310" height="48" rx="8" fill="#F6F8FA" stroke="#D0D7DE" stroke-width="1.5"/>
+<text class="t" x="34" y="123" style="font-size:14px">UniFi Network</text>
+<text class="s" x="34" y="140">Settings &gt; Control Plane &gt; Integrations</text>
+<rect x="20" y="158" width="310" height="48" rx="8" fill="#F6F8FA" stroke="#D0D7DE" stroke-width="1.5"/>
+<text class="t" x="34" y="178" style="font-size:14px">Console certificate</text>
+<text class="s" x="34" y="195">openssl, then confirmed over SSH</text>
+<rect x="20" y="213" width="310" height="48" rx="8" fill="#F6F8FA" stroke="#D0D7DE" stroke-width="1.5"/>
+<text class="t" x="34" y="233" style="font-size:14px">Cloudflare Zero Trust</text>
+<text class="s" x="34" y="250">Networks &gt; Tunnels, and your hostname</text>
+<rect x="20" y="268" width="310" height="48" rx="8" fill="#F6F8FA" stroke="#D0D7DE" stroke-width="1.5"/>
+<text class="t" x="34" y="288" style="font-size:14px">How you sign in</text>
+<text class="s" x="34" y="305">code in guide 2, google in guide 3</text>
+<rect x="20" y="323" width="310" height="48" rx="8" fill="#F6F8FA" stroke="#D0D7DE" stroke-width="1.5"/>
+<text class="t" x="34" y="343" style="font-size:14px">Google Cloud Console</text>
+<text class="s" x="34" y="360">guide 3 only</text>
+<rect x="20" y="378" width="310" height="48" rx="8" fill="#F6F8FA" stroke="#D0D7DE" stroke-width="1.5"/>
+<text class="t" x="34" y="398" style="font-size:14px">A random key you keep</text>
+<text class="mm" x="34" y="415">openssl rand -base64 32</text>
+<rect x="600" y="44" width="380" height="386" rx="8" fill="#F6F8FA" stroke="#D0D7DE" stroke-width="1.5"/>
+<path d="M600 72 H980" stroke="#D0D7DE" stroke-width="1.5"/>
+<text class="m" x="616" y="63" style="font-weight:700">.env</text>
+<circle cx="622" cy="92" r="4" fill="#9A6700"/>
+<text class="m" x="634" y="96">PUID<tspan fill="#59636E">=1000</tspan></text>
+<circle cx="622" cy="118" r="4" fill="#9A6700"/>
+<text class="m" x="634" y="122">PGID<tspan fill="#59636E">=1000</tspan></text>
+<circle cx="622" cy="144" r="4" fill="#9A6700"/>
+<text class="m" x="634" y="148">UNIFI_URL<tspan fill="#59636E">=https://192.168.1.1</tspan></text>
+<circle cx="622" cy="170" r="4" fill="#9A6700"/>
+<text class="m" x="634" y="174">UNIFI_API_KEY<tspan fill="#59636E">=</tspan></text>
+<circle cx="622" cy="196" r="4" fill="#9A6700"/>
+<text class="m" x="634" y="200">UNIFI_CERT_SHA256<tspan fill="#59636E">=</tspan></text>
+<text class="m" x="634" y="226">UNIFI_ALLOW_WRITES<tspan fill="#59636E">=false</tspan></text>
+<circle cx="622" cy="248" r="4" fill="#9A6700"/>
+<text class="m" x="634" y="252">MCP_PUBLIC_BASE_URL<tspan fill="#59636E">=https://unifi.example.com</tspan></text>
+<circle cx="622" cy="274" r="4" fill="#9A6700"/>
+<text class="m" x="634" y="278">MCP_SIGNIN<tspan fill="#59636E">=code</tspan></text>
+<circle cx="622" cy="300" r="4" fill="#9A6700"/>
+<text class="m" x="634" y="304">GOOGLE_CLIENT_ID<tspan fill="#59636E">=</tspan></text>
+<circle cx="622" cy="326" r="4" fill="#9A6700"/>
+<text class="m" x="634" y="330">GOOGLE_CLIENT_SECRET<tspan fill="#59636E">=</tspan></text>
+<circle cx="622" cy="352" r="4" fill="#9A6700"/>
+<text class="m" x="634" y="356">MCP_ALLOWED_GOOGLE_EMAILS<tspan fill="#59636E">=</tspan></text>
+<circle cx="622" cy="378" r="4" fill="#9A6700"/>
+<text class="m" x="634" y="382">UNIFI_MCP_DATA_KEY<tspan fill="#59636E">=</tspan></text>
+<circle cx="622" cy="404" r="4" fill="#9A6700"/>
+<text class="m" x="634" y="408">TUNNEL_TOKEN<tspan fill="#59636E">=</tspan></text>
+</svg>

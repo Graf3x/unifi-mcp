@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 512" width="1000" height="512" role="img" aria-label="Signing in with a one-time code from the server's log">
+<title>Signing in with a one-time code from the server's log</title>
+<style>
+  text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; }
+  .t { font-size: 15px; font-weight: 600; fill: #1F2328; }
+  .s { font-size: 12.5px; fill: #59636E; }
+  .m { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; font-size: 12px; fill: #1F2328; }
+  .mm { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; font-size: 12px; fill: #59636E; }
+  .l { font-size: 13px; font-weight: 600; fill: #59636E; }
+  .tag { font-size: 11.5px; font-weight: 600; }
+  .n { font-size: 12px; font-weight: 700; fill: #FFFFFF; }
+  .halo { paint-order: stroke; stroke: #FFFFFF; stroke-width: 5px; stroke-linejoin: round; }
+</style>
+<path d="M130 72 V500" stroke="#8C959F" stroke-width="1.5" stroke-dasharray="4 5"/>
+<path d="M380 72 V500" stroke="#8C959F" stroke-width="1.5" stroke-dasharray="4 5"/>
+<path d="M630 72 V500" stroke="#8C959F" stroke-width="1.5" stroke-dasharray="4 5"/>
+<path d="M870 72 V500" stroke="#8C959F" stroke-width="1.5" stroke-dasharray="4 5"/>
+<rect x="35" y="16" width="190" height="56" rx="8" fill="#F6F8FA" stroke="#D0D7DE" stroke-width="1.5"/>
+<text class="t" x="130" y="41" text-anchor="middle">Claude</text>
+<text class="s" x="130" y="60" text-anchor="middle">web, desktop or phone</text>
+<rect x="285" y="16" width="190" height="56" rx="8" fill="#F6F8FA" stroke="#D0D7DE" stroke-width="1.5"/>
+<text class="t" x="380" y="41" text-anchor="middle">Your browser</text>
+<text class="s" x="380" y="60" text-anchor="middle">on any device</text>
+<rect x="535" y="16" width="190" height="56" rx="8" fill="#F6F8FA" stroke="#D0D7DE" stroke-width="1.5"/>
+<text class="t" x="630" y="41" text-anchor="middle">unifi-mcp</text>
+<text class="s" x="630" y="60" text-anchor="middle">behind the tunnel</text>
+<rect x="775" y="16" width="190" height="56" rx="8" fill="#F6F8FA" stroke="#D0D7DE" stroke-width="1.5"/>
+<text class="t" x="870" y="41" text-anchor="middle">Your terminal</text>
+<text class="s" x="870" y="60" text-anchor="middle">where Docker runs</text>
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#1F2328"/></marker></defs>
+<path d="M134 118 H624" stroke="#1F2328" stroke-width="1.6" marker-end="url(#a)"/>
+<text class="s halo" x="380" y="91" text-anchor="middle" style="fill:#1F2328">Add custom connector</text>
+<text class="m halo" x="380" y="108" text-anchor="middle">https://unifi.example.com/mcp</text>
+<circle cx="148" cy="118" r="10" fill="#C4520A"/><text class="n" x="148" y="122" text-anchor="middle">1</text>
+<path d="M134 172 H374" stroke="#1F2328" stroke-width="1.6" marker-end="url(#a)"/>
+<text class="s halo" x="255" y="162" text-anchor="middle" style="fill:#1F2328">Opens the sign-in page</text>
+<circle cx="148" cy="172" r="10" fill="#C4520A"/><text class="n" x="148" y="176" text-anchor="middle">2</text>
+<path d="M384 226 H624" stroke="#1F2328" stroke-width="1.6" marker-end="url(#a)"/>
+<text class="s halo" x="505" y="216" text-anchor="middle" style="fill:#1F2328">Loads the page</text>
+<circle cx="398" cy="226" r="10" fill="#C4520A"/><text class="n" x="398" y="230" text-anchor="middle">3</text>
+<path d="M634 280 H864" stroke="#1F2328" stroke-width="1.6" marker-end="url(#a)"/>
+<text class="s halo" x="750" y="270" text-anchor="middle" style="fill:#1F2328">Writes a one-time code to its log</text>
+<circle cx="648" cy="280" r="10" fill="#C4520A"/><text class="n" x="648" y="284" text-anchor="middle">4</text>
+<rect x="760" y="294" width="220" height="30" rx="6" fill="#F6F8FA" stroke="#D0D7DE" stroke-width="1.5"/>
+<text class="m" x="870" y="314" text-anchor="middle">Sign-in code 01234-56789</text>
+<path d="M866 382 H386" stroke="#1F2328" stroke-width="1.6" stroke-dasharray="6 5" marker-end="url(#a)"/>
+<text class="s halo" x="625" y="355" text-anchor="middle" style="fill:#1F2328">You copy it from</text>
+<text class="m halo" x="625" y="372" text-anchor="middle">docker compose logs unifi-mcp</text>
+<circle cx="852" cy="382" r="10" fill="#C4520A"/><text class="n" x="852" y="386" text-anchor="middle">5</text>
+<path d="M384 436 H624" stroke="#1F2328" stroke-width="1.6" marker-end="url(#a)"/>
+<text class="s halo" x="505" y="426" text-anchor="middle" style="fill:#1F2328">Enter the code, approve</text>
+<circle cx="398" cy="436" r="10" fill="#C4520A"/><text class="n" x="398" y="440" text-anchor="middle">6</text>
+<path d="M626 490 H136" stroke="#1F2328" stroke-width="1.6" marker-end="url(#a)"/>
+<text class="s halo" x="380" y="480" text-anchor="middle" style="fill:#1F2328">Connected: Claude can call the tools</text>
+<circle cx="612" cy="490" r="10" fill="#C4520A"/><text class="n" x="612" y="494" text-anchor="middle">7</text>
+</svg>

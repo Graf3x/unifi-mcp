@@ -1,4 +1,4 @@
-# unifi-mcp with a Cloudflare tunnel, for running it yourself. See README "Run it yourself".
+# unifi-mcp with a Cloudflare tunnel, for running it yourself. See README, guide 2 (code sign-in) or guide 3 (Google).
 #   cp .env.example .env    # then fill it in
 #   mkdir -p data run       # create these as you, so the container (PUID:PGID) can write to them
 #   docker compose up -d
