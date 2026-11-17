@@ -5,6 +5,10 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+Nothing yet.
+
+## 0.4.0
+
 ### Added
 
 - `UNIFI_CERT_SHA256` accepts the SHA-256 of the console's public key as well as of its certificate, so a re-issued
