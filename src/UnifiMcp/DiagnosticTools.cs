@@ -1,0 +1,550 @@
+using System.ComponentModel;
+using System.Globalization;
+using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using ModelContextProtocol.Protocol;
+using ModelContextProtocol.Server;
+
+namespace UnifiMcp;
+
+/// <summary>
+/// Diagnostics from the console's internal API (the one its own UI uses), which the official API does not cover:
+/// the system log, WAN quality, Wi-Fi radio health, a client's signal and switch port, device ports and temperatures,
+/// port forwards. Reads only, through <see cref="UnifiClient.ConsoleAsync"/>'s allow-list and throttle. Answers are built
+/// from named fields; raw objects are never passed through, because they carry secrets (device keys, a maps API key).
+/// </summary>
+[McpServerToolType]
+public sealed partial class DiagnosticTools(UnifiClient console)
+{
+    private const int MaxHours = 720;
+
+    [McpServerTool(Name = "system_log", Title = "System log", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
+    [Description("[Logs] The console's System Log, newest first: client connects, disconnects and roams, blocked threats, admin logins, AP channel changes and radar, WAN packet loss and failover, device alerts. "
+                 + "Use it to answer 'what happened' and 'when'. Filters run on the console: category (e.g. CLIENT_DEVICES, UNIFI_DEVICES, SECURITY, INTERNET_AND_WAN, AUDIT), event (e.g. CLIENT_ROAMED, THREAT_BLOCKED), severity (LOW, MEDIUM, HIGH, VERY_HIGH) and search (a name, IP or MAC). "
+                 + "Called without filters it also returns counts per category and event for the window, so a second call can filter precisely. Times are in the console's time zone.")]
+    public Task<CallToolResult> SystemLog(
+        [Description("How far back to look, in hours (1 to 720). Default 24.")] int hours = 24,
+        [Description("Comma-separated categories, e.g. 'SECURITY' or 'CLIENT_DEVICES,UNIFI_DEVICES'.")] string? category = null,
+        [Description("Comma-separated event names, e.g. 'THREAT_BLOCKED' or 'CLIENT_CONNECTED_WIRED,CLIENT_DISCONNECTED_WIRED'.")] string? @event = null,
+        [Description("Comma-separated severities: LOW, MEDIUM, HIGH, VERY_HIGH.")] string? severity = null,
+        [Description("Text the console matches against each event, e.g. a client name, IP or MAC.")] string? search = null,
+        [Description("Events per page (1 to 200). Default 50.")] int limit = 50,
+        [Description("Page number, starting at 0.")] int page = 0,
+        [Description("Site UUID or name. Omit for the configured site.")] string? siteId = null,
+        CancellationToken ct = default) => Strict(async () =>
+    {
+        var siteRef = await console.ResolveSiteReferenceAsync(siteId, ct);
+        var zone = await console.ConsoleTimeZoneAsync(siteRef, ct);
+        var window = Window(hours);
+        var query = LogQuery(window, limit, page, List(category), List(@event), List(severity), search);
+        var result = await console.ConsoleJsonAsync(HttpMethod.Post, $"/v2/api/site/{siteRef}/system-log/all", query, ct);
+        var events = Array(result, "data").Take(query.pageSize).ToList();
+        var total = Long(result, "total_element_count") ?? events.Count;
+        var pages = Long(result, "total_page_count") ?? 1;
+
+        var filters = new[] { ("category", category), ("event", @event), ("severity", severity), ("search", search) }.Where(f => !string.IsNullOrWhiteSpace(f.Item2)).ToList();
+        var sb = new StringBuilder($"# System log: {total} event(s) in the last {window.Hours} h");
+        sb.AppendLine(filters.Count == 0 ? "" : " matching " + string.Join(", ", filters.Select(f => $"{f.Item1} '{f.Item2}'")));
+        sb.AppendLine($"Showing {events.Count} (page {page} of {Math.Max(pages, 1)}, newest first). Times are console local time ({zone.Name}).");
+        if ((page + 1L) * query.pageSize < total)
+            sb.AppendLine($"More: call again with page={page + 1}, or narrow with category, event, severity or search.");
+        sb.AppendLine().AppendLine(LogTable(events, zone.Zone));
+
+        if (filters.Count == 0 && page == 0)
+        {
+            try
+            {
+                var counts = await console.ConsoleJsonAsync(HttpMethod.Post, $"/v2/api/site/{siteRef}/system-log/count",
+                    new { timestampFrom = window.From, timestampTo = window.To }, ct);
+                sb.AppendLine("## Counts in this window");
+                sb.AppendLine("Categories: " + Counts(counts, "categories"));
+                sb.AppendLine("Events: " + Counts(counts, "events"));
+            }
+            catch (UnifiError e)
+            {
+                sb.AppendLine($"(Counts unavailable: {e.Message})");
+            }
+        }
+        return sb.ToString();
+    });
+
+    [McpServerTool(Name = "internet_health_faq", Title = "Internet and WAN health", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
+    [Description("[Composite] Is the internet connection healthy: each WAN link and whether it is active or backup, the ISP and plan, the gateway's availability and latency monitors, "
+                 + "5-minute latency and packet-loss history with the worst intervals, outages, the last speed tests, and recent WAN events from the system log. "
+                 + "Use for 'is the internet slow or dropping'. Markdown in steps; a failed step does not stop the rest.")]
+    public Task<string> InternetHealth(
+        [Description("History window in hours (1 to 168). Default 24.")] int hours = 24,
+        [Description("Site UUID or name. Omit for the configured site.")] string? siteId = null,
+        CancellationToken ct = default) => Run(siteId, ct, async (siteRef, zone, sb) =>
+    {
+        hours = Math.Clamp(hours, 1, 168);
+        var dash = await StepJson(sb, "Dashboard", () => console.ConsoleJsonAsync(HttpMethod.Get, $"/v2/api/site/{siteRef}/aggregated-dashboard?historySeconds={hours * 3600}", null, ct));
+        var lb = await StepJson(sb, "WAN status", () => console.ConsoleJsonAsync(HttpMethod.Get, $"/v2/api/site/{siteRef}/wan/load-balancing/status", null, ct));
+
+        sb.AppendLine("## WAN links");
+        var details = dash is { } d && d.TryGetProperty("wan", out var wan) ? Array(wan, "wan_details") : [];
+        var states = lb is { } l ? Array(l, "wan_interfaces") : [];
+        var groups = states.Select(s => V(s, "wan_networkgroup")).Concat(details.Select(x => V(x, "network_group"))).Where(g => g.Length > 0).Distinct().ToList();
+        sb.AppendLine(FaqTools.Table(["WAN", "Group", "Failover state", "ISP", "Interface", "Link", "Plan down/up (Mbps)", "Service latency (ms)"], groups.Select(g =>
+        {
+            var s = states.FirstOrDefault(x => V(x, "wan_networkgroup") == g);
+            var x = details.FirstOrDefault(y => V(y, "network_group") == g);
+            var isp = Obj(x, "isp");
+            var caps = Obj(isp, "capabilities");
+            var status = Obj(x, "status");
+            var plan = caps is { } c ? $"{Kbps(c, "download_kilobits_per_second")}/{Kbps(c, "upload_kilobits_per_second")}" : "";
+            var latencies = Obj(x, "stats") is { } st ? string.Join(", ", Array(st, "service_latencies").Select(sl => $"{V(sl, "service_name")} {V(sl, "latency")}")) : "";
+            return new[] { First(V(s, "name"), V(x, "network_name")), g, V(s, "state"), isp is { } i ? V(i, "name") : "", status is { } t ? V(t, "interface_name") : "", status is { } u ? V(u, "state") : "", plan, latencies };
+        })));
+
+        var health = await Step(sb, "Gateway monitors", () => console.ConsoleDataAsync($"/api/s/{siteRef}/stat/health", ct));
+        if (health is not null)
+        {
+            var wanHealth = health.FirstOrDefault(h => V(h, "subsystem") == "wan");
+            var www = health.FirstOrDefault(h => V(h, "subsystem") == "www");
+            sb.AppendLine("## Gateway monitors");
+            if (wanHealth.ValueKind == JsonValueKind.Object)
+            {
+                sb.AppendLine($"WAN IP {V(wanHealth, "wan_ip")}, ISP {V(wanHealth, "isp_name")}, status {V(wanHealth, "status")}.");
+                if (Obj(wanHealth, "uptime_stats") is { } us)
+                    foreach (var link in us.EnumerateObject())
+                    {
+                        sb.AppendLine($"{link.Name}: availability {V(link.Value, "availability", 2)} % and average latency {V(link.Value, "latency_average")} ms over the last {Long(link.Value, "time_period") / 3600 ?? 24} h.");
+                        sb.AppendLine(FaqTools.Table(["Target", "Type", "Availability %", "Latency (ms)"], Array(link.Value, "monitors").Select(m =>
+                            new[] { V(m, "target"), V(m, "type"), V(m, "availability", 2), V(m, "latency_average") })));
+                    }
+            }
+            if (www.ValueKind == JsonValueKind.Object)
+                sb.AppendLine($"Internet check: latency {V(www, "latency")} ms, {V(www, "drops")} drop(s), last speed test {V(www, "xput_down")} down / {V(www, "xput_up")} up Mbps"
+                              + (Long(www, "speedtest_lastrun") is { } run ? $" at {Seconds(run, zone.Zone)}." : "."));
+            sb.AppendLine();
+        }
+
+        if (dash is { } board)
+        {
+            sb.AppendLine($"## Last {hours} h (5-minute samples, times {zone.Name})");
+            var groupsActivity = Obj(Obj(board, "wan_activity"), "activity_by_network_group");
+            if (groupsActivity is { } ga)
+                foreach (var g in ga.EnumerateObject())
+                {
+                    var samples = Array(g.Value, "history");
+                    if (samples.Count == 0) continue;
+                    var loss = samples.Select(x => Dbl(x, "avg_packet_loss_pct") ?? 0).ToList();
+                    var latency = samples.Select(x => Dbl(x, "avg_latency_ms")).OfType<double>().ToList();
+                    sb.AppendLine($"**{g.Name}**: {samples.Count} samples. Latency average {Avg(latency)} ms, highest {Max(samples, "max_latency_ms")} ms. "
+                                  + $"Packet loss average {Avg(loss)} %, {loss.Count(v => v >= 2)} sample(s) at 2 % or more.");
+                    var worst = samples.Where(x => (Dbl(x, "avg_packet_loss_pct") ?? 0) > 0 || (Dbl(x, "max_latency_ms") ?? 0) > 2 * Math.Max(1, latency.DefaultIfEmpty(0).Average()))
+                        .OrderByDescending(x => Dbl(x, "avg_packet_loss_pct") ?? 0).ThenByDescending(x => Dbl(x, "max_latency_ms") ?? 0).Take(5).ToList();
+                    if (worst.Count > 0)
+                        sb.AppendLine(FaqTools.Table(["Worst intervals", "Packet loss %", "Avg latency (ms)", "Max latency (ms)"], worst.Select(x =>
+                            new[] { Millis(Long(x, "timestamp"), zone.Zone), V(x, "avg_packet_loss_pct"), V(x, "avg_latency_ms"), V(x, "max_latency_ms") })));
+                }
+            var outages = Obj(board, "wan_history") is { } wh ? Array(wh, "wan_history_details").SelectMany(x => Array(x, "downtime_history")).ToList() : [];
+            sb.AppendLine($"{outages.Count} outage(s) recorded in this window.");
+            foreach (var o in outages.Take(10))
+            {
+                var parts = o.ValueKind == JsonValueKind.Object ? o.EnumerateObject().Where(p => p.Value.ValueKind is JsonValueKind.Number or JsonValueKind.String)
+                    .Select(p => p.Value.ValueKind == JsonValueKind.Number && p.Value.TryGetInt64(out var ms) && ms > 1_000_000_000_000 ? $"{p.Name} {Millis(ms, zone.Zone)}" : $"{p.Name} {p.Value}") : [];
+                sb.AppendLine("- " + string.Join(", ", parts));
+            }
+            sb.AppendLine();
+
+            var tests = Obj(board, "speed_test") is { } stt ? Array(stt, "data").Where(x => Long(x, "time") is not null).ToList() : [];
+            sb.AppendLine("## Speed tests");
+            sb.AppendLine(tests.Count == 0 ? "None in this window." : FaqTools.Table(["When", "WAN", "Down (Mbps)", "Up (Mbps)", "Latency (ms)"], tests.Select(x =>
+                new[] { Millis(Long(x, "time"), zone.Zone), V(x, "wan_networkgroup"), V(x, "download_mbps"), V(x, "upload_mbps"), V(x, "latency_ms") })));
+        }
+
+        var events = await StepJson(sb, "WAN events", () => console.ConsoleJsonAsync(HttpMethod.Post, $"/v2/api/site/{siteRef}/system-log/all",
+            LogQuery(Window(hours), 15, 0, ["INTERNET_AND_WAN"], [], [], null), ct));
+        if (events is { } ev)
+            sb.AppendLine($"## WAN events ({Long(ev, "total_element_count") ?? 0} in the last {hours} h, newest first)").AppendLine(LogTable(Array(ev, "data").Take(15).ToList(), zone.Zone));
+    });
+
+    [McpServerTool(Name = "wifi_health_faq", Title = "Wi-Fi health", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
+    [Description("[Composite] Wi-Fi health per access point and radio: channel, width, transmit power, clients, channel utilisation and interference, retry rate and satisfaction, "
+                 + "how many neighbouring networks are strong on the same channel, which APs are offline, and recent channel changes and radar events. "
+                 + "Problems are flagged (busy channel, interference, high retries). Use for 'why is Wi-Fi slow' or 'which channel should this AP use'.")]
+    public Task<string> WifiHealth(
+        [Description("Site UUID or name. Omit for the configured site.")] string? siteId = null,
+        CancellationToken ct = default) => Run(siteId, ct, async (siteRef, zone, sb) =>
+    {
+        var devices = await Step(sb, "Access points", () => console.ConsoleDataAsync($"/api/s/{siteRef}/stat/device", ct));
+        if (devices is null) return;
+        var aps = devices.Where(d => V(d, "type") == "uap").ToList();
+        var neighbours = await Step(sb, "Neighbouring networks", () => console.ConsoleDataAsync($"/api/s/{siteRef}/stat/rogueap?within=24", ct)) ?? [];
+
+        var online = aps.Where(a => V(a, "state") == "1").ToList();
+        sb.AppendLine($"## Radios: {online.Count} access point(s) online");
+        sb.AppendLine(FaqTools.Table(["AP", "Band", "Channel", "Width (MHz)", "Tx power", "Clients", "Channel use %", "Interference %", "Retries %", "Satisfaction", "Neighbours on channel (≥ -80 dBm)", "Flags"],
+            online.SelectMany(ap => Array(ap, "radio_table_stats").Select(r =>
+            {
+                var strong = neighbours.Where(n => V(n, "ap_mac") == V(ap, "mac") && V(n, "channel") == V(r, "channel") && (Dbl(n, "signal") ?? -100) >= -80).Select(n => V(n, "bssid")).Distinct().Count();
+                var flags = new List<string>();
+                if ((Dbl(r, "cu_total") ?? 0) >= 50) flags.Add("busy channel");
+                if ((Dbl(r, "cu_interf") ?? 0) >= 30) flags.Add("interference");
+                if ((Dbl(r, "tx_retries_pct") ?? 0) >= 15) flags.Add("high retries");
+                if (Dbl(r, "satisfaction") is >= 0 and < 80) flags.Add("low satisfaction");
+                return new[] { V(ap, "name"), Band(V(r, "radio")), V(r, "channel"), V(r, "bw"), V(r, "tx_power"), V(r, "num_sta"), V(r, "cu_total"), V(r, "cu_interf"),
+                    V(r, "tx_retries_pct"), Dbl(r, "satisfaction") is >= 0 ? V(r, "satisfaction") : "", $"{strong} neighbour(s)", string.Join(", ", flags) };
+            }))));
+        var offline = aps.Where(a => V(a, "state") != "1").ToList();
+        if (offline.Count > 0)
+            sb.AppendLine($"**Not online ({offline.Count}):** " + string.Join(", ", offline.Select(a => $"{V(a, "name")} ({V(a, "model")}, {DeviceState(V(a, "state"))})"))).AppendLine();
+
+        var events = await StepJson(sb, "Radio events", () => console.ConsoleJsonAsync(HttpMethod.Post, $"/v2/api/site/{siteRef}/system-log/all",
+            LogQuery(Window(24), 15, 0, [], ["AP_CHANGED_CHANNELS", "AP_DETECTED_RADAR"], [], null), ct));
+        if (events is { } ev)
+            sb.AppendLine($"## Channel changes and radar, last 24 h ({Long(ev, "total_element_count") ?? 0})").AppendLine(LogTable(Array(ev, "data").Take(15).ToList(), zone.Zone));
+    });
+
+    [McpServerTool(Name = "client_diagnostics_faq", Title = "Client diagnostics", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
+    [Description("[Composite] Everything about one client: identity and vendor, its IP and any fixed-IP reservation, how it connects (switch and exact port with link speed, "
+                 + "or the AP, SSID, band, channel, signal, noise, rates and retries), its quality score, and its recent system-log events (connects, disconnects, roams). "
+                 + "Finds clients that are offline too (seen in the last 30 days). Use for 'why does this device keep dropping' or 'where is this device plugged in'.")]
+    public Task<string> ClientDiagnostics(
+        [Description("Client name or hostname (partial match), IP address or MAC address.")] string client,
+        [Description("How far back to read its events, in hours (1 to 720). Default 24.")] int hours = 24,
+        [Description("Site UUID or name. Omit for the configured site.")] string? siteId = null,
+        CancellationToken ct = default) => Run(siteId, ct, async (siteRef, zone, sb) =>
+    {
+        var q = (client ?? "").Trim();
+        bool Matches(JsonElement x, params string[] names) =>
+            string.Equals(V(x, "mac"), q, StringComparison.OrdinalIgnoreCase) || V(x, "ip") == q || V(x, "last_ip") == q
+            || names.Any(n => V(x, n).Contains(q, StringComparison.OrdinalIgnoreCase) && q.Length > 0);
+
+        var stations = await console.ConsoleDataAsync($"/api/s/{siteRef}/stat/sta", ct);
+        var found = stations.Where(x => Matches(x, "name", "hostname")).ToList();
+        var online = found.Count > 0;
+        if (!online)
+            found = (await console.ConsoleDataAsync($"/v2/api/site/{siteRef}/clients/history?onlyNonBlocked=true&withinHours={MaxHours}", ct))
+                .Where(x => Matches(x, "name", "display_name", "hostname")).ToList();
+        if (found.Count == 0)
+        {
+            sb.AppendLine($"No client matches '{client}' among connected clients or those seen in the last 30 days.");
+            return;
+        }
+        if (found.Count > 1)
+        {
+            sb.AppendLine($"'{client}' matches {found.Count} clients; use the IP or MAC:").AppendLine(FaqTools.Table(["Name", "IP", "MAC", "State"],
+                found.Select(x => new[] { Name(x), First(V(x, "ip"), V(x, "last_ip")), V(x, "mac"), online ? "online" : "offline" })));
+            return;
+        }
+
+        var c = found[0];
+        sb.AppendLine($"## {Name(c)} ({(online ? "online" : "offline")})");
+        sb.AppendLine($"- MAC {V(c, "mac")}, vendor {First(V(c, "oui"), "unknown")}, hostname {First(V(c, "hostname"), "none")}.");
+        sb.AppendLine($"- Network {First(V(c, "network"), V(c, "last_connection_network_name"), V(c, "network_name"))}, IP {First(V(c, "ip"), V(c, "last_ip"), "none")}.");
+        sb.AppendLine(Bool(c, "use_fixedip") ? $"- Fixed IP reservation: {V(c, "fixed_ip")}." : "- Fixed IP reservation: none.");
+        if (online)
+            sb.AppendLine($"- Connected for {Duration(Long(c, "uptime"))}; satisfaction {First(V(c, "satisfaction"), "?")} %.");
+        else
+            sb.AppendLine($"- Offline. Last seen {Seconds(Long(c, "last_seen"), zone.Zone)} ({zone.Name}) on {First(V(c, "last_uplink_name"), "an unknown device")}.");
+        sb.AppendLine();
+
+        if (online)
+        {
+            sb.AppendLine("## Connection");
+            if (Bool(c, "is_wired"))
+                sb.AppendLine($"Wired to {First(V(c, "last_uplink_name"), "a switch")} port {First(V(c, "sw_port"), "?")} at {First(V(c, "wired_rate_mbps"), "?")} Mbps.");
+            else
+            {
+                var signal = Dbl(c, "signal");
+                var retries = Dbl(c, "wifi_tx_retries_percentage");
+                sb.AppendLine($"Wi-Fi '{V(c, "essid")}' on {V(c, "last_uplink_name")}: {Band(V(c, "radio"))}, channel {V(c, "channel")}, {First(V(c, "channel_width"), "?")} MHz.");
+                sb.AppendLine($"Signal {V(c, "signal")} dBm, noise {V(c, "noise")} dBm; rates {Rate(c, "tx_rate")} tx / {Rate(c, "rx_rate")} rx Mbps; retries {First(V(c, "wifi_tx_retries_percentage"), "?")} %.");
+                if (signal < -75) sb.AppendLine("**Weak signal:** below -75 dBm. Move the client or AP closer, or check what is between them.");
+                if (retries >= 15) sb.AppendLine("**High retries:** 15 % or more of transmissions are repeated, which usually means interference or a weak link.");
+            }
+            sb.AppendLine();
+        }
+
+        var events = await StepJson(sb, "Events", () => console.ConsoleJsonAsync(HttpMethod.Post, $"/v2/api/site/{siteRef}/system-log/all",
+            LogQuery(Window(hours), 15, 0, [], [], [], V(c, "mac")), ct));
+        if (events is { } ev)
+            sb.AppendLine($"## Its events, last {Window(hours).Hours} h ({Long(ev, "total_element_count") ?? 0}, newest first)").AppendLine(LogTable(Array(ev, "data").Take(15).ToList(), zone.Zone));
+    });
+
+    [McpServerTool(Name = "device_diagnostics_faq", Title = "Device diagnostics", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
+    [Description("[Composite] Hardware health of UniFi devices. Without a device: every gateway, switch and AP with state, uptime, CPU, memory, temperature, firmware updates and flagged ports. "
+                 + "With a device (name, IP or MAC): its CPU, memory, temperatures, fan, PoE budget, uplink and storage, plus every active port with speed, duplex, PoE draw, "
+                 + "errors, drops, link-down count and STP state, with bad ports flagged. Use for 'is this switch dropping packets' or 'which port is flapping'.")]
+    public Task<string> DeviceDiagnostics(
+        [Description("Device name (partial match), IP address or MAC address. Omit for a summary of every device.")] string? device = null,
+        [Description("Site UUID or name. Omit for the configured site.")] string? siteId = null,
+        CancellationToken ct = default) => Run(siteId, ct, async (siteRef, zone, sb) =>
+    {
+        var devices = await console.ConsoleDataAsync($"/api/s/{siteRef}/stat/device", ct);
+        if (string.IsNullOrWhiteSpace(device))
+        {
+            var down = devices.Count(d => V(d, "state") != "1");
+            sb.AppendLine($"## Devices: {devices.Count}, {down} not online");
+            sb.AppendLine(FaqTools.Table(["Device", "Model", "Type", "State", "Uptime", "CPU %", "Memory %", "Temp °C", "Firmware", "Issues"],
+                devices.OrderBy(d => V(d, "state") == "1").ThenBy(d => V(d, "name")).Select(d => new[]
+                {
+                    V(d, "name"), V(d, "model"), V(d, "type"), DeviceState(V(d, "state")), V(d, "state") == "1" ? Duration(Long(d, "uptime")) : "",
+                    Obj(d, "system-stats") is { } s ? V(s, "cpu") : "", Obj(d, "system-stats") is { } m ? V(m, "mem") : "", Temperature(d),
+                    Bool(d, "upgradable") ? $"{V(d, "version")} → {First(V(d, "upgrade_to_firmware"), "update available")}" : V(d, "version"),
+                    string.Join(", ", Issues(d)),
+                })));
+            sb.AppendLine("Call again with device set to one name for its ports, PoE and uplink.");
+            return;
+        }
+
+        var q = device.Trim();
+        var found = devices.Where(d => string.Equals(V(d, "mac"), q, StringComparison.OrdinalIgnoreCase) || V(d, "ip") == q
+                                       || V(d, "name").Contains(q, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (found.Count != 1)
+        {
+            sb.AppendLine(found.Count == 0 ? $"No device matches '{device}'. Devices: {string.Join(", ", devices.Select(d => V(d, "name")))}."
+                : $"'{device}' matches {found.Count} devices; use the IP or MAC:\n" + FaqTools.Table(["Name", "IP", "MAC"], found.Select(d => new[] { V(d, "name"), V(d, "ip"), V(d, "mac") })));
+            return;
+        }
+
+        var dev = found[0];
+        sb.AppendLine($"## {V(dev, "name")} ({V(dev, "model")}, {V(dev, "type")})");
+        sb.AppendLine($"- State {DeviceState(V(dev, "state"))}, IP {V(dev, "ip")}, MAC {V(dev, "mac")}, firmware {V(dev, "version")}"
+                      + (Bool(dev, "upgradable") ? $" (update to {First(V(dev, "upgrade_to_firmware"), "a newer version")} available)." : "."));
+        if (Obj(dev, "system-stats") is { } stats)
+            sb.AppendLine($"- CPU {V(stats, "cpu")} %, memory {V(stats, "mem")} %, up {Duration(Long(dev, "uptime"))}.");
+        var temps = Array(dev, "temperatures");
+        if (temps.Count > 0) sb.AppendLine("- Temperatures: " + string.Join(", ", temps.Select(t => $"{V(t, "name")} {V(t, "value")} °C")) + ".");
+        else if (V(dev, "general_temperature") is { Length: > 0 } general) sb.AppendLine($"- Temperature {general} °C.");
+        if (Bool(dev, "overheating")) sb.AppendLine("- **Overheating.**");
+        if (Bool(dev, "has_fan")) sb.AppendLine($"- Fan level {First(V(dev, "fan_level"), "?")}.");
+        if (V(dev, "total_max_power") is { Length: > 0 } budget && Dbl(dev, "total_max_power") > 0) sb.AppendLine($"- PoE: {First(V(dev, "total_used_power"), "?")} W used of {budget} W.");
+        if (Obj(dev, "uplink") is { } up && V(up, "type").Length > 0)
+            sb.AppendLine($"- Uplink: {V(up, "type")} " + (V(up, "uplink_device_name") is { Length: > 0 } upName ? $"to {upName} port {First(V(up, "uplink_remote_port"), "?")}" : $"on {First(V(up, "comment"), V(up, "name"), "?")}") + $", {First(V(up, "speed"), "?")} Mbps"
+                          + (Bool(up, "full_duplex") ? " full duplex" : "") + $", errors rx {First(V(up, "rx_errors"), "0")} / tx {First(V(up, "tx_errors"), "0")}.");
+        foreach (var s in Array(dev, "storage")) sb.AppendLine($"- Storage {V(s, "name")}: {Pct(Dbl(s, "used"), Dbl(s, "size"))} % used.");
+        sb.AppendLine();
+
+        var radios = Array(dev, "radio_table_stats");
+        if (radios.Count > 0)
+            sb.AppendLine("## Radios").AppendLine(FaqTools.Table(["Band", "Channel", "Width (MHz)", "Tx power", "Clients", "Channel use %", "Interference %", "Retries %"],
+                radios.Select(r => new[] { Band(V(r, "radio")), V(r, "channel"), V(r, "bw"), V(r, "tx_power"), V(r, "num_sta"), V(r, "cu_total"), V(r, "cu_interf"), V(r, "tx_retries_pct") })));
+
+        var ports = Array(dev, "port_table");
+        if (ports.Count > 0)
+        {
+            var active = ports.Where(p => Bool(p, "up") || PortFlags(p).Count > 0).ToList();
+            sb.AppendLine($"## Ports: {ports.Count(p => Bool(p, "up"))} up of {ports.Count}");
+            sb.AppendLine(FaqTools.Table(["Port", "Name", "Link", "Speed (Mbps)", "Duplex", "PoE W", "Rx errors", "Tx errors", "Drops", "Link downs", "STP", "Flags"], active.Select(p => new[]
+            {
+                V(p, "port_idx"), V(p, "name"), Bool(p, "up") ? "up" : Bool(p, "enable") ? "down" : "disabled", V(p, "speed"),
+                Bool(p, "up") ? (Bool(p, "full_duplex") ? "full" : "half") : "", Bool(p, "poe_enable") ? V(p, "poe_power") : "",
+                V(p, "rx_errors"), V(p, "tx_errors"), ((Dbl(p, "rx_dropped") ?? 0) + (Dbl(p, "tx_dropped") ?? 0)).ToString(CultureInfo.InvariantCulture),
+                V(p, "link_down_count"), V(p, "stp_state"), string.Join(", ", PortFlags(p)),
+            })));
+            var idle = ports.Except(active).Select(p => V(p, "port_idx")).ToList();
+            if (idle.Count > 0) sb.AppendLine($"Down with nothing to report: {string.Join(", ", idle)}.");
+        }
+    });
+
+    [McpServerTool(Name = "list_port_forwards", Title = "List port forwards", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
+    [Description("[Firewall] Port forwarding rules (not in the official API): name, enabled, protocol, the WAN port, the internal address and port it forwards to, "
+                 + "which sources may use it and on which WAN. Use for 'why can't I reach my server from outside'.")]
+    public Task<CallToolResult> PortForwards(
+        [Description("Site UUID or name. Omit for the configured site.")] string? siteId = null,
+        CancellationToken ct = default) => Strict(async () =>
+    {
+        var siteRef = await console.ResolveSiteReferenceAsync(siteId, ct);
+        var rules = await console.ConsoleDataAsync($"/api/s/{siteRef}/rest/portforward", ct);
+        if (rules.Count == 0) return "No port forwards are configured.";
+        return $"## Port forwards: {rules.Count}\n" + FaqTools.Table(["Name", "State", "Protocol", "WAN port", "Forward to", "Allowed from", "WAN", "Logged"], rules.Select(r => new[]
+        {
+            V(r, "name"), Bool(r, "enabled") ? "enabled" : "disabled", V(r, "proto") == "tcp_udp" ? "TCP/UDP" : V(r, "proto").ToUpperInvariant(),
+            V(r, "dst_port"), $"{V(r, "fwd")}:{V(r, "fwd_port")}", First(V(r, "src"), "any"), First(V(r, "pfwd_interface"), "wan"), Bool(r, "log") ? "yes" : "no",
+        }));
+    });
+
+    // --- running ----------------------------------------------------------------------------------------------------
+
+    /// <summary>Composite tools: markdown in steps, so a failure is reported and the rest still runs.</summary>
+    private async Task<string> Run(string? site, CancellationToken ct, Func<string, (TimeZoneInfo Zone, string Name), StringBuilder, Task> steps)
+    {
+        var sb = new StringBuilder();
+        try
+        {
+            var siteRef = await console.ResolveSiteReferenceAsync(site, ct);
+            await steps(siteRef, await console.ConsoleTimeZoneAsync(siteRef, ct), sb);
+        }
+        catch (Exception e) when (e is UnifiError or UnifiNotConfigured)
+        {
+            sb.AppendLine(e.Message);
+        }
+        return ToolText.Cap(sb.ToString());
+    }
+
+    /// <summary>Single-purpose tools: a failure is a tool error (isError) with the console's reason.</summary>
+    private static async Task<CallToolResult> Strict(Func<Task<string>> run)
+    {
+        try { return ToolText.Ok(await run()); }
+        catch (Exception e) when (e is UnifiError or UnifiNotConfigured) { return ToolText.Error(e.Message); }
+    }
+
+    private static async Task<T?> Step<T>(StringBuilder sb, string name, Func<Task<T>> run) where T : class
+    {
+        try { return await run(); }
+        catch (UnifiError e)
+        {
+            sb.AppendLine($"**{name} step failed:** {e.Message}").AppendLine();
+            return default;
+        }
+    }
+
+    private static async Task<JsonElement?> StepJson(StringBuilder sb, string name, Func<Task<JsonElement>> run)
+    {
+        try { return await run(); }
+        catch (UnifiError e)
+        {
+            sb.AppendLine($"**{name} step failed:** {e.Message}").AppendLine();
+            return null;
+        }
+    }
+
+    // --- the system log ---------------------------------------------------------------------------------------------
+
+    private sealed record LogWindow(int Hours, long From, long To);
+
+    private sealed record LogBody(long timestampFrom, long timestampTo, int pageSize, int pageNumber,
+        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] string[]? categories,
+        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] string[]? events,
+        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] string[]? severities,
+        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] string? searchText);
+
+    private static LogWindow Window(int hours)
+    {
+        var h = Math.Clamp(hours, 1, MaxHours);
+        var to = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        return new LogWindow(h, to - h * 3_600_000L, to);
+    }
+
+    private static LogBody LogQuery(LogWindow w, int limit, int page, string[] categories, string[] events, string[] severities, string? search) =>
+        new(w.From, w.To, Math.Clamp(limit, 1, 200), Math.Max(page, 0),
+            categories.Length == 0 ? null : categories, events.Length == 0 ? null : events, severities.Length == 0 ? null : severities,
+            string.IsNullOrWhiteSpace(search) ? null : search.Trim());
+
+    private static string[] List(string? csv) =>
+        (csv ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(s => s.ToUpperInvariant().Replace(' ', '_')).ToArray();
+
+    private static string LogTable(List<JsonElement> events, TimeZoneInfo zone) => events.Count == 0 ? "No events.\n" :
+        FaqTools.Table(["Time", "Severity", "Category", "Event", "Message"], events.Select(e => new[]
+        {
+            Millis(Long(e, "timestamp"), zone), V(e, "severity"), V(e, "category"), First(V(e, "event"), V(e, "key")), Message(e),
+        }));
+
+    /// <summary>The console stores a template ("{CLIENT} roamed from {DEVICE_FROM}…") and its parameters; this fills it in.</summary>
+    internal static string Message(JsonElement e)
+    {
+        var template = First(V(e, "message"), V(e, "message_raw"), V(e, "title_raw"));
+        var parameters = Obj(e, "parameters");
+        var text = Placeholder().Replace(template, m =>
+        {
+            var key = m.Groups[1].Value;
+            if (parameters is { } p && p.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Object)
+                return First(V(v, "name"), V(v, "id"), m.Value);
+            if (key == "ADMIN" && Obj(e, "admin") is { } admin) return V(admin, "name");
+            if (key == "IP" && V(e, "ip") is { Length: > 0 } ip) return ip;
+            if (key == "PLATFORM" && V(e, "platform") is { Length: > 0 } platform) return platform.ToLowerInvariant();
+            return m.Value;
+        });
+        text = Regex.Replace(text, @"\s+", " ").Trim();
+        return text.Length <= 300 ? text : text[..300] + "…";
+    }
+
+    [GeneratedRegex(@"\{([A-Z0-9_]+)\}")]
+    private static partial Regex Placeholder();
+
+    private static string Counts(JsonElement counts, string name) =>
+        string.Join(", ", Array(counts, name).OrderByDescending(c => Long(c, "count") ?? 0).Select(c => $"{V(c, "name")} {V(c, "count")}"));
+
+    // --- devices ----------------------------------------------------------------------------------------------------
+
+    private static List<string> PortFlags(JsonElement p)
+    {
+        var flags = new List<string>();
+        if ((Dbl(p, "rx_errors") ?? 0) + (Dbl(p, "tx_errors") ?? 0) > 0) flags.Add("errors");
+        if ((Dbl(p, "link_down_count") ?? 0) >= 5) flags.Add("flapping");
+        if (Bool(p, "up") && !Bool(p, "full_duplex")) flags.Add("half duplex");
+        if (Bool(p, "up") && Dbl(p, "speed") is > 0 and <= 100) flags.Add("slow link");
+        return flags;
+    }
+
+    private static IEnumerable<string> Issues(JsonElement d)
+    {
+        if (Bool(d, "overheating")) yield return "overheating";
+        var bad = Array(d, "port_table").Where(p => PortFlags(p).Count > 0).Select(p => V(p, "port_idx")).ToList();
+        if (bad.Count > 0) yield return $"port(s) {string.Join(", ", bad)} flagged";
+        if (Obj(d, "uplink") is { } up && (Dbl(up, "rx_errors") ?? 0) + (Dbl(up, "tx_errors") ?? 0) > 0) yield return "uplink errors";
+    }
+
+    private static string Temperature(JsonElement d)
+    {
+        var temps = Array(d, "temperatures").Select(t => Dbl(t, "value")).OfType<double>().ToList();
+        return temps.Count > 0 ? temps.Max().ToString(CultureInfo.InvariantCulture) : V(d, "general_temperature");
+    }
+
+    private static string DeviceState(string state) => state switch
+    {
+        "0" => "offline", "1" => "online", "2" => "pending adoption", "4" => "upgrading", "5" => "provisioning",
+        "6" => "heartbeat missed", "7" => "adopting", "9" => "adoption failed", "10" or "11" => "isolated", _ => $"state {state}",
+    };
+
+    // --- small readers: every value shown is read by name, never by passing an object through -----------------------
+
+    internal static string V(JsonElement e, string name, int? decimals = null)
+    {
+        if (e.ValueKind != JsonValueKind.Object || !e.TryGetProperty(name, out var v)) return "";
+        return v.ValueKind switch
+        {
+            JsonValueKind.String => v.GetString()?.Trim() ?? "",
+            JsonValueKind.Number when decimals is { } dp && v.TryGetDouble(out var d) => Math.Round(d, dp).ToString(CultureInfo.InvariantCulture),
+            JsonValueKind.Number or JsonValueKind.True or JsonValueKind.False => v.GetRawText(),
+            _ => "",
+        };
+    }
+
+    private static JsonElement? Obj(JsonElement? e, string name) =>
+        e is { ValueKind: JsonValueKind.Object } o && o.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Object ? v : null;
+
+    private static List<JsonElement> Array(JsonElement? e, string name) =>
+        e is { ValueKind: JsonValueKind.Object } o && o.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Array ? v.EnumerateArray().ToList() : [];
+
+    private static double? Dbl(JsonElement e, string name) =>
+        double.TryParse(V(e, name), NumberStyles.Float, CultureInfo.InvariantCulture, out var d) ? d : null;
+
+    private static long? Long(JsonElement e, string name) => Dbl(e, name) is { } d ? (long)d : null;
+
+    private static bool Bool(JsonElement e, string name) => V(e, name) == "true";
+
+    private static string First(params string?[] values) => values.FirstOrDefault(v => !string.IsNullOrEmpty(v)) ?? "";
+
+    private static string Name(JsonElement c) => First(V(c, "name"), V(c, "display_name"), V(c, "hostname"), V(c, "mac"));
+
+    private static string Band(string radio) => radio switch { "ng" => "2.4 GHz", "na" => "5 GHz", "6e" => "6 GHz", _ => radio };
+
+    private static string Kbps(JsonElement e, string name) => Dbl(e, name) is { } k ? Math.Round(k / 1000).ToString(CultureInfo.InvariantCulture) : "?";
+
+    private static string Rate(JsonElement e, string name) => Dbl(e, name) is { } k ? Math.Round(k / 1000, 1).ToString(CultureInfo.InvariantCulture) : "?";
+
+    private static string Avg(List<double> values) => values.Count == 0 ? "?" : Math.Round(values.Average(), 1).ToString(CultureInfo.InvariantCulture);
+
+    private static string Max(List<JsonElement> samples, string name) =>
+        samples.Select(s => Dbl(s, name)).OfType<double>().DefaultIfEmpty().Max().ToString(CultureInfo.InvariantCulture);
+
+    private static string Pct(double? part, double? whole) => part is { } p && whole is > 0 ? Math.Round(100 * p / whole.Value).ToString(CultureInfo.InvariantCulture) : "?";
+
+    private static string Millis(long? ms, TimeZoneInfo zone) =>
+        ms is { } v ? TimeZoneInfo.ConvertTime(DateTimeOffset.FromUnixTimeMilliseconds(v), zone).ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) : "?";
+
+    private static string Seconds(long? s, TimeZoneInfo zone) => s is { } v ? Millis(v * 1000, zone) : "?";
+
+    private static string Duration(long? seconds)
+    {
+        if (seconds is not { } s || s < 0) return "?";
+        var t = TimeSpan.FromSeconds(s);
+        return t.TotalDays >= 1 ? $"{(int)t.TotalDays} d {t.Hours} h" : t.TotalHours >= 1 ? $"{t.Hours} h {t.Minutes} min" : $"{t.Minutes} min";
+    }
+}

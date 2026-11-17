@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "unifi": {
+      "type": "http",
+      "url": "https://<machine>.<tailnet>.ts.net:7420/mcp"
+    }
+  }
+}

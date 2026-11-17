@@ -1,0 +1,40 @@
+# unifi-mcp with a Cloudflare tunnel, for running it yourself. See README "Run it yourself".
+#   cp .env.example .env    # then fill it in
+#   mkdir -p data run       # create these as you, so the container (PUID:PGID) can write to them
+#   docker compose up -d
+#
+# No ports are published. The server listens on two Unix sockets in ./run:
+#   public.sock  the Claude connector (Google sign-in + OAuth), reached only by the cloudflared sidecar below;
+#   mcp.sock     optional tailnet access through `tailscale serve` on the host (see README).
+# (deploy/ holds the owner's Fleet bundle; it is not used here.)
+services:
+  unifi-mcp:
+    # The image is published by this repo's GitHub workflow. Pin a version (e.g. :0.2.1) if you prefer.
+    image: ghcr.io/graf3x/unifi-mcp:latest
+    # To build from this checkout instead of pulling, uncomment these two lines:
+    # build: .
+    # pull_policy: build
+    restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
+    read_only: true
+    tmpfs:
+      - /tmp
+    env_file: .env
+    volumes:
+      - ./data:/data
+      - ./run:/run/unifi-mcp
+
+  cloudflared:
+    # 2026.11.0 (multi-arch index digest).
+    image: cloudflare/cloudflared:2026.11.0@sha256:b94b96edf2c9c4360f8879c8580cfaa99077f19c849ec595ca2f711b27d4f344
+    command: tunnel --no-autoupdate run
+    restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
+    read_only: true
+    # Only the tunnel token; the sidecar never sees the UniFi or Google values.
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set TUNNEL_TOKEN in .env}
+    volumes:
+      - ./run:/run/unifi-mcp
+    depends_on:
+      - unifi-mcp

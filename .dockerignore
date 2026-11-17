@@ -1,0 +1,16 @@
+# Only src/UnifiMcp and openapi/ are needed. Never send secrets or runtime state to the builder.
+**/bin/
+**/obj/
+.git/
+.github/
+.claude/
+.vs/
+.env
+.env.*
+config/
+data/
+run/
+deploy/
+docs/
+tests/
+tools/
