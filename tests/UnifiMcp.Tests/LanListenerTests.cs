@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.Logging;
 
 namespace UnifiMcp.Tests;
 
@@ -131,6 +132,38 @@ public sealed class LanListenerTests
     {
         await using var h = await StartAsync();
         Assert.Equal(HttpStatusCode.OK, await SendAsync(h, r => r.Headers.Add("Authorization", "Bearer " + Token)));
+    }
+
+    [Fact]
+    public async Task A_trailing_slash_is_forgiven()
+    {
+        await using var h = await StartAsync();
+        Assert.Equal(HttpStatusCode.OK, await SendAsync(h, r =>
+        {
+            r.RequestUri = new Uri("/mcp/", UriKind.Relative);
+            r.Headers.Add("Authorization", "Bearer " + Token);
+        }));
+        Assert.Equal("ok", await h.Http.GetStringAsync("/healthz/"));
+        using var other = new HttpRequestMessage(HttpMethod.Get, "/mcp/icon-32.png");
+        other.Headers.Add("Authorization", "Bearer " + Token);
+        Assert.Equal(HttpStatusCode.NotFound, (await h.Http.SendAsync(other)).StatusCode);
+    }
+
+    [Fact]
+    public async Task An_empty_allow_list_is_not_a_warning_when_the_lan_listener_is_on()
+    {
+        var logs = new LogCapture();
+        var dir = Directory.CreateTempSubdirectory("unifi-mcp-lan").FullName;
+        var s = Harness.NewSettings(dir) with { LanListen = "http://0.0.0.0:7420", LanAccessToken = Token, AllowedLoginsValue = null };
+        File.WriteAllText(s.AllowedLoginsFile, "");
+        await using (var app = McpHost.Build(s, new FakeUnifi(), b => { b.WebHost.UseTestServer(); b.Logging.AddProvider(logs); }, _ => Listener.Lan))
+        {
+            await app.StartAsync();
+            await app.StopAsync();
+        }
+        Directory.Delete(dir, recursive: true);
+        Assert.DoesNotContain(logs.Entries, e => e.Level == LogLevel.Warning && e.Line.Contains("every caller is refused"));
+        Assert.Contains(logs.Lines, l => l.Contains("the LAN listener takes its token instead"));
     }
 
     [Fact]

@@ -135,8 +135,12 @@ public static class McpHost
                 app.Logger.LogWarning("The LAN listener on {Listen} is plain HTTP: anyone on the network who sees its traffic sees MCP_LAN_ACCESS_TOKEN, and the token gives full access to the tools. Use it only on a network you trust, or put a TLS proxy in front.", lan);
             if (Listeners.UnixPath(settings.PublicListen) is { } pub && Listeners.UnixPath(settings.Listen) is not null && !SocketPaths(settings).Contains(pub))
                 app.Logger.LogWarning("Public socket not bound: the folder of {Socket} does not exist.", pub);
-            if (settings.AllowedLogins().Count == 0)
+            // With the LAN listener on, an empty allow-list is the normal state: only the tailnet listener uses it.
+            if (settings.AllowedLogins().Count == 0 && settings.LanListen is null)
                 app.Logger.LogWarning("No allowed logins yet ({File}): every caller is refused.", settings.AllowedLoginsFile);
+            else if (settings.AllowedLogins().Count == 0)
+                app.Logger.LogInformation("No allowed logins ({File}): callers on {Listen} are refused; the LAN listener takes its token instead.",
+                    settings.AllowedLoginsFile, settings.Listen);
         });
         return app;
     }

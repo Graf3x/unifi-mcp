@@ -63,9 +63,9 @@ public sealed class PublicGate(RequestDelegate next, Settings settings, Connecto
                 break;
 
             case Listener.Lan:
-                // Token-only: the MCP endpoint and the health check, nothing else. The Tailscale header means nothing here.
-                if (!ctx.Request.Path.Equals("/mcp", StringComparison.OrdinalIgnoreCase)
-                    && !ctx.Request.Path.Equals("/healthz", StringComparison.OrdinalIgnoreCase))
+                // Token-only: the MCP endpoint and the health check, nothing else (a trailing slash is forgiven, as routing
+                // forgives it). The Tailscale header means nothing here.
+                if (!LanPath(ctx.Request.Path, "/mcp") && !LanPath(ctx.Request.Path, "/healthz"))
                 {
                     ctx.Response.StatusCode = StatusCodes.Status404NotFound;
                     return;
@@ -83,6 +83,9 @@ public sealed class PublicGate(RequestDelegate next, Settings settings, Connecto
         }
         await next(ctx);
     }
+
+    private static bool LanPath(PathString p, string path) =>
+        p.Equals(path, StringComparison.OrdinalIgnoreCase) || p.Equals(path + "/", StringComparison.OrdinalIgnoreCase);
 
     private static bool HostMatches(HostString host, Uri baseUrl) =>
         string.Equals(host.Host, baseUrl.Host, StringComparison.OrdinalIgnoreCase)

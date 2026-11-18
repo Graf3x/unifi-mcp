@@ -10,7 +10,7 @@ follow [Semantic Versioning](https://semver.org/).
 - A token-only LAN listener, off by default (`MCP_LAN_LISTEN`, `MCP_LAN_ACCESS_TOKEN`): Claude Code on other machines on
   your network can connect with no tunnel, domain or Tailscale. It serves only `/mcp` and `/healthz`, accepts only its
   own token, and the server refuses to start with it on and no token. `docker-compose.lan.yml` and guide 4 in the README
-  set it up. Suggested in [#1](https://github.com/Graf3x/unifi-mcp/issues/1).
+  set it up. `/mcp/` with a trailing slash works too. Suggested in [#1](https://github.com/Graf3x/unifi-mcp/issues/1).
 - The setup page knows the LAN setup: guide 4 skips the connector, tunnel and sign-in checks, and a LAN check shows the
   `claude mcp add` command.
 - A container health check: `dotnet unifi-mcp.dll --healthcheck` asks `/healthz` on `mcp.sock`, and the image runs it, so
