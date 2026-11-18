@@ -90,7 +90,7 @@ There are four ways to run it. Pick the one that matches where you use Claude; e
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/setup-paths-dark.svg">
-  <img alt="Four ways in. Guide 1: Claude Code on the same machine connects to unifi-mcp on 127.0.0.1:5199. Guides 2 and 3: Claude on the web, desktop or phone reaches Cloudflare at unifi.example.com, which forwards through a cloudflared tunnel container to unifi-mcp's public.sock. Guide 3, optional: Claude Code on your tailnet connects through tailscale serve to mcp.sock. Guide 4: Claude Code on another machine on your network connects over HTTP to unifi-mcp on 0.0.0.0:7420. unifi-mcp talks to the UniFi console with a pinned TLS certificate and an API key." src="docs/images/setup-paths-light.svg" width="100%">
+  <img alt="Four ways in. Guide 1: Claude Code on the same machine connects to unifi-mcp on 127.0.0.1:5199. Guides 2 and 3: Claude on the web, desktop or phone reaches Cloudflare at unifi.example.com, which forwards through a cloudflared tunnel container to unifi-mcp's public.sock. Guide 3, optional: Claude Code on your tailnet connects through tailscale serve to mcp.sock. Guide 4: Claude Code on another machine on your network connects over HTTP to port 7420 at the server's LAN address, where unifi-mcp listens on 0.0.0.0:7420. unifi-mcp talks to the UniFi console with a pinned TLS certificate and an API key." src="docs/images/setup-paths-light.svg" width="100%">
 </picture>
 
 | | [Guide 1: Quick local](#guide-1-quick-local-setup) | [Guide 2: claude.ai](#guide-2-claudeai-with-a-sign-in-code) | [Guide 3: Full](#guide-3-full-setup-with-google-sign-in) | [Guide 4: LAN](#guide-4-claude-code-across-your-lan) |
