@@ -43,6 +43,13 @@ public sealed class SignInCodes(TimeProvider time)
         }
     }
 
+    /// <summary>The live code, if there is one; never issues a new one (the setup page waits with this).</summary>
+    public Active? Peek()
+    {
+        lock (_lock)
+            return _code is not null && time.GetUtcNow() < _expiresAt ? new(_code, _expiresAt) : null;
+    }
+
     /// <summary>True once for the live code (spaces and the dash are ignored); a wrong guess counts toward <see cref="MaxAttempts"/>.</summary>
     public bool TryRedeem(string? presented)
     {
@@ -140,8 +147,8 @@ public static class CodeSignIn
         var body = $"""
             <h1>Sign in to UniFi Network</h1>
             {problem}
-            <p>Enter the sign-in code from the server's log. It looks like <code>01234-56789</code>, works once, and expires after
-            {(int)SignInCodes.Lifetime.TotalMinutes} minutes. With Docker Compose: <code>docker compose logs unifi-mcp</code>.</p>
+            <p>Enter the sign-in code from the server's setup page or its log. It looks like <code>01234-56789</code>, works once,
+            and expires after {(int)SignInCodes.Lifetime.TotalMinutes} minutes. With Docker Compose: <code>docker compose logs unifi-mcp</code>.</p>
             <form method="post" action="{Path}">
               <input type="hidden" name="returnUrl" value="{Pages.Encode(returnUrl)}">
               <input name="code" inputmode="numeric" autocomplete="one-time-code" required autofocus>

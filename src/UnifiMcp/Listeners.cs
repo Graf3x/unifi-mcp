@@ -5,7 +5,7 @@ using System.Collections.Concurrent;
 namespace UnifiMcp;
 
 /// <summary>Which of the server's listeners a request arrived on. Decided by the socket, never by anything the caller sends.</summary>
-public enum Listener { Tailnet, Public, Unknown }
+public enum Listener { Tailnet, Public, Setup, Unknown }
 
 public static class Listeners
 {
@@ -22,6 +22,7 @@ public static class Listeners
                 if (UnixPath(s.Listen) is { } tail && string.Equals(path, tail, StringComparison.Ordinal)) return Listener.Tailnet;
                 return Listener.Unknown;
             case IPEndPoint ip:
+                if (s.SetupPage && SetupEndpoint(s.SetupListen)?.Port == ip.Port) return Listener.Setup;
                 if (PortOf(s.PublicListen) == ip.Port) return Listener.Public;
                 if (PortOf(s.Listen) == ip.Port) return Listener.Tailnet;
                 return Listener.Unknown;
@@ -33,13 +34,34 @@ public static class Listeners
     public static string? UnixPath(string listen) =>
         listen.StartsWith("unix:", StringComparison.Ordinal) ? listen["unix:".Length..] : null;
 
-    private static int? PortOf(string listen)
+    /// <summary>The ports of every URL in a TCP listen value (they may be separated by semicolons).</summary>
+    public static IEnumerable<int> PortsOf(string listen) =>
+        UnixPath(listen) is not null ? [] :
+        listen.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(u => u.Replace("://*", "://localhost", StringComparison.Ordinal).Replace("://+", "://localhost", StringComparison.Ordinal))
+            .Select(u => Uri.TryCreate(u, UriKind.Absolute, out var uri) && uri.Port > 0 ? uri.Port : 0)
+            .Where(p => p > 0);
+
+    public static int? PortOf(string listen)
     {
         if (UnixPath(listen) is not null) return null;
         var first = listen.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault();
         if (first is null) return null;
         first = first.Replace("://*", "://localhost", StringComparison.Ordinal).Replace("://+", "://localhost", StringComparison.Ordinal);
         return Uri.TryCreate(first, UriKind.Absolute, out var uri) && uri.Port > 0 ? uri.Port : null;
+    }
+
+    /// <summary>
+    /// MCP_SETUP_LISTEN parsed: http, an IP address (0.0.0.0 and [::] for every interface) or localhost, and an explicit port.
+    /// Null for anything else, so a host name can never widen where the page answers.
+    /// </summary>
+    public static (IPAddress? Address, int Port)? SetupEndpoint(string listen)
+    {
+        if (!Uri.TryCreate(listen, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttp || uri.IsDefaultPort
+            || uri.AbsolutePath != "/" || uri.Query.Length > 0 || uri.UserInfo.Length > 0 || uri.Port is < 1 or > 65535)
+            return null;
+        if (string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase)) return (null, uri.Port);
+        return IPAddress.TryParse(uri.Host.Trim('[', ']'), out var ip) ? (ip, uri.Port) : null;
     }
 
     /// <summary>The first middleware: records the listener on the request so later steps cannot disagree about it.</summary>

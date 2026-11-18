@@ -10,6 +10,9 @@ WORKDIR /src
 COPY src/UnifiMcp/UnifiMcp.csproj src/UnifiMcp/
 RUN dotnet restore src/UnifiMcp/UnifiMcp.csproj -a "$TARGETARCH"
 COPY openapi/ openapi/
+# The setup page carries the README's setup guides and diagrams.
+COPY README.md ./
+COPY docs/images/ docs/images/
 COPY src/UnifiMcp/ src/UnifiMcp/
 RUN dotnet publish src/UnifiMcp/UnifiMcp.csproj -c Release -a "$TARGETARCH" --self-contained false --no-restore -o /app \
  && chmod -R a+rX /app

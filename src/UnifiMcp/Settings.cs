@@ -54,6 +54,14 @@ public sealed partial record Settings
     public SignInMode SignIn { get; init; } = SignInMode.Google;
     /// <summary>MCP_ACCESS_TOKEN: a fixed credential /mcp accepts on the public side next to OAuth tokens. Null means none.</summary>
     public string? AccessToken { get; init; }
+    /// <summary>
+    /// MCP_SETUP_PAGE: the setup page, on its own listener (<see cref="SetupListen"/>) and never on the public one. From the
+    /// environment it is on unless MCP_SIGNIN=google with a public URL (guide 3); a Settings built in code has it off.
+    /// </summary>
+    public bool SetupPage { get; init; }
+    /// <summary>MCP_SETUP_LISTEN: http://&lt;IP address or localhost&gt;:&lt;port&gt;. Plain TCP; the page asks for its own key.</summary>
+    public string SetupListen { get; init; } = DefaultSetupListen;
+    public const string DefaultSetupListen = "http://127.0.0.1:5198";
 
     private const int MinDataKeyLength = 16;
     public const int MinAccessTokenLength = 32;
@@ -88,11 +96,23 @@ public sealed partial record Settings
             "ca" => CertTrust.Ca,
             _ => throw new ArgumentException("UNIFI_CERT_TRUST must be pin or ca."),
         };
+        var setupPage = Blank(env("MCP_SETUP_PAGE"))?.ToLowerInvariant() switch
+        {
+            null => signIn != SignInMode.Google || publicBase is null, // off by default only in the full (Google) setup
+            "on" or "true" => true,
+            "off" or "false" => false,
+            _ => throw new ArgumentException("MCP_SETUP_PAGE must be on or off."),
+        };
+        var setupListen = Blank(env("MCP_SETUP_LISTEN")) ?? d.SetupListen;
+        if (Listeners.SetupEndpoint(setupListen) is not { } setupEndpoint)
+            throw new ArgumentException("MCP_SETUP_LISTEN must be http://<IP address or localhost>:<port>, for example http://127.0.0.1:5198.");
         var accessToken = Blank(env("MCP_ACCESS_TOKEN"));
         if (accessToken is { Length: < MinAccessTokenLength })
             throw new ArgumentException($"MCP_ACCESS_TOKEN must be at least {MinAccessTokenLength} characters.");
-        return d with
+        var built = d with
         {
+            SetupPage = setupPage,
+            SetupListen = setupListen,
             BaseUrl = parsed,
             SignIn = signIn,
             Trust = trust,
@@ -116,7 +136,13 @@ public sealed partial record Settings
             DataDir = Blank(env("MCP_DATA_DIR")) ?? d.DataDir,
             DataKey = Blank(env("UNIFI_MCP_DATA_KEY")),
         };
+        if (built.SetupPage && Listeners.PortsOf(built.Listen).Concat(Listeners.PortsOf(built.PublicListen)).Contains(setupEndpoint.Port))
+            throw new ArgumentException("MCP_SETUP_LISTEN needs a port of its own, not the one in MCP_LISTEN or MCP_PUBLIC_LISTEN.");
+        return built;
     }
+
+    /// <summary>Whether a pin was given at all, valid or not, so the setup page can tell a typo from nothing.</summary>
+    public bool CertPinGiven() => (Blank(CertSha256) ?? ReadFile(CertPinFile)) is not null;
 
     /// <summary>The UniFi API key: the environment value if set, else the owner-supplied file.</summary>
     public string? ApiKey() => Blank(ApiKeyValue) ?? ReadFile(ApiKeyFile);
@@ -165,7 +191,8 @@ public sealed partial record Settings
           .Append($"AllowLoopbackTcp = {AllowLoopbackTcp}, ApiKeyValue = {Mask(ApiKeyValue)}, PublicListen = {PublicListen}, ")
           .Append($"PublicBaseUrl = {PublicBaseUrl}, GoogleClientId = {GoogleClientId}, GoogleClientSecret = {Mask(GoogleClientSecret)}, ")
           .Append($"GoogleAuthority = {GoogleAuthority}, AllowedGoogleEmailsFile = {AllowedGoogleEmailsFile}, ")
-          .Append($"DataDir = {DataDir}, DataKey = {Mask(DataKey)}, SignIn = {SignIn}, AccessToken = {Mask(AccessToken)}, Trust = {Trust}");
+          .Append($"DataDir = {DataDir}, DataKey = {Mask(DataKey)}, SignIn = {SignIn}, AccessToken = {Mask(AccessToken)}, Trust = {Trust}, ")
+          .Append($"SetupPage = {SetupPage}, SetupListen = {SetupListen}");
         return true;
     }
 

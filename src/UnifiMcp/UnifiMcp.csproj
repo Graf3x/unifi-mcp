@@ -11,6 +11,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Markdig" Version="1.6.0" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.15" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.OpenIdConnect" Version="10.0.15" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.15" />
@@ -25,6 +26,15 @@
 
   <ItemGroup>
     <EmbeddedResource Include="..\..\openapi\unifi-network-11.0.97.json" LogicalName="openapi.json" />
+    <EmbeddedResource Include="Setup\setup.css" LogicalName="setup/setup.css" />
+    <EmbeddedResource Include="Setup\setup.js" LogicalName="setup/setup.js" />
+  </ItemGroup>
+
+  <!-- The setup page shows the README's setup guides and their diagrams. A build without them (the owner's Fleet bundle
+       ships src/UnifiMcp only) links to the README on GitHub instead. -->
+  <ItemGroup Condition="Exists('..\..\README.md')">
+    <EmbeddedResource Include="..\..\README.md" LogicalName="setup/README.md" />
+    <EmbeddedResource Include="..\..\docs\images\*.svg" LogicalName="setup/images/%(Filename)%(Extension)" />
   </ItemGroup>
 
 </Project>

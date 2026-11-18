@@ -1,7 +1,7 @@
 namespace UnifiMcp;
 
 /// <summary>
-/// Keeps the two listeners apart. Runs before authentication: an unknown listener is refused outright, a public
+/// Keeps the listeners apart. Runs before authentication: an unknown listener is refused outright, a public
 /// request never carries the Tailscale header on to the tailnet handler, and each side only sees its own routes.
 /// </summary>
 public sealed class PublicGate(RequestDelegate next, Settings settings, ConnectorState state)
@@ -45,8 +45,25 @@ public sealed class PublicGate(RequestDelegate next, Settings settings, Connecto
                 }
                 break;
 
+            case Listener.Setup:
+                // The setup listener serves the setup page and nothing else: no MCP, no OAuth, no sign-in pages.
+                if (!ctx.Request.Path.StartsWithSegments(SetupPage.Path, StringComparison.OrdinalIgnoreCase))
+                {
+                    ctx.Response.StatusCode = StatusCodes.Status404NotFound;
+                    return;
+                }
+                if (!SetupPage.HostAllowed(ctx.Request.Host))
+                {
+                    ctx.Response.StatusCode = StatusCodes.Status421MisdirectedRequest;
+                    ctx.Response.ContentType = "text/plain; charset=utf-8";
+                    await ctx.Response.WriteAsync("Open the setup page as localhost or by IP address, from the link in the server's log.");
+                    return;
+                }
+                ctx.Request.Headers.Remove(CallerPolicy.LoginHeader);
+                break;
+
             case Listener.Tailnet:
-                if (OnlyPublic(ctx.Request.Path))
+                if (OnlyPublic(ctx.Request.Path) || ctx.Request.Path.StartsWithSegments(SetupPage.Path, StringComparison.OrdinalIgnoreCase))
                 {
                     ctx.Response.StatusCode = StatusCodes.Status404NotFound;
                     return;

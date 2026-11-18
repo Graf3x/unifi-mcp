@@ -39,13 +39,23 @@ public static class CallerPolicy
 /// <summary>
 /// Refuses what only a browser sends: any Origin header, and POSTs that are not JSON. MCP clients send neither.
 /// The public listener's OAuth and sign-in pages are the exception: a browser talks to them, so they accept the
-/// connector's own origin and form posts.
+/// connector's own origin and form posts, and the setup page its own origin.
 /// </summary>
 public static class RequestGuard
 {
-    public static int? Check(Listener listener, string path, string method, string? origin, string? contentType, string? publicOrigin)
+    /// <param name="selfOrigin">The request's own origin: the setup page's scripts call back to it.</param>
+    public static int? Check(Listener listener, string path, string method, string? origin, string? contentType, string? publicOrigin,
+        string? selfOrigin = null)
     {
         var media = contentType?.Split(';')[0].Trim();
+        if (listener == Listener.Setup)
+        {
+            if (!string.IsNullOrEmpty(origin) && !string.Equals(origin, selfOrigin, StringComparison.OrdinalIgnoreCase))
+                return StatusCodes.Status403Forbidden;
+            if (HttpMethods.IsPost(method) && !string.Equals(media, "application/json", StringComparison.OrdinalIgnoreCase))
+                return StatusCodes.Status415UnsupportedMediaType;
+            return null;
+        }
         var mcp = new PathString(path);
         var browserPage = listener == Listener.Public
             && !mcp.Equals("/mcp", StringComparison.OrdinalIgnoreCase)

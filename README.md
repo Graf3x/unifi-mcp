@@ -60,6 +60,9 @@ Anything else the API offers, Claude finds with `search_operations` and runs wit
     after the owner signs in (see [guide 2](#guide-2-claudeai-with-a-sign-in-code) and [guide 3](#guide-3-full-setup-with-google-sign-in)), and, if you set one, the fixed `MCP_ACCESS_TOKEN`.
   - `mcp.sock`, optional tailnet access: reached through `tailscale serve`, which stamps `Tailscale-User-Login`; the server
     checks it against an allow-list. The public socket ignores that header.
+- The setup page (on unless you use Google sign-in) has a listener of its own, `127.0.0.1:5198` on the host, which the
+  tunnel never reaches. It opens only from the link in the server's startup log, whose key changes on every start, so
+  it shows the sign-in code to nobody who couldn't already read it in the log.
 
 - The internal API is reached only for a fixed list of reads (anything else is refused before a request is made, writes
   on or off), and is throttled: one request at a time, identical reads within 10 s served from cache, and at most 30
@@ -88,6 +91,12 @@ There are three ways to run it. Pick the one that matches where you use Claude; 
 
 Placeholders used throughout: `192.168.1.1` is your console, `unifi.example.com` is the hostname you pick, and
 `you@example.com` is your address.
+
+**The setup page.** Once the server runs, its startup log prints a link: `Setup page: http://localhost:5198/setup?key=…`.
+Open it in a browser on the same machine. It tests each setting against the real thing (the console, its certificate,
+the API key, the tunnel, the sign-in) and says what to fix, shows the sign-in code as soon as Claude asks for one, and
+carries these guides with your own values filled in. It is on in guides 1 and 2; turn it off with `MCP_SETUP_PAGE=off`.
+On a server without a browser, forward the port first: `ssh -L 5198:localhost:5198 you@server`.
 
 ### Before you start: two values from your console
 
@@ -162,7 +171,8 @@ For Claude Code on the machine that runs the server. No domain, no tunnel, no si
    claude mcp add --transport http unifi http://127.0.0.1:5199/mcp --header "Tailscale-User-Login: me"
    ```
 
-3. Ask Claude to call `getting_started`. It should say the server is configured.
+3. Ask Claude to call `getting_started`. It should say the server is configured. If not, open the `Setup page:` link
+   the server printed when it started; its checks say what is wrong.
 
 The header's name comes from the tailnet setup, where Tailscale fills it in; here you send it yourself. Anything on this
 machine that can reach `127.0.0.1:5199` and sends that name gets in, so use this mode on a machine only you use. The server
@@ -228,7 +238,8 @@ docker compose logs unifi-mcp
 ```
 
 The startup line should read `configured, writes off, ... connector ready, sign-in code, access token off`. If it says
-`not configured (...)` it lists what is still missing. `UNIFI_MCP_DATA_KEY` wraps the OAuth signing keys in `./data`: a
+`not configured (...)` it lists what is still missing. The next line is the `Setup page:` link: open it to test every
+value, including the tunnel from the outside. `UNIFI_MCP_DATA_KEY` wraps the OAuth signing keys in `./data`: a
 different value cannot open them (the connector answers 503 and nothing is overwritten). To start over, stop the app and
 delete `./data`; every client then has to connect again.
 
@@ -242,8 +253,9 @@ in your browser, and the server writes a one-time code to its log as the page lo
   <img alt="Signing in with a code. 1: you add the custom connector in Claude. 2: Claude opens the sign-in page in your browser. 3: the browser loads the page from unifi-mcp. 4: unifi-mcp writes a one-time code to its log, for example Sign-in code 01234-56789. 5: you copy it from docker compose logs unifi-mcp. 6: you enter the code in the browser and approve. 7: Claude is connected and can call the tools." src="docs/images/code-sign-in-light.svg" width="100%">
 </picture>
 
-Run `docker compose logs unifi-mcp`, look for `Sign-in code 01234-56789`, enter it and approve, then ask Claude to call
-`getting_started`. A code works once, expires after 10 minutes, and is thrown away after 5 wrong tries; at most 10 new
+The code also shows on the setup page the moment the sign-in page loads, so with that page open you don't need the log.
+Otherwise run `docker compose logs unifi-mcp` and look for `Sign-in code 01234-56789`. Enter it and approve, then ask
+Claude to call `getting_started`. A code works once, expires after 10 minutes, and is thrown away after 5 wrong tries; at most 10 new
 codes are issued per hour.
 
 Claude stays signed in (1-hour tokens refreshed in the background; a refresh token lasts 30 days from its last use).
@@ -328,6 +340,11 @@ To build from your checkout instead of pulling the published image, uncomment `b
 - 421: the request reached the server under another hostname. `MCP_PUBLIC_BASE_URL` must match the tunnel's public
   hostname exactly.
 - The tunnel never connects: the host may be blocked from Cloudflare on outbound port 7844.
+- Start with the setup page: its checks name most of the problems below and link to the step that fixes each.
+- The setup page says it is locked: open the `Setup page:` link from the server's latest start. The key changes each
+  time the server starts.
+- 421 from the setup page: open it as `localhost` or by IP address (`http://192.168.1.20:5198`), not by a host
+  name; that refusal is what keeps other sites from reaching it through DNS tricks.
 - "does not match the pin": the console has a new certificate; see [Before you start](#before-you-start-two-values-from-your-console).
 - "not trusted" with `UNIFI_CERT_TRUST=ca`: the console's certificate is not from a CA the server trusts, has expired, or was not
   issued for the host in `UNIFI_URL`; the message says which.
@@ -358,6 +375,7 @@ All settings come from the environment (`.env` with Docker Compose). After chang
 | `MCP_ALLOWED_LOGINS` | none | Logins allowed on the tailnet socket, or in [guide 1](#guide-1-quick-local-setup). |
 | `TUNNEL_TOKEN` | none | Read by the `cloudflared` container, not the server. |
 | `PUID`, `PGID` | `1000` | The user and group the containers run as. |
+| `MCP_SETUP_PAGE` | on, except with Google sign-in and a public URL | `off` turns the setup page off; `on` turns it on in guide 3. |
 
 <details>
 <summary>Advanced: files and listeners</summary>
@@ -372,6 +390,7 @@ All settings come from the environment (`.env` with Docker Compose). After chang
 | `MCP_PUBLIC_LISTEN` | `unix:/run/unifi-mcp/public.sock` | The connector's listener. |
 | `MCP_ALLOW_LOOPBACK_TCP` | `false` | Allows a loopback `MCP_LISTEN`, as in guide 1. |
 | `MCP_DATA_DIR` | `/data` | Where the connector keeps its sign-in store and keys. |
+| `MCP_SETUP_LISTEN` | `http://127.0.0.1:5198` | The setup page's own listener: an IP address (or `localhost`) and a port. `docker-compose.yml` sets `http://0.0.0.0:5198` in the container and publishes it on the host's `127.0.0.1` only. |
 
 </details>
 

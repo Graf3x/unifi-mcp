@@ -5,7 +5,13 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
-Nothing yet.
+### Added
+
+- A setup page, on its own listener at `http://localhost:5198` and opened from a link in the startup log. It tests
+  each setting live (the console, its certificate, the API key, the site, the connector, the tunnel from the outside,
+  the sign-in and the tailnet logins) and says what to fix, shows the sign-in code as soon as Claude's sign-in page
+  asks for one, and carries the README's setup guides with the server's own values filled in. On unless
+  `MCP_SIGNIN=google` with a public URL; `MCP_SETUP_PAGE` and `MCP_SETUP_LISTEN` change that.
 
 ## 0.4.0
 

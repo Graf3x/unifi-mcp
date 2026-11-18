@@ -41,9 +41,10 @@ public sealed class PublicHarness : IAsyncDisposable
     /// <param name="configure">Runs on the builder after the harness's own setup (extra services, log levels).</param>
     /// <param name="signIn">MCP_SIGNIN. In code mode no Google value or allow-list is set at all.</param>
     /// <param name="accessToken">MCP_ACCESS_TOKEN, or none.</param>
+    /// <param name="settings">Last changes to the settings before the host is built (e.g. turning the setup page on).</param>
     public static async Task<PublicHarness> StartAsync(bool configured = true, string? dataDir = null, string? dataKey = null,
         Func<HttpContext, Listener>? listenerOf = null, bool writes = false, Action<WebApplicationBuilder>? configure = null,
-        SignInMode signIn = SignInMode.Google, string? accessToken = null)
+        SignInMode signIn = SignInMode.Google, string? accessToken = null, Func<Settings, Settings>? settings = null)
     {
         var h = new PublicHarness();
         var s = Harness.NewSettings(h.Dir, writes);
@@ -62,6 +63,7 @@ public sealed class PublicHarness : IAsyncDisposable
                 s = s with { GoogleClientId = h.Google.ClientId, GoogleClientSecret = h.Google.ClientSecret };
             }
         }
+        if (settings is not null) s = settings(s);
         h.Settings = s;
         h.App = McpHost.Build(s, h.Unifi, b =>
         {

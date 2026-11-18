@@ -52,6 +52,7 @@ public static class McpHost
         // the Tailscale handler; everything else gets the configured access token (MCP_ACCESS_TOKEN, when presented) or the
         // bearer scheme, or (connector not configured) a scheme that only refuses.
         var connector = ConnectorHosting.AddConnector(builder, settings, google);
+        SetupPage.Add(builder, settings);
         var configured = connector.Configured;
         var bearerScheme = configured ? McpAuthenticationDefaults.AuthenticationScheme : PlaceholderBearerHandler.SchemeName;
         builder.Services.AddAuthentication(UnifiCallerScheme)
@@ -101,7 +102,7 @@ public static class McpHost
         app.Use(async (ctx, next) =>
         {
             if (RequestGuard.Check(ctx.ListenerOf(), ctx.Request.Path.Value ?? "/", ctx.Request.Method,
-                    ctx.Request.Headers.Origin.ToString(), ctx.Request.ContentType, publicOrigin) is { } status)
+                    ctx.Request.Headers.Origin.ToString(), ctx.Request.ContentType, publicOrigin, $"{ctx.Request.Scheme}://{ctx.Request.Host}") is { } status)
             {
                 ctx.Response.StatusCode = status;
                 return;
@@ -114,12 +115,19 @@ public static class McpHost
         app.MapGet("/healthz", () => "ok").AllowAnonymous();
         app.MapMcp("/mcp").RequireAuthorization("unifi");
         ConnectorHosting.MapConnector(app);
+        SetupPage.Map(app);
 
         var total = tools.Count + CountTools(typeof(GuideTools)) + CountTools(typeof(FaqTools)) + CountTools(typeof(DiagnosticTools));
         app.Lifetime.ApplicationStarted.Register(() =>
         {
             RestrictSocket(settings);
             app.Logger.LogInformation("{Summary}", StartupSummary(settings, total, connector));
+            if (settings.SetupPage)
+                app.Logger.LogWarning("Setup page: {Link} (opens the sign-in code and checks; the key changes on each start)",
+                    SetupPage.Link(settings, app.Services.GetRequiredService<SetupKey>()));
+            if (settings.SetupPage && Listeners.SetupEndpoint(settings.SetupListen) is ({ } address, _) && !System.Net.IPAddress.IsLoopback(address)
+                && Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER") != "true")
+                app.Logger.LogWarning("The setup page listens on {Listen}, beyond this machine, over plain HTTP: anyone on the network who sees its traffic sees the sign-in code. Prefer 127.0.0.1.", settings.SetupListen);
             if (Listeners.UnixPath(settings.PublicListen) is { } pub && Listeners.UnixPath(settings.Listen) is not null && !SocketPaths(settings).Contains(pub))
                 app.Logger.LogWarning("Public socket not bound: the folder of {Socket} does not exist.", pub);
             if (settings.AllowedLogins().Count == 0)
@@ -150,7 +158,7 @@ public static class McpHost
         if (Listeners.UnixPath(settings.Listen) is null)
         {
             var urls = Listeners.UnixPath(settings.PublicListen) is null ? $"{settings.Listen};{settings.PublicListen}" : settings.Listen;
-            builder.WebHost.UseUrls(urls);
+            builder.WebHost.UseUrls(settings.SetupPage ? $"{urls};{settings.SetupListen}" : urls);
             return;
         }
         var paths = SocketPaths(settings);
@@ -159,6 +167,11 @@ public static class McpHost
         builder.WebHost.ConfigureKestrel(k =>
         {
             foreach (var path in paths) unixConnections.Listen(k, path);
+            if (settings.SetupPage && Listeners.SetupEndpoint(settings.SetupListen) is var (address, port))
+            {
+                if (address is null) k.ListenLocalhost(port);
+                else k.Listen(address, port);
+            }
         });
     }
 

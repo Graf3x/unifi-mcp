@@ -28,6 +28,7 @@ follow [guide 1](README.md#guide-1-quick-local-setup) in the README.
 | `src/UnifiMcp/FaqTools.cs`, `DiagnosticTools.cs` | The task-oriented and diagnostics tools |
 | `src/UnifiMcp/UnifiClient.cs` | The only code that talks to the console: pinning, throttling, scrubbing |
 | `src/UnifiMcp/Connector/` | The Claude connector: OAuth, sign-in pages, token issuing |
+| `src/UnifiMcp/Setup/` | The setup page: its checks, its markup, script and styles, and the README guide it renders |
 | `tests/UnifiMcp.Tests/` | xUnit tests; `ToolContractTests` checks every tool against Claude's tool rules |
 | `tools/make-diagrams.mjs` | Draws the README diagrams in `docs/images/` |
 | `deploy/` | The maintainer's own deployment bundle; you can ignore it |
@@ -39,7 +40,8 @@ follow [guide 1](README.md#guide-1-quick-local-setup) in the README.
   `UNIFI_ALLOW_WRITES` and the per-call `confirm`.
 - **The console's internal API:** add new paths to the allow-list in `UnifiClient` only for reads, and return chosen
   fields, never the raw JSON (it carries secrets).
-- **Docs:** if you change setup steps or settings, update the README and `.env.example` together. After editing
+- **Docs:** if you change setup steps or settings, update the README and `.env.example` together. The setup page renders
+  the README's Setup section, and a test checks that every heading it links to still exists. After editing
   `tools/make-diagrams.mjs`, run `node tools/make-diagrams.mjs` and commit the regenerated SVGs.
 - **Checksums:** `deploy/SHA256SUMS` covers `src/UnifiMcp/`. If you change files there, regenerate it from the repo root:
   `sha256sum -b $(git ls-files src/UnifiMcp | LC_ALL=C sort) > deploy/SHA256SUMS`. If you can't, say so in the pull

@@ -3,9 +3,11 @@
 #   mkdir -p data run       # create these as you, so the container (PUID:PGID) can write to them
 #   docker compose up -d
 #
-# No ports are published. The server listens on two Unix sockets in ./run:
+# The server listens on two Unix sockets in ./run:
 #   public.sock  the Claude connector (Google sign-in + OAuth), reached only by the cloudflared sidecar below;
 #   mcp.sock     optional tailnet access through `tailscale serve` on the host (see README).
+# and serves the setup page on port 5198, published on the host's 127.0.0.1 only. Its link (with a key that changes on
+# every start) is in `docker compose logs unifi-mcp`. MCP_SETUP_PAGE=off in .env turns it off.
 # (deploy/ holds the owner's Fleet bundle; it is not used here.)
 services:
   unifi-mcp:
@@ -20,6 +22,11 @@ services:
     tmpfs:
       - /tmp
     env_file: .env
+    environment:
+      # Inside the container the page must listen on every interface to be published; the port below keeps it local.
+      MCP_SETUP_LISTEN: http://0.0.0.0:5198
+    ports:
+      - "127.0.0.1:5198:5198"
     volumes:
       - ./data:/data
       - ./run:/run/unifi-mcp
