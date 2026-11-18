@@ -63,11 +63,14 @@ Anything else the API offers, Claude finds with `search_operations` and runs wit
   checked against a trusted CA. There is no default pin and no way to turn verification off.
 - The API key comes from the `UNIFI_API_KEY` environment variable, falling back to `/config/unifi-api-key` only when the
   variable is unset or empty. It is never logged or returned, and is scrubbed from console errors.
-- No published ports. The server listens on two Unix sockets:
+- No published ports unless you add the LAN listener. The server listens on two Unix sockets:
   - `public.sock`, the Claude connector, reached through a Cloudflare tunnel. It takes OAuth bearer tokens, issued only
     after the owner signs in (see [guide 2](#guide-2-claudeai-with-a-sign-in-code) and [guide 3](#guide-3-full-setup-with-google-sign-in)), and, if you set one, the fixed `MCP_ACCESS_TOKEN`.
   - `mcp.sock`, optional tailnet access: reached through `tailscale serve`, which stamps `Tailscale-User-Login`; the server
     checks it against an allow-list. The public socket ignores that header.
+- The LAN listener ([guide 4](#guide-4-claude-code-across-your-lan)) is off unless `MCP_LAN_LISTEN` is set. It serves only
+  `/mcp` and `/healthz`, accepts only `MCP_LAN_ACCESS_TOKEN` (never the public token, the sign-in or the Tailscale
+  header), and the server won't start with it on and no token. It is plain HTTP; the startup log says so.
 - The setup page (on unless you use Google sign-in) has a listener of its own, `127.0.0.1:5198` on the host, which the
   tunnel never reaches. It opens only from the link in the server's startup log, whose key changes on every start, so
   it shows the sign-in code to nobody who couldn't already read it in the log.
@@ -83,27 +86,27 @@ connector is fully configured the public socket answers 503; the startup log lin
 
 ## Setup
 
-There are three ways to run it. Pick the one that matches where you use Claude; each guide stands on its own.
+There are four ways to run it. Pick the one that matches where you use Claude; each guide stands on its own.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/setup-paths-dark.svg">
   <img alt="Three ways in. Guide 1: Claude Code on the same machine connects to unifi-mcp on 127.0.0.1:5199. Guides 2 and 3: Claude on the web, desktop or phone reaches Cloudflare at unifi.example.com, which forwards through a cloudflared tunnel container to unifi-mcp's public.sock. Guide 3, optional: Claude Code on your tailnet connects through tailscale serve to mcp.sock. unifi-mcp talks to the UniFi console with a pinned TLS certificate and an API key." src="docs/images/setup-paths-light.svg" width="100%">
 </picture>
 
-| | [Guide 1: Quick local](#guide-1-quick-local-setup) | [Guide 2: claude.ai](#guide-2-claudeai-with-a-sign-in-code) | [Guide 3: Full](#guide-3-full-setup-with-google-sign-in) |
-|---|---|---|---|
-| Use it from | Claude Code on the same machine | claude.ai, Claude Desktop and the phone apps | Everything in guide 2, plus Claude Code anywhere on your tailnet |
-| You need | The .NET 10 SDK | Docker Compose and a domain on Cloudflare (free plan is fine) | Guide 2, plus a Google Cloud project and, optionally, Tailscale |
-| You sign in with | A name you allow, sent as a header | A one-time code from the server's log | A Google account on an allow-list |
-| Reachable from the internet | No | Only through the Cloudflare tunnel | Only through the Cloudflare tunnel |
+| | [Guide 1: Quick local](#guide-1-quick-local-setup) | [Guide 2: claude.ai](#guide-2-claudeai-with-a-sign-in-code) | [Guide 3: Full](#guide-3-full-setup-with-google-sign-in) | [Guide 4: LAN](#guide-4-claude-code-across-your-lan) |
+|---|---|---|---|---|
+| Use it from | Claude Code on the same machine | claude.ai, Claude Desktop and the phone apps | Everything in guide 2, plus Claude Code anywhere on your tailnet | Claude Code on other machines on your network |
+| You need | The .NET 10 SDK | Docker Compose and a domain on Cloudflare (free plan is fine) | Guide 2, plus a Google Cloud project and, optionally, Tailscale | Docker Compose |
+| You sign in with | A name you allow, sent as a header | A one-time code from the server's log | A Google account on an allow-list | A token you generate, sent as a header |
+| Reachable from the internet | No | Only through the Cloudflare tunnel | Only through the Cloudflare tunnel | No |
 
-Placeholders used throughout: `192.168.1.1` is your console, `unifi.example.com` is the hostname you pick, and
-`you@example.com` is your address.
+Placeholders used throughout: `192.168.1.1` is your console, `192.168.1.20` is the machine that runs the server,
+`unifi.example.com` is the hostname you pick, and `you@example.com` is your address.
 
 **The setup page.** Once the server runs, its startup log prints a link: `Setup page: http://localhost:5198/setup?key=…`.
 Open it in a browser on the same machine. It tests each setting against the real thing (the console, its certificate,
 the API key, the tunnel, the sign-in) and says what to fix, shows the sign-in code as soon as Claude asks for one, and
-carries these guides with your own values filled in. It is on in guides 1 and 2; turn it off with `MCP_SETUP_PAGE=off`.
+carries these guides with your own values filled in. It is on in guides 1, 2 and 4; turn it off with `MCP_SETUP_PAGE=off`.
 On a server without a browser, forward the port first: `ssh -L 5198:localhost:5198 you@server`.
 
 ### Before you start: two values from your console
@@ -328,9 +331,58 @@ claude mcp add --transport http unifi https://<machine>.<tailnet>.ts.net:7420/mc
 
 See `.mcp.json.example` for the project form.
 
+### Guide 4: Claude Code across your LAN
+
+For a server on your home network (a NAS, a mini PC) and Claude Code on other machines on the same network. No domain,
+no tunnel and no Tailscale: the server opens a listener on your network that accepts one token. Needs Docker and Docker
+Compose.
+
+1. Get the files and make a token:
+
+   ```sh
+   git clone https://github.com/Graf3x/unifi-mcp && cd unifi-mcp
+   cp .env.example .env
+   mkdir -p data run
+   openssl rand -hex 32   # paste as MCP_LAN_ACCESS_TOKEN
+   ```
+
+   In `.env`, set `UNIFI_URL`, `UNIFI_API_KEY` and `UNIFI_CERT_SHA256` from
+   [Before you start](#before-you-start-two-values-from-your-console), and `MCP_LAN_ACCESS_TOKEN` to the value you made.
+   Leave `MCP_PUBLIC_BASE_URL` and `TUNNEL_TOKEN` empty. Only `docker-compose.lan.yml` and `.env.example` are needed at
+   run time if you would rather copy those two files.
+
+2. Start it with the LAN compose file:
+
+   ```sh
+   docker compose -f docker-compose.lan.yml up -d
+   docker compose -f docker-compose.lan.yml logs unifi-mcp
+   ```
+
+   The startup line ends in `LAN http://0.0.0.0:7420`, followed by a reminder that the listener is plain HTTP. Open the
+   `Setup page:` link: it checks the console values and shows the command for the next step.
+
+3. On each machine that runs Claude Code, add the server with its address and the token:
+
+   ```sh
+   claude mcp add --transport http unifi http://192.168.1.20:7420/mcp --header "Authorization: Bearer <token>"
+   ```
+
+   Then ask Claude to call `getting_started`. Any client that speaks MCP over Streamable HTTP and can send a header works
+   the same way; `X-Api-Key: <token>` is accepted too.
+
+The listener serves `/mcp` and `/healthz` and nothing else, and accepts only `MCP_LAN_ACCESS_TOKEN`; the server refuses to
+start without one. It is plain HTTP, so anyone who can see your network's traffic can read the token, and anyone with the
+token has the same access as you. Use it on a network you trust, limit port 7420 to the machines that need it if your
+firewall can, or put a TLS proxy in front. To revoke the token, change it in `.env` and run
+`docker compose -f docker-compose.lan.yml up -d`.
+
+Already running guide 2 or 3? Add the listener to `docker-compose.yml` instead: set `MCP_LAN_ACCESS_TOKEN` in `.env` and
+uncomment the `MCP_LAN_LISTEN` and `7420:7420` lines. Its token must differ from `MCP_ACCESS_TOKEN`, so the one that
+crosses your network in plain HTTP never opens the internet-facing connector.
+
 ### Updating
 
-For guides 2 and 3:
+For guides 2, 3 and 4 (add `-f docker-compose.lan.yml` to both commands for guide 4):
 
 ```sh
 docker compose pull && docker compose up -d
@@ -345,6 +397,11 @@ To build from your checkout instead of pulling the published image, uncomment `b
   `MCP_ALLOWED_LOGINS`.
 - 503 from `https://unifi.example.com/mcp`: the connector is not configured or its keys cannot be opened; the startup log
   line says why.
+- Guide 4, 401 from `http://192.168.1.20:7420/mcp`: the header is missing, or its token isn't `MCP_LAN_ACCESS_TOKEN`
+  (`MCP_ACCESS_TOKEN` is not accepted there). No answer at all: the port isn't published, or a firewall is in the way.
+- `docker ps` shows the container as unhealthy: the server doesn't answer `/healthz` on `mcp.sock`. The image checks it
+  every 30 seconds with `dotnet unifi-mcp.dll --healthcheck`; it tells whether the server is up, not whether it is
+  configured (the setup page says that).
 - 421: the request reached the server under another hostname. `MCP_PUBLIC_BASE_URL` must match the tunnel's public
   hostname exactly.
 - The tunnel never connects: the host may be blocked from Cloudflare on outbound port 7844.
@@ -379,6 +436,7 @@ All settings come from the environment (`.env` with Docker Compose). After chang
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | none | Google OAuth web client, for `google` sign-in. |
 | `MCP_ALLOWED_GOOGLE_EMAILS` | none | Google addresses allowed to sign in, comma separated. |
 | `MCP_ACCESS_TOKEN` | none | Optional fixed token for clients that send a header; at least 32 characters. |
+| `MCP_LAN_ACCESS_TOKEN` | none | The only token the LAN listener ([guide 4](#guide-4-claude-code-across-your-lan)) accepts; at least 32 characters, not the same as `MCP_ACCESS_TOKEN`. |
 | `UNIFI_MCP_DATA_KEY` | none | Wraps the connector's signing keys in `./data`. Generate once and keep it. |
 | `MCP_ALLOWED_LOGINS` | none | Logins allowed on the tailnet socket, or in [guide 1](#guide-1-quick-local-setup). |
 | `TUNNEL_TOKEN` | none | Read by the `cloudflared` container, not the server. |
@@ -398,6 +456,7 @@ All settings come from the environment (`.env` with Docker Compose). After chang
 | `MCP_PUBLIC_LISTEN` | `unix:/run/unifi-mcp/public.sock` | The connector's listener. |
 | `MCP_ALLOW_LOOPBACK_TCP` | `false` | Allows a loopback `MCP_LISTEN`, as in guide 1. |
 | `MCP_DATA_DIR` | `/data` | Where the connector keeps its sign-in store and keys. |
+| `MCP_LAN_LISTEN` | off | The token-only LAN listener: an IP address and a port, e.g. `http://0.0.0.0:7420`. Serves `/mcp` and `/healthz` over plain HTTP; needs `MCP_LAN_ACCESS_TOKEN`. `docker-compose.lan.yml` sets it. |
 | `MCP_SETUP_LISTEN` | `http://127.0.0.1:5198` | The setup page's own listener: an IP address (or `localhost`) and a port. `docker-compose.yml` sets `http://0.0.0.0:5198` in the container and publishes it on the host's `127.0.0.1` only. |
 
 </details>
@@ -405,7 +464,8 @@ All settings come from the environment (`.env` with Docker Compose). After chang
 ## FAQ
 
 **Does it need a UI.com account or cloud access?** No. The server talks to the console over your network with a local
-API key. Claude reaches the server only the way you set up: locally, through your Cloudflare tunnel, or over Tailscale.
+API key. Claude reaches the server only the way you set up: locally, through your Cloudflare tunnel, over Tailscale, or
+over your LAN with a token.
 
 **Can Claude change my network?** Only if you set `UNIFI_ALLOW_WRITES=true`. Even then each change first comes back as a
 preview, and is sent only when Claude calls the tool again with `confirm`. You see that in the conversation.
@@ -423,8 +483,8 @@ internal API returns, such as device keys.
 The diagnostics use internal endpoints Ubiquiti can change without notice; if one moves, that tool says so and the rest
 keep working.
 
-**Can I use another MCP client?** Yes, any client that speaks MCP over Streamable HTTP. With guide 1, Tailscale or the
-access token it only needs to send a header.
+**Can I use another MCP client?** Yes, any client that speaks MCP over Streamable HTTP. With guide 1, guide 4, Tailscale
+or the access token it only needs to send a header.
 
 ## Owner's Fleet setup
 

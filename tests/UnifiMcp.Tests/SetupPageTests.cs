@@ -339,7 +339,8 @@ public sealed partial class SetupPageTests
     public async Task Every_check_passes_on_a_working_setup_and_no_answer_carries_a_secret()
     {
         const string token = "token-0123456789-0123456789-0123456789";
-        await using var s = await StartAsync(tweak: x => x with { AccessToken = token });
+        const string lanToken = "lan-token-0123456789-0123456789-01234";
+        await using var s = await StartAsync(tweak: x => x with { AccessToken = token, LanListen = "http://0.0.0.0:7420", LanAccessToken = lanToken });
         await s.UnlockAsync();
         var all = new StringBuilder(await s.Http.GetStringAsync("/setup"));
         foreach (var id in SetupChecks.Ids)
@@ -351,7 +352,7 @@ public sealed partial class SetupPageTests
         Assert.Equal([new Uri("https://unifi.example.com/healthz")], s.Outbound.Seen);
         var text = all.ToString();
         Assert.Contains("9.9.9", text);
-        foreach (var secret in new[] { Harness.ApiKey, PublicHarness.DataKey, token })
+        foreach (var secret in new[] { Harness.ApiKey, PublicHarness.DataKey, token, lanToken })
             Assert.DoesNotContain(secret, text);
     }
 

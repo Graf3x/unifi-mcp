@@ -13,9 +13,15 @@ public static class SetupHtml
     private static readonly Port[] Console =
         [new("console", "Console", "blue"), new("certificate", "Certificate", "blue"), new("apikey", "API key", "blue"), new("site", "Site", "blue")];
 
-    private static Port[] Claude(int guide) =>
-        [new("connector", "Connector", "orange"), new("tunnel", "Tunnel", "orange"), new("signin", "Sign-in", "orange"),
-         new("callers", guide == 1 ? "Claude Code" : "Tailnet", guide == 1 ? "blue" : "green")];
+    /// <summary>The ports to Claude. Guide 4 shows the LAN listener where the others show callers; elsewhere it is a fifth port.</summary>
+    private static Port[] Claude(int guide, Settings s)
+    {
+        Port[] internet = [new("connector", "Connector", "orange"), new("tunnel", "Tunnel", "orange"), new("signin", "Sign-in", "orange")];
+        var lan = new Port("lan", "LAN", "blue");
+        if (guide == 4) return [.. internet, lan];
+        var callers = new Port("callers", guide == 1 ? "Claude Code" : "Tailnet", guide == 1 ? "blue" : "green");
+        return s.LanListen is null ? [.. internet, callers] : [.. internet, callers, lan];
+    }
 
     private static string E(string s) => Pages.Encode(s);
 
@@ -28,7 +34,7 @@ public static class SetupHtml
         body.Append(Plate(s, g, codes, locked: false));
         body.Append("<main id=\"main\">");
         body.Append("<div class=\"desk\">");
-        body.Append(Checks(g));
+        body.Append(Checks(s, g));
         body.Append(Connect(s, g, connector, codes));
         body.Append("</div>");
         body.Append(Guide(guide, g));
@@ -81,12 +87,13 @@ public static class SetupHtml
             chips.Append($"<li>Guide <b>{g}</b> setup</li>");
             chips.Append(s.AllowWrites ? "<li class=\"hot\">Writes <b>on</b></li>" : "<li>Read-only</li>");
             if (s.AccessToken is not null) chips.Append("<li>Access token <b>on</b></li>");
+            if (s.LanListen is not null) chips.Append("<li>LAN listener <b>on</b></li>");
         }
 
         var ports = new StringBuilder();
-        foreach (var (name, bank) in new[] { ("To the console", Console), ("To Claude", Claude(g)) })
+        foreach (var (name, bank) in new[] { ("To the console", Console), ("To Claude", Claude(g, s)) })
         {
-            ports.Append($"<div class=\"bank\" role=\"group\" aria-label=\"{E(name)}\"><p class=\"bank-label\" aria-hidden=\"true\">{E(name)}</p><ol class=\"bank-ports\">");
+            ports.Append($"<div class=\"bank\" role=\"group\" aria-label=\"{E(name)}\"><p class=\"bank-label\" aria-hidden=\"true\">{E(name)}</p><ol class=\"bank-ports{(bank.Length > 4 ? " wide" : "")}\">");
             foreach (var p in bank)
             {
                 ports.Append($"""
@@ -138,6 +145,8 @@ public static class SetupHtml
     {
         var (label, value, line) = g == 1
             ? ("Claude Code connects to", LocalMcp(s), "With the header Claude Code sends; see Connect Claude.")
+            : g == 4
+            ? ("Claude Code connects to", SetupChecks.LanUrl(s), "With the LAN token in a header; see Connect Claude.")
             : s.PublicBaseUrl is { } pub
             ? ("Connector URL", pub.GetLeftPart(UriPartial.Authority) + "/mcp", "Paste it into Claude's Add custom connector.")
             : ("Connector URL", "Not set", "Set MCP_PUBLIC_BASE_URL first.");
@@ -154,7 +163,7 @@ public static class SetupHtml
         s.Listen.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)[0]
             .Replace("://0.0.0.0", "://127.0.0.1", StringComparison.Ordinal).TrimEnd('/') + "/mcp";
 
-    private static string Checks(int g)
+    private static string Checks(Settings s, int g)
     {
         var sb = new StringBuilder("""
             <section class="checks" aria-labelledby="checks-h">
@@ -162,7 +171,7 @@ public static class SetupHtml
               <p class="lede">Each one tests a setting against the real thing: the console, Cloudflare, your sign-in. They only read; nothing is changed.</p>
               <ol class="results" id="results">
             """);
-        foreach (var p in Console.Concat(Claude(g)))
+        foreach (var p in Console.Concat(Claude(g, s)))
         {
             sb.Append($"""
                 <li class="result" id="check-{p.Id}" data-check="{p.Id}">
@@ -187,6 +196,13 @@ public static class SetupHtml
             sb.Append(Code($"claude mcp add --transport http unifi {LocalMcp(s)} --header \"{CallerPolicy.LoginHeader}: {login}\""));
             sb.Append("<p>Then ask Claude to call <code>getting_started</code>. It should say the server is configured.</p>");
         }
+        else if (g == 4)
+        {
+            sb.Append("<p>On each machine that runs Claude Code, add the server. Put the token from <code>MCP_LAN_ACCESS_TOKEN</code> in place of the placeholder; this page never shows it.</p>");
+            sb.Append(Code(SetupChecks.LanCommand(s)));
+            sb.Append("<p>Use the address of the machine that runs the server, and the port you published. Then ask Claude to call <code>getting_started</code>.</p>");
+            sb.Append("<p class=\"aside\">It is plain HTTP: use it on a network you trust. Anyone with the token has the same access as you.</p>");
+        }
         else if (s.PublicBaseUrl is not { } pub0)
         {
             sb.Append("<p>Set <code>MCP_PUBLIC_BASE_URL</code> to the tunnel's public hostname and restart; the connector URL then appears here.</p>");
@@ -207,6 +223,12 @@ public static class SetupHtml
                 sb.Append("<h3>Claude Code with the access token</h3>");
                 sb.Append(Code($"claude mcp add --transport http unifi {pub}/mcp --header \"Authorization: Bearer <MCP_ACCESS_TOKEN>\""));
                 sb.Append("<p class=\"aside\">Put the token from <code>.env</code> in place of the placeholder. This page never shows it.</p>");
+            }
+            if (s.LanListen is not null)
+            {
+                sb.Append("<h3>Claude Code over the LAN</h3>");
+                sb.Append(Code(SetupChecks.LanCommand(s)));
+                sb.Append("<p class=\"aside\">With the token from <code>MCP_LAN_ACCESS_TOKEN</code> in place of the placeholder.</p>");
             }
             if (s.AllowedLogins().Count > 0)
             {

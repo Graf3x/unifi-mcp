@@ -204,6 +204,7 @@ code, pre { font-family: var(--f-mono); font-size: .875em; }
 .bank-label::after { border-right: 1px solid var(--plate-ink-2); }
 
 .bank-ports { display: grid; grid-template-columns: repeat(4, 66px); gap: 6px; margin: 0; padding: 0; list-style: none; }
+.bank-ports.wide { grid-template-columns: repeat(5, 66px); }
 
 .port a {
   position: relative;
@@ -461,6 +462,7 @@ main.locked .why { font-weight: 600; color: var(--fail); }
 
 @media (max-width: 420px) {
   .bank-ports { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
+  .bank-ports.wide { grid-template-columns: repeat(5, minmax(0, 1fr)); }
   .bank, .ports { width: 100%; }
   .port-label { font-size: 12px; white-space: normal; }
   .result { grid-template-columns: 14px minmax(0, 1fr); }

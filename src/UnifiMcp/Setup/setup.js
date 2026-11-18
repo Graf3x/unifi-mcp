@@ -20,6 +20,7 @@
     "step-1-a-google-oauth-client": ["signin"],
     "step-2-switch-the-server-to-google-sign-in": ["signin"],
     "step-4-optional-claude-code-over-tailscale": ["callers"],
+    "guide-4-claude-code-across-your-lan": ["console", "certificate", "apikey", "lan"],
   };
 
   async function call(path, payload) {

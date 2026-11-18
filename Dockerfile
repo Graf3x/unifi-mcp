@@ -23,4 +23,6 @@ WORKDIR /app
 COPY --from=build /app .
 # The image's non-root user; docker-compose.yml overrides it with PUID:PGID so the bind mounts are writable.
 USER $APP_UID
+# Up or not (not whether it is configured): GETs /healthz on mcp.sock, since the image has no curl.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD ["dotnet", "unifi-mcp.dll", "--healthcheck"]
 ENTRYPOINT ["dotnet", "unifi-mcp.dll"]

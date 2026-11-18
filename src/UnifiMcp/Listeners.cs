@@ -5,7 +5,7 @@ using System.Collections.Concurrent;
 namespace UnifiMcp;
 
 /// <summary>Which of the server's listeners a request arrived on. Decided by the socket, never by anything the caller sends.</summary>
-public enum Listener { Tailnet, Public, Setup, Unknown }
+public enum Listener { Tailnet, Public, Setup, Lan, Unknown }
 
 public static class Listeners
 {
@@ -23,6 +23,7 @@ public static class Listeners
                 return Listener.Unknown;
             case IPEndPoint ip:
                 if (s.SetupPage && SetupEndpoint(s.SetupListen)?.Port == ip.Port) return Listener.Setup;
+                if (s.LanListen is { } lan && SetupEndpoint(lan)?.Port == ip.Port) return Listener.Lan;
                 if (PortOf(s.PublicListen) == ip.Port) return Listener.Public;
                 if (PortOf(s.Listen) == ip.Port) return Listener.Tailnet;
                 return Listener.Unknown;
@@ -52,7 +53,7 @@ public static class Listeners
     }
 
     /// <summary>
-    /// MCP_SETUP_LISTEN parsed: http, an IP address (0.0.0.0 and [::] for every interface) or localhost, and an explicit port.
+    /// MCP_SETUP_LISTEN (and MCP_LAN_LISTEN) parsed: http, an IP address (0.0.0.0 and [::] for every interface) or localhost, and an explicit port.
     /// Null for anything else, so a host name can never widen where the page answers.
     /// </summary>
     public static (IPAddress? Address, int Port)? SetupEndpoint(string listen)

@@ -1,0 +1,33 @@
+# unifi-mcp for Claude Code elsewhere on your network, with no tunnel, domain or Tailscale. See README, guide 4.
+#   cp .env.example .env    # then fill in the console values and MCP_LAN_ACCESS_TOKEN
+#   mkdir -p data run       # create these as you, so the container (PUID:PGID) can write to them
+#   docker compose -f docker-compose.lan.yml up -d
+#
+# Port 7420 is the LAN listener: it serves /mcp and /healthz only, to callers that send MCP_LAN_ACCESS_TOKEN as
+# "Authorization: Bearer <token>" or "X-Api-Key: <token>". It is plain HTTP, so use it on a network you trust.
+# The setup page is on the host's 127.0.0.1:5198; its link is in `docker compose -f docker-compose.lan.yml logs unifi-mcp`.
+services:
+  unifi-mcp:
+    # The image is published by this repo's GitHub workflow. Pin a version (e.g. :0.6.0) if you prefer.
+    image: ghcr.io/graf3x/unifi-mcp:latest
+    # To build from this checkout instead of pulling, uncomment these two lines:
+    # build: .
+    # pull_policy: build
+    restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
+    read_only: true
+    tmpfs:
+      - /tmp
+    env_file: .env
+    environment:
+      # Inside the container both must listen on every interface to be published; the ports below decide who reaches them.
+      MCP_SETUP_LISTEN: http://0.0.0.0:5198
+      MCP_LAN_LISTEN: http://0.0.0.0:7420
+      MCP_LAN_ACCESS_TOKEN: ${MCP_LAN_ACCESS_TOKEN:?set MCP_LAN_ACCESS_TOKEN in .env (openssl rand -hex 32)}
+    ports:
+      - "127.0.0.1:5198:5198"
+      # Every interface of the host. To publish it on one address only, write it in front: "192.168.1.20:7420:7420".
+      - "7420:7420"
+    volumes:
+      - ./data:/data
+      - ./run:/run/unifi-mcp

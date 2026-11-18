@@ -62,6 +62,13 @@ public sealed partial record Settings
     /// <summary>MCP_SETUP_LISTEN: http://&lt;IP address or localhost&gt;:&lt;port&gt;. Plain TCP; the page asks for its own key.</summary>
     public string SetupListen { get; init; } = DefaultSetupListen;
     public const string DefaultSetupListen = "http://127.0.0.1:5198";
+    /// <summary>
+    /// MCP_LAN_LISTEN: an opt-in listener for MCP clients elsewhere on the local network, http://&lt;IP address&gt;:&lt;port&gt;.
+    /// It serves /mcp and /healthz only, to callers that send <see cref="LanAccessToken"/>. Null (the default) means off.
+    /// </summary>
+    public string? LanListen { get; init; }
+    /// <summary>MCP_LAN_ACCESS_TOKEN: the only credential the LAN listener accepts. Required when it is on.</summary>
+    public string? LanAccessToken { get; init; }
 
     private const int MinDataKeyLength = 16;
     public const int MinAccessTokenLength = 32;
@@ -109,6 +116,23 @@ public sealed partial record Settings
         var accessToken = Blank(env("MCP_ACCESS_TOKEN"));
         if (accessToken is { Length: < MinAccessTokenLength })
             throw new ArgumentException($"MCP_ACCESS_TOKEN must be at least {MinAccessTokenLength} characters.");
+        var lanListen = Blank(env("MCP_LAN_LISTEN"));
+        var lanToken = Blank(env("MCP_LAN_ACCESS_TOKEN"));
+        int? lanPort = null;
+        if (lanListen is not null)
+        {
+            if (Listeners.SetupEndpoint(lanListen) is not { } lanEndpoint)
+                throw new ArgumentException("MCP_LAN_LISTEN must be http://<IP address>:<port>, for example http://0.0.0.0:7420.");
+            lanPort = lanEndpoint.Port;
+            // Fail closed: the LAN listener has no other way to tell callers apart.
+            if (lanToken is null)
+                throw new ArgumentException("MCP_LAN_LISTEN needs MCP_LAN_ACCESS_TOKEN, the token every LAN caller must send. Generate one with: openssl rand -hex 32");
+        }
+        if (lanToken is { Length: < MinAccessTokenLength })
+            throw new ArgumentException($"MCP_LAN_ACCESS_TOKEN must be at least {MinAccessTokenLength} characters.");
+        // The LAN token crosses the network in plain HTTP; it must not also open the internet-facing side.
+        if (lanToken is not null && lanToken == accessToken)
+            throw new ArgumentException("MCP_LAN_ACCESS_TOKEN must differ from MCP_ACCESS_TOKEN: it travels over plain HTTP, so it must not also open the public connector.");
         var built = d with
         {
             SetupPage = setupPage,
@@ -135,9 +159,14 @@ public sealed partial record Settings
             AllowedGoogleEmailsValue = Blank(env("MCP_ALLOWED_GOOGLE_EMAILS")),
             DataDir = Blank(env("MCP_DATA_DIR")) ?? d.DataDir,
             DataKey = Blank(env("UNIFI_MCP_DATA_KEY")),
+            LanListen = lanListen,
+            LanAccessToken = lanListen is null ? null : lanToken,
         };
         if (built.SetupPage && Listeners.PortsOf(built.Listen).Concat(Listeners.PortsOf(built.PublicListen)).Contains(setupEndpoint.Port))
             throw new ArgumentException("MCP_SETUP_LISTEN needs a port of its own, not the one in MCP_LISTEN or MCP_PUBLIC_LISTEN.");
+        if (lanPort is { } lp && (Listeners.PortsOf(built.Listen).Concat(Listeners.PortsOf(built.PublicListen)).Contains(lp)
+                || (built.SetupPage && setupEndpoint.Port == lp)))
+            throw new ArgumentException("MCP_LAN_LISTEN needs a port of its own, not the one in MCP_LISTEN, MCP_PUBLIC_LISTEN or MCP_SETUP_LISTEN.");
         return built;
     }
 
@@ -192,7 +221,7 @@ public sealed partial record Settings
           .Append($"PublicBaseUrl = {PublicBaseUrl}, GoogleClientId = {GoogleClientId}, GoogleClientSecret = {Mask(GoogleClientSecret)}, ")
           .Append($"GoogleAuthority = {GoogleAuthority}, AllowedGoogleEmailsFile = {AllowedGoogleEmailsFile}, ")
           .Append($"DataDir = {DataDir}, DataKey = {Mask(DataKey)}, SignIn = {SignIn}, AccessToken = {Mask(AccessToken)}, Trust = {Trust}, ")
-          .Append($"SetupPage = {SetupPage}, SetupListen = {SetupListen}");
+          .Append($"SetupPage = {SetupPage}, SetupListen = {SetupListen}, LanListen = {LanListen ?? "(off)"}, LanAccessToken = {Mask(LanAccessToken)}");
         return true;
     }
 

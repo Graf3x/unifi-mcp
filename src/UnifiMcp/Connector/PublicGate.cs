@@ -62,6 +62,17 @@ public sealed class PublicGate(RequestDelegate next, Settings settings, Connecto
                 ctx.Request.Headers.Remove(CallerPolicy.LoginHeader);
                 break;
 
+            case Listener.Lan:
+                // Token-only: the MCP endpoint and the health check, nothing else. The Tailscale header means nothing here.
+                if (!ctx.Request.Path.Equals("/mcp", StringComparison.OrdinalIgnoreCase)
+                    && !ctx.Request.Path.Equals("/healthz", StringComparison.OrdinalIgnoreCase))
+                {
+                    ctx.Response.StatusCode = StatusCodes.Status404NotFound;
+                    return;
+                }
+                ctx.Request.Headers.Remove(CallerPolicy.LoginHeader);
+                break;
+
             case Listener.Tailnet:
                 if (OnlyPublic(ctx.Request.Path) || ctx.Request.Path.StartsWithSegments(SetupPage.Path, StringComparison.OrdinalIgnoreCase))
                 {

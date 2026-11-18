@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
 using System.Security.Authentication;
@@ -101,7 +102,7 @@ public sealed class SetupChecks(Settings settings, UnifiClient client, Connector
 {
     public const string OutboundKey = "setup-outbound";
     public static readonly TimeSpan TunnelTimeout = TimeSpan.FromSeconds(10);
-    public static readonly IReadOnlyList<string> Ids = ["console", "certificate", "apikey", "site", "connector", "tunnel", "signin", "callers"];
+    public static readonly IReadOnlyList<string> Ids = ["console", "certificate", "apikey", "site", "connector", "tunnel", "signin", "callers", "lan"];
 
     // Guide headings the fixes point at (GitHub's ids for the README headings).
     private const string BeforeYouStart = "before-you-start-two-values-from-your-console";
@@ -111,6 +112,7 @@ public sealed class SetupChecks(Settings settings, UnifiClient client, Connector
     private const string RestOfEnv = "step-4-the-rest-of-env-then-start";
     private const string GoogleClient = "step-1-a-google-oauth-client";
     private const string Tailscale = "step-4-optional-claude-code-over-tailscale";
+    private const string Guide4 = "guide-4-claude-code-across-your-lan";
 
     private readonly HttpClient _outbound = new(outbound, disposeHandler: false) { Timeout = TunnelTimeout };
 
@@ -127,6 +129,7 @@ public sealed class SetupChecks(Settings settings, UnifiClient client, Connector
         "tunnel" => TunnelAsync(ct),
         "signin" => Task.FromResult(SignIn()),
         "callers" => Task.FromResult(Callers()),
+        "lan" => Task.FromResult(Lan()),
         _ => throw new KeyNotFoundException(id),
     };
 
@@ -234,8 +237,9 @@ public sealed class SetupChecks(Settings settings, UnifiClient client, Connector
 
     private CheckResult Connector()
     {
-        if (settings.PublicBaseUrl is null && Guide == 1)
-            return new("connector", CheckStatus.Skip, "Not used: Claude Code connects on this machine.", "Guides 2 and 3 add a connector for claude.ai and the apps.");
+        if (settings.PublicBaseUrl is null && Guide is 1 or 4)
+            return new("connector", CheckStatus.Skip, Guide == 1 ? "Not used: Claude Code connects on this machine." : "Not used: Claude Code connects over the LAN listener.",
+                "Guides 2 and 3 add a connector for claude.ai and the apps.");
         var missing = settings.PublicMissing();
         if (missing.Count > 0)
             return new("connector", CheckStatus.Fail, "Not configured.", "Still needed: " + string.Join("; ", missing) + ".", RestOfEnv);
@@ -248,7 +252,7 @@ public sealed class SetupChecks(Settings settings, UnifiClient client, Connector
     private async Task<CheckResult> TunnelAsync(CancellationToken ct)
     {
         if (settings.PublicBaseUrl is not { } pub)
-            return Guide == 1
+            return Guide is 1 or 4
                 ? new("tunnel", CheckStatus.Skip, "Not used: nothing is reachable from the internet.")
                 : new("tunnel", CheckStatus.Fail, "MCP_PUBLIC_BASE_URL isn't set, so there is nothing to test.", "Set it to the tunnel's public hostname, for example https://unifi.example.com.", RestOfEnv);
 
@@ -302,8 +306,8 @@ public sealed class SetupChecks(Settings settings, UnifiClient client, Connector
 
     private CheckResult SignIn()
     {
-        if (settings.PublicBaseUrl is null && Guide == 1)
-            return new("signin", CheckStatus.Skip, "Not used: there is no sign-in page in guide 1.");
+        if (settings.PublicBaseUrl is null && Guide is 1 or 4)
+            return new("signin", CheckStatus.Skip, Guide == 1 ? "Not used: there is no sign-in page in guide 1." : "Not used: LAN callers send the access token instead.");
         var pub = settings.PublicBaseUrl?.GetLeftPart(UriPartial.Authority) ?? "https://unifi.example.com";
         if (settings.SignIn == SignInMode.Code)
         {
@@ -344,6 +348,40 @@ public sealed class SetupChecks(Settings settings, UnifiClient client, Connector
             : new("callers", CheckStatus.Ok, $"{logins.Count} Tailscale login{(logins.Count == 1 ? "" : "s")} allowed on mcp.sock.",
                 "Publish it on the host with tailscale serve; the server can't see from here whether that is running.", Tailscale);
     }
+
+    private CheckResult Lan()
+    {
+        if (settings.LanListen is not { } listen || Listeners.SetupEndpoint(listen) is not var (address, port))
+            return new("lan", CheckStatus.Skip, "Not used: MCP_LAN_LISTEN isn't set.",
+                "Guide 4 adds a token-only listener for Claude Code elsewhere on your network.", Guide4);
+        CopyValue[] command = [new("Claude Code", LanCommand(settings))];
+        if (address is null || IPAddress.IsLoopback(address))
+            return new("lan", CheckStatus.Warn, $"Listening on {listen}, which only this machine can reach.",
+                InContainer
+                    ? "Inside a container nothing else reaches that address. Set MCP_LAN_LISTEN=http://0.0.0.0:" + port + " and publish the port."
+                    : "To reach it from other machines, use this machine's LAN address or 0.0.0.0.",
+                Guide4, command);
+        return new("lan", CheckStatus.Ok, $"Token-only on port {port}; MCP_LAN_ACCESS_TOKEN is set.",
+            "It is plain HTTP, so anyone who can see the network's traffic can read the token. Use the address of the machine that runs the server"
+            + (InContainer ? " and the port you published" : "") + ", and the token from your settings: this page never shows it.",
+            Guide4, command);
+    }
+
+    private static bool InContainer => Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER") == "true";
+
+    /// <summary>The LAN listener's MCP URL, with a placeholder for the address when it listens on every interface.</summary>
+    public static string LanUrl(Settings s)
+    {
+        var (address, port) = s.LanListen is { } l && Listeners.SetupEndpoint(l) is { } e ? e : (null, 7420);
+        var host = address is null ? "localhost"
+            : address.Equals(IPAddress.Any) || address.Equals(IPAddress.IPv6Any) ? "<server-ip>"
+            : address.AddressFamily == AddressFamily.InterNetworkV6 ? $"[{address}]" : address.ToString();
+        return $"http://{host}:{port}/mcp";
+    }
+
+    /// <summary>The claude mcp add line for the LAN listener, with a placeholder for the token.</summary>
+    public static string LanCommand(Settings s) =>
+        $"claude mcp add --transport http unifi {LanUrl(s)} --header \"Authorization: Bearer <MCP_LAN_ACCESS_TOKEN>\"";
 
     /// <summary>UnifiClient's TLS refusals, which start this way (see its SendCoreAsync).</summary>
     private static bool IsCertificate(UnifiError e) => e.Message.StartsWith("The console's certificate", StringComparison.Ordinal);

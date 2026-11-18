@@ -34,9 +34,14 @@ public sealed partial class SetupGuide
     public SetupGuide(string readme, Settings settings) =>
         Parts = Section(readme) is { } section ? Split(Rewrite(Render(section), settings)) : [];
 
-    /// <summary>Which guide this server's settings follow: 1 local (a TCP MCP_LISTEN, no public URL), 3 Google sign-in, else 2.</summary>
+    /// <summary>
+    /// Which guide this server's settings follow: 4 LAN (MCP_LAN_LISTEN, no public URL), 1 local (a TCP MCP_LISTEN, no public
+    /// URL), 3 Google sign-in, else 2.
+    /// </summary>
     public static int GuideOf(Settings s) =>
-        Listeners.UnixPath(s.Listen) is null && s.PublicBaseUrl is null ? 1 : s.SignIn == SignInMode.Google ? 3 : 2;
+        s.PublicBaseUrl is null && s.LanListen is not null ? 4
+        : Listeners.UnixPath(s.Listen) is null && s.PublicBaseUrl is null ? 1
+        : s.SignIn == SignInMode.Google ? 3 : 2;
 
     /// <summary>A diagram from docs/images, by file name; null for anything else.</summary>
     public static byte[]? Image(string name)

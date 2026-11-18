@@ -6,6 +6,7 @@
 # The server listens on two Unix sockets in ./run:
 #   public.sock  the Claude connector (Google sign-in + OAuth), reached only by the cloudflared sidecar below;
 #   mcp.sock     optional tailnet access through `tailscale serve` on the host (see README).
+# Optionally also a token-only LAN listener on port 7420 (README, guide 4): uncomment its two lines below.
 # and serves the setup page on port 5198, published on the host's 127.0.0.1 only. Its link (with a key that changes on
 # every start) is in `docker compose logs unifi-mcp`. MCP_SETUP_PAGE=off in .env turns it off.
 # (deploy/ holds the owner's Fleet bundle; it is not used here.)
@@ -25,8 +26,11 @@ services:
     environment:
       # Inside the container the page must listen on every interface to be published; the port below keeps it local.
       MCP_SETUP_LISTEN: http://0.0.0.0:5198
+      # The LAN listener, next to the connector. Set MCP_LAN_ACCESS_TOKEN in .env, then uncomment this and the port below.
+      # MCP_LAN_LISTEN: http://0.0.0.0:7420
     ports:
       - "127.0.0.1:5198:5198"
+      # - "7420:7420"
     volumes:
       - ./data:/data
       - ./run:/run/unifi-mcp

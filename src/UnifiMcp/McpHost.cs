@@ -49,17 +49,20 @@ public static class McpHost
         builder.Logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning);
         builder.Logging.AddFilter("Microsoft.AspNetCore.Authentication", LogLevel.Information);
         // The default scheme stays UnifiCaller: the sign-in cookie never authenticates /mcp. Only the tailnet listener reaches
-        // the Tailscale handler; everything else gets the configured access token (MCP_ACCESS_TOKEN, when presented) or the
-        // bearer scheme, or (connector not configured) a scheme that only refuses.
+        // the Tailscale handler, and the LAN listener only its own token (with or without a connector). The public side gets
+        // the configured access token (MCP_ACCESS_TOKEN, when presented) or the bearer scheme, or (connector not configured)
+        // a scheme that only refuses.
         var connector = ConnectorHosting.AddConnector(builder, settings, google);
         SetupPage.Add(builder, settings);
         var configured = connector.Configured;
         var bearerScheme = configured ? McpAuthenticationDefaults.AuthenticationScheme : PlaceholderBearerHandler.SchemeName;
         builder.Services.AddAuthentication(UnifiCallerScheme)
-            .AddPolicyScheme(UnifiCallerScheme, null, o => o.ForwardDefaultSelector = ctx =>
-                ctx.ListenerOf() == Listener.Tailnet ? TailscaleServeAuthHandler.SchemeName
-                : configured && AccessTokenHandler.Presented(ctx.Request, settings) ? AccessTokenHandler.SchemeName
-                : bearerScheme)
+            .AddPolicyScheme(UnifiCallerScheme, null, o => o.ForwardDefaultSelector = ctx => ctx.ListenerOf() switch
+            {
+                Listener.Tailnet => TailscaleServeAuthHandler.SchemeName,
+                Listener.Lan => AccessTokenHandler.SchemeName,
+                _ => configured && AccessTokenHandler.Presented(ctx.Request, settings.AccessToken) ? AccessTokenHandler.SchemeName : bearerScheme,
+            })
             .AddScheme<AuthenticationSchemeOptions, TailscaleServeAuthHandler>(TailscaleServeAuthHandler.SchemeName, _ => { })
             .AddScheme<AuthenticationSchemeOptions, AccessTokenHandler>(AccessTokenHandler.SchemeName, _ => { })
             .AddScheme<AuthenticationSchemeOptions, PlaceholderBearerHandler>(PlaceholderBearerHandler.SchemeName, _ => { });
@@ -128,6 +131,8 @@ public static class McpHost
             if (settings.SetupPage && Listeners.SetupEndpoint(settings.SetupListen) is ({ } address, _) && !System.Net.IPAddress.IsLoopback(address)
                 && Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER") != "true")
                 app.Logger.LogWarning("The setup page listens on {Listen}, beyond this machine, over plain HTTP: anyone on the network who sees its traffic sees the sign-in code. Prefer 127.0.0.1.", settings.SetupListen);
+            if (settings.LanListen is { } lan)
+                app.Logger.LogWarning("The LAN listener on {Listen} is plain HTTP: anyone on the network who sees its traffic sees MCP_LAN_ACCESS_TOKEN, and the token gives full access to the tools. Use it only on a network you trust, or put a TLS proxy in front.", lan);
             if (Listeners.UnixPath(settings.PublicListen) is { } pub && Listeners.UnixPath(settings.Listen) is not null && !SocketPaths(settings).Contains(pub))
                 app.Logger.LogWarning("Public socket not bound: the folder of {Socket} does not exist.", pub);
             if (settings.AllowedLogins().Count == 0)
@@ -147,7 +152,7 @@ public static class McpHost
         var connector = publicMissing.Count > 0 ? "not configured (" + string.Join("; ", publicMissing) + ")"
             : connectorState?.Reason is { } reason ? "unavailable (" + reason + ")"
             : "ready";
-        return $"unifi-mcp on {settings.Listen} for {settings.BaseUrl}: {state}, writes {(settings.AllowWrites ? "ON" : "off")}, {tools} tools, {settings.AllowedLogins().Count} allowed login(s), connector {connector}, sign-in {settings.SignIn.ToString().ToLowerInvariant()}, access token {(settings.AccessToken is null ? "off" : "on")}";
+        return $"unifi-mcp on {settings.Listen} for {settings.BaseUrl}: {state}, writes {(settings.AllowWrites ? "ON" : "off")}, {tools} tools, {settings.AllowedLogins().Count} allowed login(s), connector {connector}, sign-in {settings.SignIn.ToString().ToLowerInvariant()}, access token {(settings.AccessToken is null ? "off" : "on")}, LAN {settings.LanListen ?? "off"}";
     }
 
     private const string UnifiCallerScheme = "UnifiCaller";
@@ -158,7 +163,9 @@ public static class McpHost
         if (Listeners.UnixPath(settings.Listen) is null)
         {
             var urls = Listeners.UnixPath(settings.PublicListen) is null ? $"{settings.Listen};{settings.PublicListen}" : settings.Listen;
-            builder.WebHost.UseUrls(settings.SetupPage ? $"{urls};{settings.SetupListen}" : urls);
+            if (settings.SetupPage) urls += $";{settings.SetupListen}";
+            if (settings.LanListen is { } lanUrl) urls += $";{lanUrl}";
+            builder.WebHost.UseUrls(urls);
             return;
         }
         var paths = SocketPaths(settings);
@@ -171,6 +178,11 @@ public static class McpHost
             {
                 if (address is null) k.ListenLocalhost(port);
                 else k.Listen(address, port);
+            }
+            if (settings.LanListen is { } lan && Listeners.SetupEndpoint(lan) is var (lanAddress, lanPort))
+            {
+                if (lanAddress is null) k.ListenLocalhost(lanPort);
+                else k.Listen(lanAddress, lanPort);
             }
         });
     }
