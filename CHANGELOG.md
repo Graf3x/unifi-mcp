@@ -5,7 +5,9 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
-Nothing yet.
+### Changed
+
+- README: the setup-paths diagram shows guide 4, Claude Code on another machine on your network.
 
 ## 0.6.0
 
