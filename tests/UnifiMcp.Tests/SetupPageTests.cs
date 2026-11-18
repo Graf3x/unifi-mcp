@@ -29,9 +29,10 @@ public sealed partial class SetupPageTests
     {
         public ProbedCertificate Answer { get; set; } = new(CertHex, Harness.Pin, SslPolicyErrors.RemoteCertificateChainErrors, 3);
         public string? Fail { get; set; }
+        public Exception? Throw { get; set; }
 
         public Task<ProbedCertificate> ProbeAsync(Uri console, CancellationToken ct) =>
-            Fail is not null ? throw new ProbeFailed(Fail) : Task.FromResult(Answer);
+            Throw is not null ? throw Throw : Fail is not null ? throw new ProbeFailed(Fail) : Task.FromResult(Answer);
     }
 
     private sealed class FakeOutbound : HttpMessageHandler
@@ -398,6 +399,19 @@ public sealed partial class SetupPageTests
         Assert.Equal("Fail", console.GetProperty("status").GetString());
         Assert.Equal(s.Probe.Fail, console.GetProperty("summary").GetString());
         Assert.Equal("Blocked", (await s.CheckAsync("certificate")).GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task A_check_that_breaks_unexpectedly_answers_as_a_failed_check()
+    {
+        await using var s = await StartAsync();
+        await s.UnlockAsync();
+        s.Probe.Throw = new InvalidOperationException("something the probe didn't foresee");
+        var console = await s.CheckAsync("console");
+        Assert.Equal("Fail", console.GetProperty("status").GetString());
+        Assert.Contains("something the probe didn't foresee", console.GetProperty("summary").GetString());
+        s.Outbound.Respond = _ => throw new InvalidOperationException("the handler broke");
+        Assert.Equal("Fail", (await s.CheckAsync("tunnel")).GetProperty("status").GetString());
     }
 
     [Fact]

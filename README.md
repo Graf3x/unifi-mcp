@@ -14,6 +14,14 @@ It is built with .NET 10 and the official `ModelContextProtocol` SDK, from the U
 Claude Code directly. You sign in with a one-time code from the server's log or with your Google account, and clients
 that send a fixed header can use an access token instead.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/setup-page-dark.png">
+  <img alt="The setup page. A rack-mount panel shows the sign-in code 51991-60064 on a small green display with a countdown, Copy code and Get a code now buttons, and eight network ports: Console, Certificate, API key and Site to the console, and Connector, Tunnel, Sign-in and Tailnet to Claude. Seven ports have a patch cable plugged in; Tunnel is empty with a red light. Below, the checks list: the console answers, the certificate matches the pin, the API key is accepted by UniFi Network 9.4.19, the site is found, the connector is ready. Tunnel failed: couldn't reach unifi.example.com, with the reason and a link to the guide step that fixes it. On the right, how to connect Claude." src="docs/images/setup-page-light.png" width="100%">
+</picture>
+
+The [setup page](#setup) shows the sign-in code the moment Claude asks for one, and tests every setting against the
+real thing: here seven checks pass, and the tunnel check says what is wrong and which step fixes it.
+
 **Contents:** [What you can ask](#what-you-can-ask), [Tools](#tools), [Safety](#safety), [Setup](#setup),
 [Settings reference](#settings-reference), [FAQ](#faq), [Develop](#develop)
 

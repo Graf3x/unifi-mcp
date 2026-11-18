@@ -108,12 +108,22 @@ public static class SetupPage
             return Results.Bytes(svg, "image/svg+xml");
         });
 
-        setup.MapPost("/api/check/{id}", async Task<IResult> (string id, HttpContext http, SetupKey key, SetupChecks checks, CancellationToken ct) =>
+        setup.MapPost("/api/check/{id}", async Task<IResult> (string id, HttpContext http, SetupKey key, SetupChecks checks, ILoggerFactory lf, CancellationToken ct) =>
         {
             if (!Unlocked(http, key)) return Locked();
             if (!SetupChecks.Ids.Contains(id)) return Results.NotFound();
             NoStore(http);
-            return Results.Json(await checks.RunAsync(id, ct));
+            try
+            {
+                return Results.Json(await checks.RunAsync(id, ct));
+            }
+            catch (Exception e) when (!ct.IsCancellationRequested)
+            {
+                // A check that breaks in a way it didn't foresee still answers as a failed check, so the page can say so.
+                lf.CreateLogger(LogCategory).LogWarning(e, "The {Check} check failed unexpectedly", id);
+                return Results.Json(new CheckResult(id, CheckStatus.Fail, $"The check itself failed: {e.Message}",
+                    "The server's log has the details."));
+            }
         });
 
         setup.MapPost("/api/code", async Task<IResult> (HttpContext http, SetupKey key, ILoggerFactory lf, CancellationToken ct) =>

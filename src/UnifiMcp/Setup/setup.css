@@ -141,9 +141,9 @@ code, pre { font-family: var(--f-mono); font-size: .875em; }
 
 .plate-body {
   display: grid;
-  grid-template-columns: minmax(250px, 320px) 1fr;
+  grid-template-columns: minmax(250px, 300px) 1fr;
   grid-template-areas: "lcd ports" "foot ports";
-  gap: 18px 44px;
+  gap: 18px 36px;
 }
 .plate-body > .lcd { grid-area: lcd; }
 .plate-body > .plate-foot { grid-area: foot; }
@@ -268,6 +268,9 @@ code, pre { font-family: var(--f-mono); font-size: .875em; }
 
 .port[data-state="ok"] .plug { opacity: 1; transform: none; transition: transform .22s cubic-bezier(.2, .9, .3, 1.2), opacity .12s; }
 .port[data-state="ok"] .plug::after { transform: scaleY(1); transition: transform .35s .12s ease-out; }
+/* When the banks wrap onto two rows, the upper bank's cords would hang across the lower one: a short stub instead,
+   as if the cable comes out toward you. setup.js sets .stacked. */
+.ports.stacked > .bank:not(:last-child) .plug::after { height: 14px; }
 .port[data-state="ok"] .led.link { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
 .port[data-state="warn"] .led.link { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
 .port[data-state="fail"] .led.link { background: var(--fail); box-shadow: 0 0 6px var(--fail); }

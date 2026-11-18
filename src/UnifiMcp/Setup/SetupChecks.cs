@@ -82,6 +82,12 @@ public sealed class TlsCertificateProbe : ICertificateProbe
         {
             throw new ProbeFailed($"{console.Host}:{console.Port} answers, but not with TLS: {e.Message}");
         }
+        catch (Exception e) when (e is not (ProbeFailed or OperationCanceledException))
+        {
+            // The platform's TLS stack can fail in its own ways (Windows throws an internal exception for some
+            // handshakes): a failed check, not a failed page.
+            throw new ProbeFailed($"The TLS handshake with {console.Host}:{console.Port} failed: {e.Message}");
+        }
     }
 }
 

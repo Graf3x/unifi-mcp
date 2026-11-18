@@ -307,6 +307,18 @@
     }
   });
 
+  // ---- Cables: when the port banks wrap onto two rows, the upper bank's cords stay short ----
+  const ports = document.querySelector(".ports");
+  if (ports) {
+    const stack = () => {
+      const banks = ports.querySelectorAll(".bank");
+      const stacked = banks.length > 1 && banks[banks.length - 1].offsetTop > banks[0].offsetTop + 4;
+      ports.classList.toggle("stacked", stacked);
+    };
+    new ResizeObserver(stack).observe(ports);
+    stack();
+  }
+
   const poller = setInterval(peek, 3000);
   document.addEventListener("visibilitychange", peek);
   peek();
