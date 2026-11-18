@@ -5,6 +5,10 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+Nothing yet.
+
+## 0.6.0
+
 ### Added
 
 - A token-only LAN listener, off by default (`MCP_LAN_LISTEN`, `MCP_LAN_ACCESS_TOKEN`): Claude Code on other machines on
