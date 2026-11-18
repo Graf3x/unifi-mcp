@@ -98,7 +98,7 @@ There are four ways to run it. Pick the one that matches where you use Claude; e
 | Use it from | Claude Code on the same machine | claude.ai, Claude Desktop and the phone apps | Everything in guide 2, plus Claude Code anywhere on your tailnet | Claude Code on other machines on your network |
 | You need | The .NET 10 SDK | Docker Compose and a domain on Cloudflare (free plan is fine) | Guide 2, plus a Google Cloud project and, optionally, Tailscale | Docker Compose |
 | You sign in with | A name you allow, sent as a header | A one-time code from the server's log | A Google account on an allow-list | A token you generate, sent as a header |
-| Reachable from the internet | No | Only through the Cloudflare tunnel | Only through the Cloudflare tunnel | No |
+| Reachable from the internet | No | Only through the Cloudflare tunnel | Only through the Cloudflare tunnel | Not if your router or firewall keeps port 7420 to the LAN: it is published on every host address |
 
 Placeholders used throughout: `192.168.1.1` is your console, `192.168.1.20` is the machine that runs the server,
 `unifi.example.com` is the hostname you pick, and `you@example.com` is your address.
@@ -372,8 +372,9 @@ Compose.
 
 The listener serves `/mcp` and `/healthz` and nothing else, and accepts only `MCP_LAN_ACCESS_TOKEN`; the server refuses to
 start without one. It is plain HTTP, so anyone who can see your network's traffic can read the token, and anyone with the
-token has the same access as you. Use it on a network you trust, limit port 7420 to the machines that need it if your
-firewall can, or put a TLS proxy in front. To revoke the token, change it in `.env` and run
+token has the same access as you. Docker publishes port 7420 on every address of the host, so if the host has an
+address the internet can route to, make sure your router or firewall blocks inbound traffic to it. Use it on a network
+you trust, limit port 7420 to the machines that need it if your firewall can, or put a TLS proxy in front. To revoke the token, change it in `.env` and run
 `docker compose -f docker-compose.lan.yml up -d`.
 
 Already running guide 2 or 3? Add the listener to `docker-compose.yml` instead: set `MCP_LAN_ACCESS_TOKEN` in `.env` and
