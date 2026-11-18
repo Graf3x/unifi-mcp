@@ -7,6 +7,13 @@ follow [Semantic Versioning](https://semver.org/).
 
 Nothing yet.
 
+## 0.5.1
+
+### Fixed
+
+- The image: `.dockerignore` kept the README's diagrams out of the Docker build, so 0.5.0 built no image. 0.5.1 is
+  0.5.0 with that fixed; pull requests and pushes to main now build the image too.
+
 ## 0.5.0
 
 ### Added
