@@ -1,4 +1,5 @@
-# Only src/UnifiMcp and openapi/ are needed. Never send secrets or runtime state to the builder.
+# Only src/UnifiMcp, openapi/, README.md and the diagrams in docs/images are needed (the setup page shows the README's
+# guides). Never send secrets or runtime state to the builder.
 **/bin/
 **/obj/
 .git/
@@ -11,6 +12,7 @@ config/
 data/
 run/
 deploy/
-docs/
+docs/**
+!docs/images/*.svg
 tests/
 tools/

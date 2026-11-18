@@ -1,4 +1,5 @@
-# Tests on every push and pull request; on a v* tag, also builds the multi-arch image (linux/amd64, linux/arm64) and
+# Tests on every push and pull request, and builds the image without pushing it, so a broken Dockerfile shows before a
+# release. On a v* tag, builds the multi-arch image (linux/amd64, linux/arm64) and
 # pushes it to ghcr.io/<owner>/unifi-mcp as <version>, <major>.<minor> and latest. Uses only GITHUB_TOKEN.
 # A new GHCR package starts private: make it public under the package's settings so others can pull without logging in.
 name: test and image
@@ -22,6 +23,20 @@ jobs:
         with:
           dotnet-version: "10.0.x"
       - run: dotnet test unifi-mcp.slnx -c Release
+
+  image-check:
+    needs: test
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha
 
   image:
     needs: test
