@@ -107,6 +107,10 @@ public sealed class TailscaleServeAuthHandler(
 {
     public const string SchemeName = "TailscaleServe";
 
+    // A handler instance serves one request. The decision made while authenticating is the one a refusal reports: the
+    // allow-list file is re-read on each use, so deciding again could disagree with the 403 being sent.
+    private CallerDecision? _decision;
+
     private (CallerDecision Decision, string Login) Decide()
     {
         var login = Request.Headers[CallerPolicy.LoginHeader].ToString();
@@ -117,6 +121,7 @@ public sealed class TailscaleServeAuthHandler(
     protected override Task<AuthenticateResult> HandleAuthenticateAsync()
     {
         var (decision, login) = Decide();
+        _decision = decision;
         // No login at all is an anonymous request, not a failed one: the container health check sends none.
         if (decision == CallerDecision.DenyNoIdentity) return Task.FromResult(AuthenticateResult.NoResult());
         if (decision != CallerDecision.Allow) return Task.FromResult(AuthenticateResult.Fail(decision.ToString()));
@@ -131,7 +136,7 @@ public sealed class TailscaleServeAuthHandler(
 
     private Task RefuseAsync()
     {
-        var (decision, _) = Decide();
+        var decision = _decision ?? Decide().Decision;
         if (decision != CallerDecision.Allow)
             Logger.LogWarning("Refused caller {Remote} ({Decision})", Context.Connection.RemoteIpAddress, decision);
         Response.StatusCode = StatusCodes.Status403Forbidden;
