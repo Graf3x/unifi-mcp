@@ -9,6 +9,12 @@ follow [Semantic Versioning](https://semver.org/).
 
 - README: the setup-paths diagram shows guide 4, Claude Code on another machine on your network.
 
+### Fixed
+
+- The container health check no longer logs a "Refused caller (DenyNoIdentity)" warning every 30 seconds. The tailnet
+  listener now logs a refused caller only when the endpoint needs one, so refusals on `/mcp` are still warnings and
+  `/healthz` is quiet. ([#4](https://github.com/Graf3x/unifi-mcp/issues/4))
+
 ## 0.6.0
 
 ### Added

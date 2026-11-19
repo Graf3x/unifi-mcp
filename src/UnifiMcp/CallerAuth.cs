@@ -96,36 +96,44 @@ public sealed class PlaceholderBearerHandler(IOptionsMonitor<AuthenticationSchem
     }
 }
 
-/// <summary>Turns <see cref="CallerPolicy"/> into ASP.NET authentication. Every refusal is a bare 403.</summary>
+/// <summary>
+/// Turns <see cref="CallerPolicy"/> into ASP.NET authentication. Every refusal is a bare 403.
+/// Authentication runs on every request, anonymous endpoints such as <c>/healthz</c> included, so a refusal is logged
+/// only once an endpoint actually needs a caller: in the challenge or forbid step, never while authenticating.
+/// </summary>
 public sealed class TailscaleServeAuthHandler(
     IOptionsMonitor<AuthenticationSchemeOptions> options, ILoggerFactory logger, UrlEncoder encoder, Settings settings)
     : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
 {
     public const string SchemeName = "TailscaleServe";
 
-    protected override Task<AuthenticateResult> HandleAuthenticateAsync()
+    private (CallerDecision Decision, string Login) Decide()
     {
         var login = Request.Headers[CallerPolicy.LoginHeader].ToString();
         var transport = CallerPolicy.TransportOf(Context.Connection.RemoteIpAddress);
-        var decision = CallerPolicy.Evaluate(transport, login, settings.AllowedLogins(), settings.AllowLoopbackTcp);
-        if (decision != CallerDecision.Allow)
-        {
-            Logger.LogWarning("Refused caller {Remote} ({Decision})", Context.Connection.RemoteIpAddress, decision);
-            return Task.FromResult(AuthenticateResult.Fail(decision.ToString()));
-        }
+        return (CallerPolicy.Evaluate(transport, login, settings.AllowedLogins(), settings.AllowLoopbackTcp), login);
+    }
+
+    protected override Task<AuthenticateResult> HandleAuthenticateAsync()
+    {
+        var (decision, login) = Decide();
+        // No login at all is an anonymous request, not a failed one: the container health check sends none.
+        if (decision == CallerDecision.DenyNoIdentity) return Task.FromResult(AuthenticateResult.NoResult());
+        if (decision != CallerDecision.Allow) return Task.FromResult(AuthenticateResult.Fail(decision.ToString()));
 
         var identity = new ClaimsIdentity([new Claim(ClaimTypes.Name, login.Trim())], SchemeName);
         return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(identity), SchemeName)));
     }
 
-    protected override Task HandleChallengeAsync(AuthenticationProperties properties)
-    {
-        Response.StatusCode = StatusCodes.Status403Forbidden;
-        return Task.CompletedTask;
-    }
+    protected override Task HandleChallengeAsync(AuthenticationProperties properties) => RefuseAsync();
 
-    protected override Task HandleForbiddenAsync(AuthenticationProperties properties)
+    protected override Task HandleForbiddenAsync(AuthenticationProperties properties) => RefuseAsync();
+
+    private Task RefuseAsync()
     {
+        var (decision, _) = Decide();
+        if (decision != CallerDecision.Allow)
+            Logger.LogWarning("Refused caller {Remote} ({Decision})", Context.Connection.RemoteIpAddress, decision);
         Response.StatusCode = StatusCodes.Status403Forbidden;
         return Task.CompletedTask;
     }
