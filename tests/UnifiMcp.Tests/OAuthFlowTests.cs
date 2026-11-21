@@ -450,6 +450,58 @@ public sealed partial class OAuthFlowTests
         Assert.Contains(h.Logs.Lines, l => l.Contains(PublicHarness.GoogleEmail) && l.Contains("NotListed"));
     }
 
+    /// <summary>Opens the consent page as the owner and returns its signed request, without answering it.</summary>
+    private static async Task<string> ConsentRequestAsync(PublicHarness h, string clientId)
+    {
+        var url = AuthorizeUrl(clientId);
+        await h.SignInAsync(PublicHarness.GoogleEmail, start: url);
+        var page = await h.Http.GetAsync(url);
+        Assert.Equal(HttpStatusCode.OK, page.StatusCode);
+        return RequestField().Match(await page.Content.ReadAsStringAsync()).Groups[1].Value;
+    }
+
+    private static async Task<HttpResponseMessage> AllowAsync(PublicHarness h, string request)
+    {
+        using var consent = new HttpRequestMessage(HttpMethod.Post, "/oauth/consent")
+        {
+            Content = new FormUrlEncodedContent(new Dictionary<string, string> { ["request"] = request, ["decision"] = "allow" }),
+        };
+        consent.Headers.Add("Origin", Base);
+        return await h.Http.SendAsync(consent);
+    }
+
+    [Fact]
+    public async Task Consent_from_another_signed_in_account_is_refused()
+    {
+        await using var h = await PublicHarness.StartAsync();
+        File.WriteAllText(h.AllowedGoogleEmailsFile, PublicHarness.GoogleEmail + "\nsecond@example.test\n");
+        var clientId = await RegisterAsync(h);
+        var request = await ConsentRequestAsync(h, clientId);
+
+        foreach (Cookie c in h.Cookies.Container.GetCookies(PublicHarness.BaseAddress)) c.Expired = true; // sign the owner out
+        await h.SignInAsync("second@example.test");
+        var answer = await AllowAsync(h, request);
+
+        Assert.Equal(HttpStatusCode.BadRequest, answer.StatusCode);
+        Assert.Contains("Sign-in changed", await answer.Content.ReadAsStringAsync());
+        Assert.Contains(h.Logs.Lines, l => l.Contains("consent refused") && l.Contains("second@example.test"));
+    }
+
+    [Fact]
+    public async Task Consent_after_the_address_was_removed_is_refused()
+    {
+        await using var h = await PublicHarness.StartAsync();
+        var clientId = await RegisterAsync(h);
+        var request = await ConsentRequestAsync(h, clientId);
+
+        File.WriteAllText(h.AllowedGoogleEmailsFile, "");
+        var answer = await AllowAsync(h, request);
+
+        // The cookie no longer authenticates, so no one is signed in to give the consent.
+        Assert.Equal(HttpStatusCode.BadRequest, answer.StatusCode);
+        Assert.Contains("Sign-in changed", await answer.Content.ReadAsStringAsync());
+    }
+
     [Fact]
     public async Task Removed_address_closes_authorize()
     {
