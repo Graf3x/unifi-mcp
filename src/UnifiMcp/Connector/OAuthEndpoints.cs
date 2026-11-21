@@ -127,12 +127,11 @@ public static class OAuthEndpoints
                     await http.ChallengeAsync(GoogleSignIn.CookieScheme);
                     return Results.Empty;
                 }
-                var user = UserFrom(auth.Principal);
-                var admission = GoogleSignIn.AdmitOwner(auth.Principal, settings);
-                if (user is null || admission != GoogleSignIn.Admission.Allowed)
+                // Cookie validation already admitted the owner; a cookie with no subject never gets this far, but is refused.
+                if (OAuthUser.From(auth.Principal) is not { } user)
                 {
                     Log(lf).LogWarning("OAuth: authorize refused for {Email} ({Reason}) client {ClientId} from {Ip}",
-                        LogText.Clean(user?.Label) ?? "(no email)", admission, LogText.Clean(client.ClientId), ClientIp(http));
+                        LogText.Clean(auth.Principal.FindFirst("email")?.Value) ?? "(no email)", "no subject", LogText.Clean(client.ClientId), ClientIp(http));
                     return Fail("access_denied", settings.SignIn == SignInMode.Code
                         ? "This sign-in isn't allowed to use UniFi Network."
                         : "This Google account isn't allowed to use UniFi Network.");
@@ -151,7 +150,7 @@ public static class OAuthEndpoints
             .RequireRateLimiting(AuthorizeRateLimitPolicy);
 
         app.MapPost("/oauth/consent", async Task<IResult> (HttpContext http, SqliteOAuthStore store, GrantLedger ledger, IClientMetadataDocuments documents, IDataProtectionProvider dp,
-                Settings settings, TimeProvider time, ILoggerFactory lf, CancellationToken ct) =>
+                TimeProvider time, ILoggerFactory lf, CancellationToken ct) =>
             {
                 if (!http.Request.HasFormContentType) return Page(400, Pages.ErrorPage("This request has expired", "Go back to the application and connect again."));
                 var form = await http.Request.ReadFormAsync(ct);
@@ -162,10 +161,10 @@ public static class OAuthEndpoints
                     return Page(400, Pages.ErrorPage("This request has expired", "Go back to the application and connect again."));
 
                 var auth = await http.AuthenticateAsync(GoogleSignIn.CookieScheme);
-                var user = auth.Succeeded && auth.Principal is not null ? UserFrom(auth.Principal) : null;
-                // The consent must be given by the same signed-in, still-allowed owner the request was rendered for.
-                if (user is null || user.Subject != pending.UserSubject
-                    || GoogleSignIn.AdmitOwner(auth.Principal!, settings) != GoogleSignIn.Admission.Allowed)
+                var user = auth.Succeeded && auth.Principal is not null ? OAuthUser.From(auth.Principal) : null;
+                // The consent must be given by the same owner the request was rendered for. Cookie validation already
+                // admitted whoever is signed in; a removed address has no cookie left, so no user.
+                if (user is null || user.Subject != pending.UserSubject)
                 {
                     Log(lf).LogWarning("OAuth: consent refused for {Email}: not the signed-in, allowed owner (from {Ip})", LogText.Clean(user?.Label) ?? "(none)", ClientIp(http));
                     return Page(400, Pages.ErrorPage("Sign-in changed", "The signed-in account is not the one this request was for. Connect again."));
@@ -336,15 +335,6 @@ public static class OAuthEndpoints
             refresh_token = refreshToken,
             scope,
         }, Json);
-    }
-
-    internal static OAuthUser? UserFrom(ClaimsPrincipal principal)
-    {
-        var sub = principal.FindFirst("sub")?.Value;
-        if (string.IsNullOrEmpty(sub)) return null;
-        var email = principal.FindFirst("email")?.Value ?? "";
-        var name = principal.FindFirst("name")?.Value ?? email;
-        return new OAuthUser { Subject = sub, Email = email, Name = name };
     }
 
     internal static string? ValidateRegistration(RegistrationRequest request)

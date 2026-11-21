@@ -85,4 +85,14 @@ public sealed class OAuthUser
 
     /// <summary>What pages and logs show: the email, or the name when there is none (a code sign-in).</summary>
     public string Label => Email.Length > 0 ? Email : Name;
+
+    /// <summary>The identity a sign-in cookie carries: null when it has no subject.</summary>
+    public static OAuthUser? From(System.Security.Claims.ClaimsPrincipal principal)
+    {
+        var sub = principal.FindFirst("sub")?.Value;
+        if (string.IsNullOrEmpty(sub)) return null;
+        var email = principal.FindFirst("email")?.Value ?? "";
+        var name = principal.FindFirst("name")?.Value ?? email;
+        return new OAuthUser { Subject = sub, Email = email, Name = name };
+    }
 }

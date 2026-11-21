@@ -194,8 +194,7 @@ public sealed class GrantLedgerTests : IDisposable
 
         Assert.Equal(GrantRefusal.NotAdmitted, refused.Kind);
         Assert.Equal("This Google account isn't allowed any more.", refused.Description);
-        Assert.StartsWith("allow-list ", refused.Reason);
-        Assert.EndsWith("; family revoked", refused.Reason);
+        Assert.Equal("NotListed; family revoked", refused.Reason);
         Assert.True(await _store.IsFamilyRevokedAsync(Family));
     }
 
@@ -209,6 +208,7 @@ public sealed class GrantLedgerTests : IDisposable
 
         Assert.Equal(GrantRefusal.NotAdmitted, refused.Kind);
         Assert.Equal("This sign-in isn't allowed any more.", refused.Description);
+        Assert.Equal("OtherSignIn; family revoked", refused.Reason);
         Assert.True(await _store.IsFamilyRevokedAsync(Family));
     }
 
@@ -534,7 +534,7 @@ public sealed class GrantLedgerTests : IDisposable
 
         Assert.Equal(GrantRefusal.NotAdmitted, refused.Kind);
         Assert.Equal("This Google account isn't allowed any more.", refused.Description);
-        Assert.StartsWith("allow-list ", refused.Reason);
+        Assert.Equal("NotListed", refused.Reason);
         Assert.False(await _store.IsFamilyRevokedAsync(Family));
     }
 

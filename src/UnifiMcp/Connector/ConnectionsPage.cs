@@ -34,7 +34,7 @@ public static class ConnectionsPage
 
         app.MapGet("/connections", async Task<IResult> (HttpContext http, GrantLedger ledger, CancellationToken ct) =>
             {
-                if (OAuthEndpoints.UserFrom(http.User) is not { } user) return Results.Unauthorized();
+                if (OAuthUser.From(http.User) is not { } user) return Results.Unauthorized();
                 var consents = await ledger.ListConsentsAsync(user, ct);
                 await Pages.WriteAsync(http.Response, StatusCodes.Status200OK, Render(consents, user));
                 return Results.Empty;
@@ -53,7 +53,7 @@ public static class ConnectionsPage
                     log.LogWarning("Connections: disconnect refused, Origin '{Origin}' is not this server's", Short(LogText.Clean(origin)));
                     return Results.StatusCode(StatusCodes.Status403Forbidden);
                 }
-                if (OAuthEndpoints.UserFrom(http.User) is not { } user) return Results.Unauthorized();
+                if (OAuthUser.From(http.User) is not { } user) return Results.Unauthorized();
 
                 // Only the signed-in user's own consent: an unknown or someone else's client id is the same 404, and changes nothing.
                 if (!await ledger.DisconnectAsync(user, clientId, ct))
