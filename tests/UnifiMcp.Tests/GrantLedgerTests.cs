@@ -288,6 +288,86 @@ public sealed class GrantLedgerTests : IDisposable
         Assert.Equal("claude.ai", consent.ClientName);
     }
 
+    // ---- revoke, disconnect, list, sweep ---------------------------------------------------------------------------
+
+    private static readonly OAuthUser Stranger = new() { Subject = "google-sub-2", Email = "stranger@example.test", Name = "Stranger" };
+
+    [Fact]
+    public async Task Revoking_a_refresh_token_revokes_its_whole_family()
+    {
+        var first = await GrantAsync();
+        var second = Issued(await Ledger().RotateAsync(first, Client)).RefreshToken;
+
+        var revoked = await Ledger().RevokeAsync(first);
+
+        Assert.NotNull(revoked);
+        Assert.Equal(Owner, revoked.User.Email);
+        Assert.Equal(Client.ClientId, revoked.ClientId);
+        Assert.Equal(GrantRefusal.Revoked, Refused(await Ledger().RotateAsync(second, Client)).Kind);
+        Assert.Null(await Ledger().AuthorizeAsync(User, Client, Request));
+    }
+
+    [Fact]
+    public async Task Revoking_an_unknown_token_changes_nothing()
+    {
+        var token = await GrantAsync();
+
+        Assert.Null(await Ledger().RevokeAsync("not-a-token"));
+        Issued(await Ledger().RotateAsync(token, Client));
+    }
+
+    [Fact]
+    public async Task Disconnecting_withdraws_the_consent_and_revokes_its_family()
+    {
+        var code = await Ledger().ApproveAsync(User, Client, Request);
+        var token = Issued(await Ledger().ExchangeAsync(code, Verifier, Redirect, Client)).RefreshToken;
+
+        Assert.True(await Ledger().DisconnectAsync(User, Client.Key));
+
+        Assert.Empty(await Ledger().ListConsentsAsync(User));
+        Assert.Equal(GrantRefusal.Revoked, Refused(await Ledger().RotateAsync(token, Client)).Kind);
+        Assert.Null(await Ledger().AuthorizeAsync(User, Client, Request));
+    }
+
+    [Fact]
+    public async Task Disconnecting_a_client_that_is_not_connected_changes_nothing()
+    {
+        Assert.False(await Ledger().DisconnectAsync(User, Client.Key));
+    }
+
+    [Fact]
+    public async Task An_owner_cannot_disconnect_someone_elses_consent()
+    {
+        await Ledger().ApproveAsync(Stranger, Client, Request);
+
+        Assert.False(await Ledger().DisconnectAsync(User, Client.Key));
+
+        Assert.NotNull(await Ledger().AuthorizeAsync(Stranger, Client, Request));
+    }
+
+    [Fact]
+    public async Task Listing_shows_only_the_owners_own_consents()
+    {
+        await Ledger().ApproveAsync(User, Client, Request);
+        await Ledger().ApproveAsync(User, OtherClient, Request);
+        await Ledger().ApproveAsync(Stranger, Client, Request);
+
+        var mine = await Ledger().ListConsentsAsync(User);
+
+        Assert.Equal(["client-1", "client-2"], mine.Select(c => c.ClientId).Order());
+    }
+
+    [Fact]
+    public async Task The_sweep_removes_expired_codes_and_refresh_tokens()
+    {
+        await Ledger().ApproveAsync(User, Client, Request);
+        await GrantAsync(expiresIn: TimeSpan.FromMinutes(1));
+        _time.Advance(TimeSpan.FromMinutes(10));
+
+        Assert.Equal(2, await Ledger().SweepAsync());
+        Assert.Equal(0, await Ledger().SweepAsync());
+    }
+
     // ---- code exchange ---------------------------------------------------------------------------------------------
 
     private const string Verifier = "verifier-0123456789-0123456789-0123456789-0123456789";

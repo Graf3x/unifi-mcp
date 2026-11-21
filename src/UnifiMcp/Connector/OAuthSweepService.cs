@@ -4,7 +4,7 @@ namespace UnifiMcp;
 
 /// <summary>Removes expired OAuth rows at startup and then every hour. Logs only counts, never row contents.</summary>
 /// <remarks>
-/// The store is resolved inside the try, and only while the public side is ready: opening it can fail (a corrupt
+/// The ledger (and so the store) is resolved inside the try, and only while the public side is ready: opening it can fail (a corrupt
 /// oauth.db), the startup check has already said so once, and a hosted service that throws would stop the host.
 /// </remarks>
 public sealed class OAuthSweepService(IServiceProvider services, ConnectorState state, ILogger<OAuthSweepService> log) : BackgroundService
@@ -19,7 +19,7 @@ public sealed class OAuthSweepService(IServiceProvider services, ConnectorState 
             if (!state.Ready) continue;
             try
             {
-                var removed = await services.GetRequiredService<IOAuthStore>().SweepExpiredAsync(stoppingToken);
+                var removed = await services.GetRequiredService<GrantLedger>().SweepAsync(stoppingToken);
                 if (removed > 0) log.LogInformation("OAuth sweep removed {Count} expired rows", removed);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)

@@ -20,6 +20,9 @@ public enum GrantRefusal
 /// <summary>What a code is bound to: where it may be redeemed from, its PKCE challenge, scope and resource.</summary>
 public sealed record CodeRequest(string RedirectUri, string CodeChallenge, string Scope, string? Resource);
 
+/// <summary>A family revoked by a client returning one of its refresh tokens: whose it was, for the log.</summary>
+public sealed record GrantRevoked(OAuthUser User, string ClientId);
+
 public abstract record GrantOutcome;
 
 /// <summary>The grant stands: who it is for, its scope, and the client's next refresh token (the only copy of it).</summary>
@@ -156,6 +159,37 @@ public sealed class GrantLedger(IOAuthStore store, TimeProvider time, Settings s
         var refresh = await SaveRefreshTokenAsync(client, consent.FamilyId, stored.Scope, stored.User, ct);
         return new GrantIssued(stored.User, stored.Scope, refresh);
     }
+
+    /// <summary>
+    /// RFC 7009: a client gives back a refresh token (live or already used) and its whole family is revoked. Null for a
+    /// token the ledger does not know, which changes nothing.
+    /// </summary>
+    internal async Task<GrantRevoked?> RevokeAsync(string presented, CancellationToken ct = default)
+    {
+        if (await store.GetRefreshTokenAsync(TokenIssuer.Hash(presented), ct) is not { } stored) return null;
+        await store.RevokeFamilyAsync(stored.FamilyId, ct);
+        return new GrantRevoked(stored.User, stored.ClientId);
+    }
+
+    /// <summary>
+    /// The owner withdraws their consent for a client (by its consent key): its family is revoked, then the consent is
+    /// removed, so the client has to be approved again. False when the owner has no such consent; another owner's
+    /// consent is never touched.
+    /// </summary>
+    internal async Task<bool> DisconnectAsync(OAuthUser owner, string consentKey, CancellationToken ct = default)
+    {
+        if (await store.GetConsentAsync(owner.Subject, consentKey, ct) is not { } consent) return false;
+        await store.RevokeFamilyAsync(consent.FamilyId, ct);
+        await store.DeleteConsentAsync(owner.Subject, consentKey, ct);
+        return true;
+    }
+
+    /// <summary>The owner's consents, for the Connections page.</summary>
+    internal Task<IReadOnlyList<Consent>> ListConsentsAsync(OAuthUser owner, CancellationToken ct = default) =>
+        store.ListConsentsAsync(owner.Subject, ct);
+
+    /// <summary>Removes expired codes and refresh tokens and old family tombstones; returns how many rows went.</summary>
+    internal Task<int> SweepAsync(CancellationToken ct = default) => store.SweepExpiredAsync(ct);
 
     /// <summary>Mints a refresh token into a family and stores only its hash; returns the token itself.</summary>
     private async Task<string> SaveRefreshTokenAsync(OAuthEndpoints.ResolvedClient client, string familyId, string scope, OAuthUser user, CancellationToken ct)

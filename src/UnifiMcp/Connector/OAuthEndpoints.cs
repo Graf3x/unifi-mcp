@@ -253,17 +253,14 @@ public static class OAuthEndpoints
             .RequireRateLimiting(TokenRateLimitPolicy);
 
         // RFC 7009: a client giving back its refresh token revokes its whole family.
-        app.MapPost("/oauth/revoke", async Task<IResult> (HttpContext http, IOAuthStore store, ILoggerFactory lf, CancellationToken ct) =>
+        app.MapPost("/oauth/revoke", async Task<IResult> (HttpContext http, GrantLedger ledger, ILoggerFactory lf, CancellationToken ct) =>
             {
                 if (!http.Request.HasFormContentType) return Results.Ok();
                 var form = await http.Request.ReadFormAsync(ct);
                 var token = form["token"].ToString();
-                if (!string.IsNullOrEmpty(token) && await store.GetRefreshTokenAsync(TokenIssuer.Hash(token), ct) is { } stored)
-                {
-                    await store.RevokeFamilyAsync(stored.FamilyId, ct);
-                    Log(lf).LogInformation("OAuth: revoked access for {Email} client {ClientId} from {Ip}", LogText.Clean(stored.User.Label),
-                        LogText.Clean(stored.ClientId), ClientIp(http));
-                }
+                if (!string.IsNullOrEmpty(token) && await ledger.RevokeAsync(token, ct) is { } revoked)
+                    Log(lf).LogInformation("OAuth: revoked access for {Email} client {ClientId} from {Ip}", LogText.Clean(revoked.User.Label),
+                        LogText.Clean(revoked.ClientId), ClientIp(http));
                 return Results.Ok(); // RFC 7009: always 200, say nothing about unknown tokens
             })
             .RequireRateLimiting(TokenRateLimitPolicy);
