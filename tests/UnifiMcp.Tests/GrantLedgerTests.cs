@@ -193,6 +193,101 @@ public sealed class GrantLedgerTests : IDisposable
         Assert.Equal("Consent was withdrawn.", refused.Description);
     }
 
+    // ---- authorize and approve -------------------------------------------------------------------------------------
+
+    private static readonly CodeRequest Request = new(Redirect, Challenge(Verifier), "mcp:tools", null);
+
+    [Fact]
+    public async Task Authorize_without_a_consent_asks_for_one()
+    {
+        Assert.Null(await Ledger().AuthorizeAsync(User, Client, Request));
+    }
+
+    [Fact]
+    public async Task Approve_starts_a_family_and_its_code_exchanges_into_it()
+    {
+        var code = await Ledger().ApproveAsync(User, Client, Request);
+
+        var consent = await _store.GetConsentAsync(User.Subject, Client.Key);
+        Assert.NotNull(consent);
+        Assert.Equal("Claude", consent.ClientName);
+        Assert.Null(consent.ClientUri);
+        Assert.Equal("mcp:tools", consent.Scope);
+        Assert.Equal(_time.GetUtcNow(), consent.CreatedAt);
+        var issued = Issued(await Ledger().ExchangeAsync(code, Verifier, Redirect, Client));
+        Assert.Equal(consent.FamilyId, (await _store.GetRefreshTokenAsync(TokenIssuer.Hash(issued.RefreshToken)))!.FamilyId);
+    }
+
+    [Fact]
+    public async Task Authorize_with_a_standing_consent_issues_a_code_in_the_same_family_and_marks_it_used()
+    {
+        await Ledger().ApproveAsync(User, Client, Request);
+        var family = (await _store.GetConsentAsync(User.Subject, Client.Key))!.FamilyId;
+        _time.Advance(TimeSpan.FromDays(2));
+
+        var code = await Ledger().AuthorizeAsync(User, Client, Request);
+
+        Assert.NotNull(code);
+        var consent = (await _store.GetConsentAsync(User.Subject, Client.Key))!;
+        Assert.Equal(family, consent.FamilyId);
+        Assert.Equal(_time.GetUtcNow(), consent.LastUsedAt);
+        Issued(await Ledger().ExchangeAsync(code, Verifier, Redirect, Client));
+    }
+
+    [Fact]
+    public async Task Authorize_asks_again_once_the_consents_family_was_revoked()
+    {
+        await Ledger().ApproveAsync(User, Client, Request);
+        await _store.RevokeFamilyAsync((await _store.GetConsentAsync(User.Subject, Client.Key))!.FamilyId);
+
+        Assert.Null(await Ledger().AuthorizeAsync(User, Client, Request));
+    }
+
+    [Fact]
+    public async Task Approving_again_after_a_revocation_starts_a_fresh_family()
+    {
+        await Ledger().ApproveAsync(User, Client, Request);
+        var old = (await _store.GetConsentAsync(User.Subject, Client.Key))!.FamilyId;
+        await _store.RevokeFamilyAsync(old);
+
+        var code = await Ledger().ApproveAsync(User, Client, Request);
+
+        var fresh = (await _store.GetConsentAsync(User.Subject, Client.Key))!.FamilyId;
+        Assert.NotEqual(old, fresh);
+        Issued(await Ledger().ExchangeAsync(code, Verifier, Redirect, Client));
+    }
+
+    [Fact]
+    public async Task A_code_lasts_five_minutes()
+    {
+        var code = await Ledger().ApproveAsync(User, Client, Request);
+        _time.Advance(GrantLedger.CodeLifetime);
+
+        Assert.Equal(GrantRefusal.Invalid, Refused(await Ledger().ExchangeAsync(code, Verifier, Redirect, Client)).Kind);
+        Assert.Equal(TimeSpan.FromMinutes(5), GrantLedger.CodeLifetime);
+    }
+
+    [Fact]
+    public async Task A_code_carries_the_requested_redirect_and_challenge()
+    {
+        var code = await Ledger().ApproveAsync(User, Client, Request with { RedirectUri = "https://claude.ai/other" });
+
+        Assert.Equal("redirect_uri does not match.", Refused(await Ledger().ExchangeAsync(code, Verifier, Redirect, Client)).Description);
+    }
+
+    [Fact]
+    public async Task Approving_a_metadata_document_client_records_its_document_url()
+    {
+        const string url = "https://claude.ai/oauth/claude-code-client-metadata";
+        var client = new OAuthEndpoints.ResolvedClient(url, OAuthEndpoints.ResolvedClient.KeyFor(url), "claude.ai", [Redirect], true);
+
+        await Ledger().ApproveAsync(User, client, Request);
+
+        var consent = (await _store.GetConsentAsync(User.Subject, client.Key))!;
+        Assert.Equal(url, consent.ClientUri);
+        Assert.Equal("claude.ai", consent.ClientName);
+    }
+
     // ---- code exchange ---------------------------------------------------------------------------------------------
 
     private const string Verifier = "verifier-0123456789-0123456789-0123456789-0123456789";

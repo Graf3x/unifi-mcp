@@ -23,7 +23,6 @@ public static class OAuthEndpoints
     internal const int MaxRegistrationBytes = 16 * 1024;
     internal const int MaxRedirectUriLength = 2000;
     internal const int MaxClientNameLength = 200;
-    internal static readonly TimeSpan CodeLifetime = TimeSpan.FromMinutes(5);
     internal static readonly TimeSpan PendingConsentLifetime = TimeSpan.FromMinutes(10);
     private const string ConsentProtectorPurpose = "UnifiMcp.OAuth.PendingConsent.v1";
     private const int MaxProblemLength = 300;
@@ -93,7 +92,7 @@ public static class OAuthEndpoints
             .RequireRateLimiting(RegisterRateLimitPolicy);
 
         // ---- authorize ------------------------------------------------------------------------------
-        app.MapGet("/oauth/authorize", async Task<IResult> (HttpContext http, IOAuthStore store, ITokenIssuer issuer, IClientMetadataDocuments documents,
+        app.MapGet("/oauth/authorize", async Task<IResult> (HttpContext http, IOAuthStore store, ITokenIssuer issuer, GrantLedger ledger, IClientMetadataDocuments documents,
                 IDataProtectionProvider dp, Settings settings, TimeProvider time, ILoggerFactory lf, CancellationToken ct) =>
             {
                 var q = http.Request.Query;
@@ -139,22 +138,19 @@ public static class OAuthEndpoints
                         : "This Google account isn't allowed to use UniFi Network.");
                 }
 
+                // Consent once per client: a standing consent skips the page and keeps its family; otherwise the owner is
+                // asked, and the consent POST starts a fresh family.
+                if (await ledger.AuthorizeAsync(user, client, new CodeRequest(redirectUri, challenge, scope, NullIfEmpty(resource)), ct) is { } code)
+                    return CodeRedirect(redirectUri, code, state);
+
                 var pending = new PendingAuthorization(clientId, redirectUri, challenge, scope, NullIfEmpty(resource), state, user.Subject,
                     time.GetUtcNow().Add(PendingConsentLifetime));
-
-                // Consent once per client. A standing consent skips the page and keeps its family. A consent whose family was
-                // revoked (revoke, reuse, allow-list refusal) is not standing: every token minted into a tombstoned family is
-                // born revoked, so the owner is asked again and the consent POST starts a fresh family.
-                var existing = await store.GetConsentAsync(user.Subject, client.Key, ct);
-                if (existing is not null && !await store.IsFamilyRevokedAsync(existing.FamilyId, ct))
-                    return await IssueCodeAndRedirectAsync(pending, user, existing, client, store, time, ct);
-
                 var token = dp.CreateProtector(ConsentProtectorPurpose).Protect(JsonSerializer.Serialize(pending, Json));
                 return ConsentPage(client, user, token, redirectUri, settings);
             })
             .RequireRateLimiting(AuthorizeRateLimitPolicy);
 
-        app.MapPost("/oauth/consent", async Task<IResult> (HttpContext http, IOAuthStore store, IClientMetadataDocuments documents, IDataProtectionProvider dp,
+        app.MapPost("/oauth/consent", async Task<IResult> (HttpContext http, IOAuthStore store, GrantLedger ledger, IClientMetadataDocuments documents, IDataProtectionProvider dp,
                 Settings settings, TimeProvider time, ILoggerFactory lf, CancellationToken ct) =>
             {
                 if (!http.Request.HasFormContentType) return Page(400, Pages.ErrorPage("This request has expired", "Go back to the application and connect again."));
@@ -185,15 +181,10 @@ public static class OAuthEndpoints
                     return RedirectWithError(pending.RedirectUri, "access_denied", "The user declined.", pending.State);
                 }
 
-                var consent = new Consent
-                {
-                    UserId = user.Subject, ClientId = client.Key, ClientName = client.DisplayName, ClientUri = client.FromMetadataDocument ? client.ClientId : null,
-                    Scope = pending.Scope, FamilyId = TokenIssuer.NewSecret(), CreatedAt = time.GetUtcNow(), LastUsedAt = time.GetUtcNow(),
-                };
-                await store.UpsertConsentAsync(consent, ct);
+                var code = await ledger.ApproveAsync(user, client, new CodeRequest(pending.RedirectUri, pending.CodeChallenge, pending.Scope, pending.Resource), ct);
                 Log(lf).LogInformation("OAuth: {Email} granted client {ClientId} '{Name}' scope {Scope}", LogText.Clean(user.Label), LogText.Clean(client.ClientId),
                     LogText.Clean(client.DisplayName), pending.Scope);
-                return await IssueCodeAndRedirectAsync(pending, user, consent, client, store, time, ct);
+                return CodeRedirect(pending.RedirectUri, code, pending.State);
             });
 
         // ---- token ---------------------------------------------------------------------------------
@@ -333,19 +324,9 @@ public static class OAuthEndpoints
     private static bool ResourceAllowed(string resource, ITokenIssuer issuer) =>
         string.IsNullOrEmpty(resource) || string.Equals(resource.TrimEnd('/'), issuer.Audience.TrimEnd('/'), StringComparison.OrdinalIgnoreCase);
 
-    private static async Task<IResult> IssueCodeAndRedirectAsync(PendingAuthorization pending, OAuthUser user, Consent consent, ResolvedClient client,
-        IOAuthStore store, TimeProvider time, CancellationToken ct)
-    {
-        var code = TokenIssuer.NewSecret();
-        await store.SaveCodeAsync(new AuthorizationCode
-        {
-            CodeHash = TokenIssuer.Hash(code), ClientId = client.ClientId, RedirectUri = pending.RedirectUri, CodeChallenge = pending.CodeChallenge,
-            Scope = pending.Scope, Resource = pending.Resource, User = user, ExpiresAt = time.GetUtcNow().Add(CodeLifetime),
-        }, ct);
-        consent.LastUsedAt = time.GetUtcNow();
-        await store.UpsertConsentAsync(consent, ct);
-        return new QuietRedirect(WithQuery(pending.RedirectUri, ("code", code), ("state", pending.State)));
-    }
+    /// <summary>Back to the client with its code; the URL carries the code, so it is never logged.</summary>
+    private static IResult CodeRedirect(string redirectUri, string code, string state) =>
+        new QuietRedirect(WithQuery(redirectUri, ("code", code), ("state", state)));
 
     private static async Task<IResult> TokenResponseAsync(ITokenIssuer issuer, OAuthUser user, string clientId, string scope, string refreshToken, CancellationToken ct)
     {

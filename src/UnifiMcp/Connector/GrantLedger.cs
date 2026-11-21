@@ -17,6 +17,9 @@ public enum GrantRefusal
     ConsentWithdrawn,
 }
 
+/// <summary>What a code is bound to: where it may be redeemed from, its PKCE challenge, scope and resource.</summary>
+public sealed record CodeRequest(string RedirectUri, string CodeChallenge, string Scope, string? Resource);
+
 public abstract record GrantOutcome;
 
 /// <summary>The grant stands: who it is for, its scope, and the client's next refresh token (the only copy of it).</summary>
@@ -36,6 +39,45 @@ public sealed record GrantRefused(GrantRefusal Kind, string Description, string?
 public sealed class GrantLedger(IOAuthStore store, TimeProvider time, Settings settings)
 {
     public static readonly TimeSpan RefreshTokenLifetime = TimeSpan.FromDays(30);
+    public static readonly TimeSpan CodeLifetime = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// The signed-in owner asks again for a client they approved before: a code if that consent still stands, or null
+    /// when the owner has to approve (no consent, or its family was revoked, since every token minted into a revoked
+    /// family is born revoked).
+    /// </summary>
+    internal async Task<string?> AuthorizeAsync(OAuthUser user, OAuthEndpoints.ResolvedClient client, CodeRequest request, CancellationToken ct = default)
+    {
+        var existing = await store.GetConsentAsync(user.Subject, client.Key, ct);
+        if (existing is null || await store.IsFamilyRevokedAsync(existing.FamilyId, ct)) return null;
+        return await IssueCodeAsync(user, client, existing, request, ct);
+    }
+
+    /// <summary>The owner approves a client: a consent with a fresh family (replacing any earlier one) and its first code.</summary>
+    internal async Task<string> ApproveAsync(OAuthUser user, OAuthEndpoints.ResolvedClient client, CodeRequest request, CancellationToken ct = default)
+    {
+        var consent = new Consent
+        {
+            UserId = user.Subject, ClientId = client.Key, ClientName = client.DisplayName, ClientUri = client.FromMetadataDocument ? client.ClientId : null,
+            Scope = request.Scope, FamilyId = TokenIssuer.NewSecret(), CreatedAt = time.GetUtcNow(), LastUsedAt = time.GetUtcNow(),
+        };
+        await store.UpsertConsentAsync(consent, ct);
+        return await IssueCodeAsync(user, client, consent, request, ct);
+    }
+
+    /// <summary>Saves a single-use code (its hash only) and marks the consent used; returns the code itself.</summary>
+    private async Task<string> IssueCodeAsync(OAuthUser user, OAuthEndpoints.ResolvedClient client, Consent consent, CodeRequest request, CancellationToken ct)
+    {
+        var code = TokenIssuer.NewSecret();
+        await store.SaveCodeAsync(new AuthorizationCode
+        {
+            CodeHash = TokenIssuer.Hash(code), ClientId = client.ClientId, RedirectUri = request.RedirectUri, CodeChallenge = request.CodeChallenge,
+            Scope = request.Scope, Resource = request.Resource, User = user, ExpiresAt = time.GetUtcNow().Add(CodeLifetime),
+        }, ct);
+        consent.LastUsedAt = time.GetUtcNow();
+        await store.UpsertConsentAsync(consent, ct);
+        return code;
+    }
 
     private const string InvalidRefresh = "Refresh token is invalid or expired.";
     private const string InvalidCode = "Authorization code is invalid, expired or already used.";
