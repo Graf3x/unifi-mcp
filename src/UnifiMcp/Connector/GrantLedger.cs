@@ -39,7 +39,7 @@ public sealed record GrantRefused(GrantRefusal Kind, string Description, string?
 /// Callers present what the client sent; the ledger checks, rotates and revokes in the right order and says what
 /// happened. It knows nothing of HTTP and writes no logs.
 /// </summary>
-public sealed class GrantLedger(IOAuthStore store, TimeProvider time, Settings settings)
+public sealed class GrantLedger(SqliteOAuthStore store, TimeProvider time, Settings settings)
 {
     public static readonly TimeSpan RefreshTokenLifetime = TimeSpan.FromDays(30);
     public static readonly TimeSpan CodeLifetime = TimeSpan.FromMinutes(5);

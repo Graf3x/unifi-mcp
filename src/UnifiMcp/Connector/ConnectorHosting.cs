@@ -48,10 +48,10 @@ public static class ConnectorHosting
         DataKeys.AddProtectedDataProtection(b.Services, s, state);
         // Opening the store creates the folder, opens oauth.db and runs the schema, so it can fail. Nothing resolves it
         // while the host is built or started except the startup check, which turns a failure into a 503 on this side only.
-        b.Services.AddSingleton<IOAuthStore>(sp => new SqliteOAuthStore(OAuthDbPath(s), sp.GetRequiredService<TimeProvider>()));
-        b.Services.AddSingleton<ITokenIssuer>(sp => new TokenIssuer(sp.GetRequiredService<IOAuthStore>(), sp.GetRequiredService<IDataProtectionProvider>(),
+        b.Services.AddSingleton<SqliteOAuthStore>(sp => new SqliteOAuthStore(OAuthDbPath(s), sp.GetRequiredService<TimeProvider>()));
+        b.Services.AddSingleton<ITokenIssuer>(sp => new TokenIssuer(sp.GetRequiredService<SqliteOAuthStore>(), sp.GetRequiredService<IDataProtectionProvider>(),
             publicBase, resource, sp.GetRequiredService<TimeProvider>()));
-        b.Services.AddSingleton(sp => new GrantLedger(sp.GetRequiredService<IOAuthStore>(), sp.GetRequiredService<TimeProvider>(), s));
+        b.Services.AddSingleton(sp => new GrantLedger(sp.GetRequiredService<SqliteOAuthStore>(), sp.GetRequiredService<TimeProvider>(), s));
         // Hosted services start in registration order: the check settles the state before the sweep first looks at it.
         b.Services.AddHostedService<StartupCheck>();
         b.Services.AddHostedService<OAuthSweepService>();
@@ -221,7 +221,7 @@ public static class ConnectorHosting
             SigningKey? stored;
             try
             {
-                stored = await services.GetRequiredService<IOAuthStore>().GetSigningKeyAsync(ct);
+                stored = await services.GetRequiredService<SqliteOAuthStore>().GetSigningKeyAsync(ct);
             }
             catch (Exception e) when (e is not OperationCanceledException)
             {

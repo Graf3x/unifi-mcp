@@ -39,7 +39,7 @@ public static class OAuthEndpoints
         app.MapGet("/oauth/jwks", async (ITokenIssuer issuer, CancellationToken ct) => Results.Json(await issuer.GetJwksAsync(ct), Json));
 
         // ---- RFC 7591 dynamic client registration -----------------------------------------------------
-        app.MapPost("/oauth/register", async Task<IResult> (HttpContext http, IOAuthStore store, ILoggerFactory lf, CancellationToken ct) =>
+        app.MapPost("/oauth/register", async Task<IResult> (HttpContext http, SqliteOAuthStore store, ILoggerFactory lf, CancellationToken ct) =>
             {
                 // Anyone may call this, so the body is read only up to the cap: a declared length over it is refused
                 // unread, and a chunked one stops being read as soon as it proves larger.
@@ -92,7 +92,7 @@ public static class OAuthEndpoints
             .RequireRateLimiting(RegisterRateLimitPolicy);
 
         // ---- authorize ------------------------------------------------------------------------------
-        app.MapGet("/oauth/authorize", async Task<IResult> (HttpContext http, IOAuthStore store, ITokenIssuer issuer, GrantLedger ledger, IClientMetadataDocuments documents,
+        app.MapGet("/oauth/authorize", async Task<IResult> (HttpContext http, SqliteOAuthStore store, ITokenIssuer issuer, GrantLedger ledger, IClientMetadataDocuments documents,
                 IDataProtectionProvider dp, Settings settings, TimeProvider time, ILoggerFactory lf, CancellationToken ct) =>
             {
                 var q = http.Request.Query;
@@ -150,7 +150,7 @@ public static class OAuthEndpoints
             })
             .RequireRateLimiting(AuthorizeRateLimitPolicy);
 
-        app.MapPost("/oauth/consent", async Task<IResult> (HttpContext http, IOAuthStore store, GrantLedger ledger, IClientMetadataDocuments documents, IDataProtectionProvider dp,
+        app.MapPost("/oauth/consent", async Task<IResult> (HttpContext http, SqliteOAuthStore store, GrantLedger ledger, IClientMetadataDocuments documents, IDataProtectionProvider dp,
                 Settings settings, TimeProvider time, ILoggerFactory lf, CancellationToken ct) =>
             {
                 if (!http.Request.HasFormContentType) return Page(400, Pages.ErrorPage("This request has expired", "Go back to the application and connect again."));
@@ -188,7 +188,7 @@ public static class OAuthEndpoints
             });
 
         // ---- token ---------------------------------------------------------------------------------
-        app.MapPost("/oauth/token", async Task<IResult> (HttpContext http, IOAuthStore store, ITokenIssuer issuer, GrantLedger ledger, IClientMetadataDocuments documents,
+        app.MapPost("/oauth/token", async Task<IResult> (HttpContext http, SqliteOAuthStore store, ITokenIssuer issuer, GrantLedger ledger, IClientMetadataDocuments documents,
                 ILoggerFactory lf, CancellationToken ct) =>
             {
                 var log = Log(lf);
@@ -283,7 +283,7 @@ public static class OAuthEndpoints
             HttpClientMetadataDocuments.IsClientIdUrl(clientId, out _) ? "cimd_" + TokenIssuer.Hash(clientId)[..32] : clientId;
     }
 
-    private static async Task<(ResolvedClient? Client, string? Problem)> ResolveClientAsync(string clientId, IOAuthStore store, IClientMetadataDocuments documents, CancellationToken ct)
+    private static async Task<(ResolvedClient? Client, string? Problem)> ResolveClientAsync(string clientId, SqliteOAuthStore store, IClientMetadataDocuments documents, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(clientId)) return (null, "client_id is required.");
         if (HttpClientMetadataDocuments.IsClientIdUrl(clientId, out _))

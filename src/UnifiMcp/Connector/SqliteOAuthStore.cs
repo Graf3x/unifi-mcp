@@ -8,7 +8,7 @@ namespace UnifiMcp;
 /// the raw values. The three race-sensitive operations (redeem code, mark refresh redeemed, revoke family) are each
 /// one statement or one transaction, so parallel requests get exactly one winner.
 /// </summary>
-public sealed class SqliteOAuthStore : IOAuthStore
+public sealed class SqliteOAuthStore
 {
     public static readonly TimeSpan FamilyTombstoneRetention = TimeSpan.FromDays(60);
 
@@ -203,6 +203,7 @@ public sealed class SqliteOAuthStore : IOAuthStore
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
+    /// <summary>Reads the code and marks it redeemed in one step; null when unknown, expired or already redeemed.</summary>
     public async Task<AuthorizationCode?> RedeemCodeAsync(string codeHash, CancellationToken ct = default)
     {
         await using var conn = await OpenAsync(ct);
@@ -291,6 +292,7 @@ public sealed class SqliteOAuthStore : IOAuthStore
         };
     }
 
+    /// <summary>Marks a refresh token redeemed only if it is not already; false means another request got there first (treat as reuse).</summary>
     public async Task<bool> TryMarkRefreshTokenRedeemedAsync(string tokenHash, CancellationToken ct = default)
     {
         await using var conn = await OpenAsync(ct);
@@ -313,6 +315,7 @@ public sealed class SqliteOAuthStore : IOAuthStore
         return won;
     }
 
+    /// <summary>Revokes every token in the family and leaves a tombstone so the family stays revoked for 60 days.</summary>
     public async Task RevokeFamilyAsync(string familyId, CancellationToken ct = default)
     {
         await using var conn = await OpenAsync(ct);
@@ -400,6 +403,7 @@ public sealed class SqliteOAuthStore : IOAuthStore
 
     // ---- signing key ----
 
+    /// <summary>The wrapped signing key, or null when none has been generated yet.</summary>
     public async Task<SigningKey?> GetSigningKeyAsync(CancellationToken ct = default)
     {
         await using var conn = await OpenAsync(ct);
@@ -413,6 +417,7 @@ public sealed class SqliteOAuthStore : IOAuthStore
         return await r.ReadAsync(ct) ? new SigningKey { KeyId = r.GetString(0), ProtectedPrivateKey = r.GetString(1) } : null;
     }
 
+    /// <summary>Stores the key unless one already exists; returns whichever is now stored (first writer wins).</summary>
     public async Task<SigningKey> SaveSigningKeyIfAbsentAsync(SigningKey key, CancellationToken ct = default)
     {
         await using var conn = await OpenAsync(ct);
@@ -427,6 +432,7 @@ public sealed class SqliteOAuthStore : IOAuthStore
 
     // ---- housekeeping ----
 
+    /// <summary>Removes expired codes, expired refresh tokens and family tombstones older than 60 days; returns the rows removed.</summary>
     public async Task<int> SweepExpiredAsync(CancellationToken ct = default)
     {
         var now = Now;

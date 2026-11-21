@@ -30,7 +30,7 @@ public sealed class TokenIssuer : ITokenIssuer
 {
     private const string ProtectorPurpose = "UnifiMcp.OAuth.SigningKey.v1";
 
-    private readonly IOAuthStore _store;
+    private readonly SqliteOAuthStore _store;
     private readonly IDataProtector _protector;
     private readonly TimeProvider _time;
     private readonly SemaphoreSlim _lock = new(1, 1);
@@ -40,7 +40,7 @@ public sealed class TokenIssuer : ITokenIssuer
     public string Audience { get; }
     public TimeSpan AccessTokenLifetime { get; } = TimeSpan.FromHours(1);
 
-    public TokenIssuer(IOAuthStore store, IDataProtectionProvider dataProtection, string issuer, string audience, TimeProvider time)
+    public TokenIssuer(SqliteOAuthStore store, IDataProtectionProvider dataProtection, string issuer, string audience, TimeProvider time)
     {
         _store = store;
         _protector = dataProtection.CreateProtector(ProtectorPurpose);
