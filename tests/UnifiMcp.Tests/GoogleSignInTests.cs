@@ -76,7 +76,7 @@ public class GoogleSignInTests
         Assert.Contains("isn't allowed", await signIn.Callback.Content.ReadAsStringAsync());
         Assert.Null(h.Cookies.LastSetCookie(GoogleSignIn.CookieScheme));
         Assert.Empty(h.Cookies.Container.GetCookies(PublicHarness.BaseAddress)); // no half-signed-in state
-        Assert.Contains(h.Logs.Lines, l => l.Contains("someone@else.test") && l.Contains("NotAllowed"));
+        Assert.Contains(h.Logs.Lines, l => l.Contains("someone@else.test") && l.Contains("NotListed"));
         Assert.Equal(HttpStatusCode.Redirect, (await h.Http.GetAsync("/connections")).StatusCode);
     }
 
@@ -137,7 +137,7 @@ public class GoogleSignInTests
         Assert.NotEqual(HttpStatusCode.OK, after.StatusCode);
         Assert.Null(h.Cookies.Get(PublicHarness.BaseAddress, GoogleSignIn.CookieScheme));
         Assert.Contains("expires=Thu, 01 Jan 1970", h.Cookies.LastSetCookie(GoogleSignIn.CookieScheme)!, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains(h.Logs.Lines, l => l.Contains(PublicHarness.GoogleEmail) && l.Contains("NotAllowed"));
+        Assert.Contains(h.Logs.Lines, l => l.Contains(PublicHarness.GoogleEmail) && l.Contains("NotListed"));
     }
 
     [Fact]

@@ -173,22 +173,26 @@ public static class GoogleSignIn
     {
         var google = ctx.Principal ?? new ClaimsPrincipal();
         var settings = ctx.HttpContext.RequestServices.GetRequiredService<Settings>();
-        var admission = Admit(google, settings.AllowedGoogleEmails());
         var email = google.FindFirst("email")?.Value.Trim();
+        // Only here is Google's own email_verified seen: an identity exists only for an address Google verified, so
+        // owner admission afterwards never asks about it.
+        var reason = string.IsNullOrEmpty(email) ? "NoEmail"
+            : !string.Equals(google.FindFirst("email_verified")?.Value.Trim(), "true", StringComparison.OrdinalIgnoreCase) ? "Unverified"
+            : OwnerAdmission.Admit(new OAuthUser { Subject = google.FindFirst("sub")?.Value ?? "", Email = email }, settings).ToString();
         var log = Log(ctx.HttpContext);
-        if (admission != Admission.Allowed)
+        if (reason != nameof(Admission.Allowed))
         {
-            log.LogWarning("Google sign-in refused for {Email}: {Reason}", email ?? "(no email)", admission);
+            log.LogWarning("Google sign-in refused for {Email}: {Reason}", email is { Length: > 0 } ? email : "(no email)", reason);
             ctx.HandleResponse(); // no cookie; the correlation and nonce cookies were already deleted when they were read
             await Pages.WriteAsync(ctx.Response, StatusCodes.Status403Forbidden, Pages.ErrorPage("This Google account isn't allowed",
-                admission == Admission.Unverified
+                reason == "Unverified"
                     ? "Google hasn't verified this account's email address."
-                    : $"{email ?? "This account"} isn't on this server's list of owners. Sign in with the owner's Google account."));
+                    : $"{(email is { Length: > 0 } ? email : "This account")} isn't on this server's list of owners. Sign in with the owner's Google account."));
             return;
         }
 
-        log.LogInformation("Google sign-in for {Email}: {Reason}", email, admission);
-        // Only what the owner's pages need. email_verified stays so every later check can run Admit again.
+        log.LogInformation("Google sign-in for {Email}: {Reason}", email, reason);
+        // Only what the owner's pages need. email_verified stays until authorize and consent stop reading it.
         var identity = new ClaimsIdentity(
             new[] { Claim("sub", google), new Claim("email", email!), Claim("name", google), new Claim("email_verified", "true") }.OfType<Claim>(),
             CookieScheme, "email", null);
@@ -199,8 +203,10 @@ public static class GoogleSignIn
     {
         var principal = ctx.Principal ?? new ClaimsPrincipal();
         var settings = ctx.HttpContext.RequestServices.GetRequiredService<Settings>();
-        var admission = AdmitOwner(principal, settings);
-        string? reason = admission != Admission.Allowed ? admission.ToString() : null;
+        // A cookie without a subject is no identity at all; otherwise the owner check runs again on every use.
+        string? reason = OAuthUser.From(principal) is not { } user ? "no subject"
+            : OwnerAdmission.Admit(user, settings) is var admission && admission != UnifiMcp.Admission.Allowed ? admission.ToString()
+            : null;
         if (reason is null)
         {
             var signedIn = ctx.Properties.Items.TryGetValue(SignedInKey, out var raw)
