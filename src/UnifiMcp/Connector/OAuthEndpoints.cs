@@ -198,7 +198,7 @@ public static class OAuthEndpoints
 
         // ---- token ---------------------------------------------------------------------------------
         app.MapPost("/oauth/token", async Task<IResult> (HttpContext http, IOAuthStore store, ITokenIssuer issuer, GrantLedger ledger, IClientMetadataDocuments documents,
-                Settings settings, TimeProvider time, ILoggerFactory lf, CancellationToken ct) =>
+                ILoggerFactory lf, CancellationToken ct) =>
             {
                 var log = Log(lf);
                 var clientId = "";
@@ -233,34 +233,14 @@ public static class OAuthEndpoints
                         var verifier = form["code_verifier"].ToString();
                         if (string.IsNullOrEmpty(code) || string.IsNullOrEmpty(verifier)) return Refuse(400, "invalid_request", "code and code_verifier are required.");
 
-                        var stored = await store.RedeemCodeAsync(TokenIssuer.Hash(code), ct);
-                        if (stored is null) return Refuse(400, "invalid_grant", "Authorization code is invalid, expired or already used.");
-                        if (stored.ClientId != client.ClientId)
-                            return Refuse(400, "invalid_grant", "Authorization code is invalid, expired or already used.", stored.User.Label, "code was issued to another client");
-                        var redirectUri = form["redirect_uri"].ToString();
-                        if (!string.IsNullOrEmpty(redirectUri) && redirectUri != stored.RedirectUri)
-                            return Refuse(400, "invalid_grant", "redirect_uri does not match.", stored.User.Label);
-                        if (!TokenIssuer.VerifyPkce(verifier, stored.CodeChallenge)) return Refuse(400, "invalid_grant", "PKCE verification failed.", stored.User.Label);
-                        if (GrantLedger.Admit(stored.User, settings) is var admitted && admitted != GoogleSignIn.Admission.Allowed)
-                            return Refuse(400, "invalid_grant", GrantLedger.NotAllowedAnyMore(settings), stored.User.Label, $"allow-list {admitted}");
-
-                        // A code issued under a family revoked since then never mints into it (the token would be born
-                        // revoked). The next authorize shows the consent page again, and that starts a fresh family.
-                        var consent = await store.GetConsentAsync(stored.User.Subject, client.Key, ct);
-                        if (consent is null) return Refuse(400, "invalid_grant", "Consent was withdrawn.", stored.User.Label);
-                        if (await store.IsFamilyRevokedAsync(consent.FamilyId, ct))
-                            return Refuse(400, "invalid_grant", "Access was revoked. Connect the application again.", stored.User.Label, "consent's family is revoked");
-
-                        var refresh = TokenIssuer.NewSecret();
-                        await store.SaveRefreshTokenAsync(new RefreshToken
-                        {
-                            TokenHash = TokenIssuer.Hash(refresh), ClientId = client.ClientId, FamilyId = consent.FamilyId, Scope = stored.Scope,
-                            User = stored.User, ExpiresAt = time.GetUtcNow().Add(issuer.RefreshTokenLifetime),
-                        }, ct);
+                        var outcome = await ledger.ExchangeAsync(code, verifier, form["redirect_uri"].ToString(), client, ct);
+                        if (outcome is GrantRefused refused)
+                            return Refuse(400, "invalid_grant", refused.Description, refused.Label, refused.Reason);
+                        var issued = (GrantIssued)outcome;
                         if (!client.FromMetadataDocument) await store.TouchClientAsync(client.ClientId, ct);
-                        log.LogInformation("OAuth: issued tokens to {Email} for client {ClientId} from {Ip}", LogText.Clean(stored.User.Label),
+                        log.LogInformation("OAuth: issued tokens to {Email} for client {ClientId} from {Ip}", LogText.Clean(issued.User.Label),
                             LogText.Clean(client.ClientId), ClientIp(http));
-                        return await TokenResponseAsync(issuer, stored.User, client.ClientId, stored.Scope, refresh, ct);
+                        return await TokenResponseAsync(issuer, issued.User, client.ClientId, issued.Scope, issued.RefreshToken, ct);
                     }
                     case "refresh_token":
                     {

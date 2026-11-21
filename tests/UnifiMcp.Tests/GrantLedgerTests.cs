@@ -193,6 +193,151 @@ public sealed class GrantLedgerTests : IDisposable
         Assert.Equal("Consent was withdrawn.", refused.Description);
     }
 
+    // ---- code exchange ---------------------------------------------------------------------------------------------
+
+    private const string Verifier = "verifier-0123456789-0123456789-0123456789-0123456789";
+    private const string Redirect = "https://claude.ai/cb";
+
+    private static string Challenge(string verifier) =>
+        Microsoft.IdentityModel.Tokens.Base64UrlEncoder.Encode(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.ASCII.GetBytes(verifier)));
+
+    /// <summary>A consent for <see cref="Client"/> (no tokens yet) and a fresh code issued under it.</summary>
+    private async Task<string> CodeAsync(string family = Family, bool withConsent = true, TimeSpan? expiresIn = null)
+    {
+        if (withConsent)
+            await _store.UpsertConsentAsync(new Consent
+            {
+                UserId = User.Subject, ClientId = Client.Key, ClientName = Client.DisplayName, Scope = "mcp:tools", FamilyId = family,
+                CreatedAt = _time.GetUtcNow(), LastUsedAt = _time.GetUtcNow(),
+            });
+        var code = TokenIssuer.NewSecret();
+        await _store.SaveCodeAsync(new AuthorizationCode
+        {
+            CodeHash = TokenIssuer.Hash(code), ClientId = Client.ClientId, RedirectUri = Redirect, CodeChallenge = Challenge(Verifier),
+            Scope = "mcp:tools", User = User, ExpiresAt = _time.GetUtcNow().Add(expiresIn ?? TimeSpan.FromMinutes(5)),
+        });
+        return code;
+    }
+
+    [Fact]
+    public async Task Exchanging_a_code_issues_the_first_refresh_token_into_the_consents_family()
+    {
+        var code = await CodeAsync();
+
+        var issued = Issued(await Ledger().ExchangeAsync(code, Verifier, Redirect, Client));
+
+        Assert.Equal(Owner, issued.User.Email);
+        Assert.Equal("mcp:tools", issued.Scope);
+        var stored = await _store.GetRefreshTokenAsync(TokenIssuer.Hash(issued.RefreshToken));
+        Assert.NotNull(stored);
+        Assert.Equal(Family, stored.FamilyId);
+        Assert.Equal(_time.GetUtcNow().Add(GrantLedger.RefreshTokenLifetime), stored.ExpiresAt);
+        Issued(await Ledger().RotateAsync(issued.RefreshToken, Client));
+    }
+
+    [Fact]
+    public async Task A_redirect_uri_left_out_of_the_exchange_is_accepted()
+    {
+        var code = await CodeAsync();
+
+        Issued(await Ledger().ExchangeAsync(code, Verifier, "", Client));
+    }
+
+    [Fact]
+    public async Task A_code_works_once()
+    {
+        var code = await CodeAsync();
+        Issued(await Ledger().ExchangeAsync(code, Verifier, Redirect, Client));
+
+        var refused = Refused(await Ledger().ExchangeAsync(code, Verifier, Redirect, Client));
+
+        Assert.Equal(GrantRefusal.Invalid, refused.Kind);
+        Assert.Equal("Authorization code is invalid, expired or already used.", refused.Description);
+        Assert.Null(refused.Label);
+    }
+
+    [Fact]
+    public async Task An_expired_code_is_refused_as_invalid()
+    {
+        var code = await CodeAsync(expiresIn: TimeSpan.FromMinutes(1));
+        _time.Advance(TimeSpan.FromMinutes(1));
+
+        Assert.Equal(GrantRefusal.Invalid, Refused(await Ledger().ExchangeAsync(code, Verifier, Redirect, Client)).Kind);
+    }
+
+    [Fact]
+    public async Task A_code_presented_by_another_client_is_refused()
+    {
+        var code = await CodeAsync();
+
+        var refused = Refused(await Ledger().ExchangeAsync(code, Verifier, Redirect, OtherClient));
+
+        Assert.Equal(GrantRefusal.Invalid, refused.Kind);
+        Assert.Equal(Owner, refused.Label);
+        Assert.Equal("code was issued to another client", refused.Reason);
+    }
+
+    [Fact]
+    public async Task A_different_redirect_uri_is_refused()
+    {
+        var code = await CodeAsync();
+
+        var refused = Refused(await Ledger().ExchangeAsync(code, Verifier, "https://evil.example/cb", Client));
+
+        Assert.Equal(GrantRefusal.Invalid, refused.Kind);
+        Assert.Equal("redirect_uri does not match.", refused.Description);
+    }
+
+    [Fact]
+    public async Task A_wrong_verifier_is_refused_and_spends_the_code()
+    {
+        var code = await CodeAsync();
+
+        var refused = Refused(await Ledger().ExchangeAsync(code, Verifier + "x", Redirect, Client));
+
+        Assert.Equal(GrantRefusal.Invalid, refused.Kind);
+        Assert.Equal("PKCE verification failed.", refused.Description);
+        Assert.Equal(GrantRefusal.Invalid, Refused(await Ledger().ExchangeAsync(code, Verifier, Redirect, Client)).Kind);
+    }
+
+    [Fact]
+    public async Task A_code_for_an_owner_no_longer_allowed_is_refused_without_revoking_the_family()
+    {
+        var code = await CodeAsync();
+        _settings = _settings with { AllowedGoogleEmailsValue = "someone-else@example.test" };
+
+        var refused = Refused(await Ledger().ExchangeAsync(code, Verifier, Redirect, Client));
+
+        Assert.Equal(GrantRefusal.NotAdmitted, refused.Kind);
+        Assert.Equal("This Google account isn't allowed any more.", refused.Description);
+        Assert.StartsWith("allow-list ", refused.Reason);
+        Assert.False(await _store.IsFamilyRevokedAsync(Family));
+    }
+
+    [Fact]
+    public async Task A_code_whose_consent_was_withdrawn_is_refused()
+    {
+        var code = await CodeAsync(withConsent: false);
+
+        var refused = Refused(await Ledger().ExchangeAsync(code, Verifier, Redirect, Client));
+
+        Assert.Equal(GrantRefusal.ConsentWithdrawn, refused.Kind);
+        Assert.Equal("Consent was withdrawn.", refused.Description);
+    }
+
+    [Fact]
+    public async Task A_code_issued_under_a_family_revoked_since_is_refused()
+    {
+        var code = await CodeAsync();
+        await _store.RevokeFamilyAsync(Family);
+
+        var refused = Refused(await Ledger().ExchangeAsync(code, Verifier, Redirect, Client));
+
+        Assert.Equal(GrantRefusal.Revoked, refused.Kind);
+        Assert.Equal("Access was revoked. Connect the application again.", refused.Description);
+        Assert.Equal("consent's family is revoked", refused.Reason);
+    }
+
     [Fact]
     public async Task A_consent_given_again_since_refuses_tokens_of_the_old_family()
     {

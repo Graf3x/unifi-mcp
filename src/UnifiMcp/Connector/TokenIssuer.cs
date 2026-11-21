@@ -14,7 +14,6 @@ public interface ITokenIssuer
     /// <summary>The audience: the MCP endpoint URL, so a token for this resource is useless anywhere else.</summary>
     string Audience { get; }
     TimeSpan AccessTokenLifetime { get; }
-    TimeSpan RefreshTokenLifetime { get; }
 
     Task<RsaSecurityKey> GetSigningKeyAsync(CancellationToken ct = default);
     Task<string> IssueAccessTokenAsync(OAuthUser user, string clientId, string scope, CancellationToken ct = default);
@@ -40,7 +39,6 @@ public sealed class TokenIssuer : ITokenIssuer
     public string Issuer { get; }
     public string Audience { get; }
     public TimeSpan AccessTokenLifetime { get; } = TimeSpan.FromHours(1);
-    public TimeSpan RefreshTokenLifetime { get; } = TimeSpan.FromDays(30);
 
     public TokenIssuer(IOAuthStore store, IDataProtectionProvider dataProtection, string issuer, string audience, TimeProvider time)
     {
