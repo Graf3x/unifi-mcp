@@ -197,7 +197,7 @@ public static class OAuthEndpoints
             });
 
         // ---- token ---------------------------------------------------------------------------------
-        app.MapPost("/oauth/token", async Task<IResult> (HttpContext http, IOAuthStore store, ITokenIssuer issuer, IClientMetadataDocuments documents,
+        app.MapPost("/oauth/token", async Task<IResult> (HttpContext http, IOAuthStore store, ITokenIssuer issuer, GrantLedger ledger, IClientMetadataDocuments documents,
                 Settings settings, TimeProvider time, ILoggerFactory lf, CancellationToken ct) =>
             {
                 var log = Log(lf);
@@ -241,8 +241,8 @@ public static class OAuthEndpoints
                         if (!string.IsNullOrEmpty(redirectUri) && redirectUri != stored.RedirectUri)
                             return Refuse(400, "invalid_grant", "redirect_uri does not match.", stored.User.Label);
                         if (!TokenIssuer.VerifyPkce(verifier, stored.CodeChallenge)) return Refuse(400, "invalid_grant", "PKCE verification failed.", stored.User.Label);
-                        if (Admit(stored.User, settings) is var admitted && admitted != GoogleSignIn.Admission.Allowed)
-                            return Refuse(400, "invalid_grant", NotAllowedAnyMore(settings), stored.User.Label, $"allow-list {admitted}");
+                        if (GrantLedger.Admit(stored.User, settings) is var admitted && admitted != GoogleSignIn.Admission.Allowed)
+                            return Refuse(400, "invalid_grant", GrantLedger.NotAllowedAnyMore(settings), stored.User.Label, $"allow-list {admitted}");
 
                         // A code issued under a family revoked since then never mints into it (the token would be born
                         // revoked). The next authorize shows the consent page again, and that starts a fresh family.
@@ -266,52 +266,14 @@ public static class OAuthEndpoints
                     {
                         var presented = form["refresh_token"].ToString();
                         if (string.IsNullOrEmpty(presented)) return Refuse(400, "invalid_request", "refresh_token is required.");
-                        var hash = TokenIssuer.Hash(presented);
-                        var stored = await store.GetRefreshTokenAsync(hash, ct);
-                        // The store keeps expired rows until the hourly sweep, so expiry is checked here.
-                        if (stored is null) return Refuse(400, "invalid_grant", "Refresh token is invalid or expired.");
-                        if (stored.ClientId != client.ClientId)
-                            return Refuse(400, "invalid_grant", "Refresh token is invalid or expired.", stored.User.Label, "refresh token was issued to another client");
-                        if (stored.ExpiresAt <= time.GetUtcNow())
-                            return Refuse(400, "invalid_grant", "Refresh token is invalid or expired.", stored.User.Label, "refresh token expired");
-                        if (stored.Revoked || await store.IsFamilyRevokedAsync(stored.FamilyId, ct))
-                            return Refuse(400, "invalid_grant", "Access was revoked.", stored.User.Label, "refresh token's family is revoked");
-                        if (stored.Redeemed)
-                        {
-                            // A rotated-out token presented again: either a replay or a leak. Kill the whole family.
-                            await store.RevokeFamilyAsync(stored.FamilyId, ct);
-                            return Refuse(400, "invalid_grant", "Refresh token reuse detected; access was revoked. Reconnect the application.", stored.User.Label,
-                                "refresh token reuse; family revoked");
-                        }
-                        // The allow-list is read again on every refresh, so removing the address ends access within the hour.
-                        if (Admit(stored.User, settings) is var admitted && admitted != GoogleSignIn.Admission.Allowed)
-                        {
-                            await store.RevokeFamilyAsync(stored.FamilyId, ct);
-                            return Refuse(400, "invalid_grant", NotAllowedAnyMore(settings), stored.User.Label, $"allow-list {admitted}; family revoked");
-                        }
-                        var consent = await store.GetConsentAsync(stored.User.Subject, client.Key, ct);
-                        if (consent is null || consent.FamilyId != stored.FamilyId)
-                            return Refuse(400, "invalid_grant", "Consent was withdrawn.", stored.User.Label);
-
-                        if (!await store.TryMarkRefreshTokenRedeemedAsync(hash, ct))
-                        {
-                            // Another request redeemed (or revoked) this token between our read and our write: treat as reuse.
-                            await store.RevokeFamilyAsync(stored.FamilyId, ct);
-                            return Refuse(400, "invalid_grant", "Refresh token reuse detected; access was revoked. Reconnect the application.", stored.User.Label,
-                                "concurrent refresh token reuse; family revoked");
-                        }
-                        var next = TokenIssuer.NewSecret();
-                        await store.SaveRefreshTokenAsync(new RefreshToken
-                        {
-                            TokenHash = TokenIssuer.Hash(next), ClientId = client.ClientId, FamilyId = stored.FamilyId, Scope = stored.Scope,
-                            User = stored.User, ExpiresAt = time.GetUtcNow().Add(issuer.RefreshTokenLifetime),
-                        }, ct);
-                        consent.LastUsedAt = time.GetUtcNow();
-                        await store.UpsertConsentAsync(consent, ct);
+                        var outcome = await ledger.RotateAsync(presented, client, ct);
+                        if (outcome is GrantRefused refused)
+                            return Refuse(400, "invalid_grant", refused.Description, refused.Label, refused.Reason);
+                        var issued = (GrantIssued)outcome;
                         if (!client.FromMetadataDocument) await store.TouchClientAsync(client.ClientId, ct);
-                        log.LogInformation("OAuth: refreshed tokens for {Email} client {ClientId} from {Ip}", LogText.Clean(stored.User.Label),
+                        log.LogInformation("OAuth: refreshed tokens for {Email} client {ClientId} from {Ip}", LogText.Clean(issued.User.Label),
                             LogText.Clean(client.ClientId), ClientIp(http));
-                        return await TokenResponseAsync(issuer, stored.User, client.ClientId, stored.Scope, next, ct);
+                        return await TokenResponseAsync(issuer, issued.User, client.ClientId, issued.Scope, issued.RefreshToken, ct);
                     }
                     default:
                         return Refuse(400, "unsupported_grant_type", "Supported: authorization_code, refresh_token.");
@@ -426,19 +388,6 @@ public static class OAuthEndpoints
         var name = principal.FindFirst("name")?.Value ?? email;
         return new OAuthUser { Subject = sub, Email = email, Name = name };
     }
-
-    /// <summary>
-    /// The owner check for a stored identity. With Google, its email was verified when the code was issued (the cookie
-    /// only exists for verified addresses), so only the list itself can change the answer. In code mode only the code
-    /// owner passes. Either way an identity from the other mode fails, so changing MCP_SIGNIN ends the old connections.
-    /// </summary>
-    private static GoogleSignIn.Admission Admit(OAuthUser user, Settings settings) => settings.SignIn == SignInMode.Code
-        ? user.Subject == CodeSignIn.Subject && user.Email.Length == 0 ? GoogleSignIn.Admission.Allowed : GoogleSignIn.Admission.NotAllowed
-        : GoogleSignIn.Admit(new ClaimsPrincipal(new ClaimsIdentity([new Claim("email", user.Email), new Claim("email_verified", "true")], "stored")),
-            settings.AllowedGoogleEmails());
-
-    private static string NotAllowedAnyMore(Settings settings) =>
-        settings.SignIn == SignInMode.Code ? "This sign-in isn't allowed any more." : "This Google account isn't allowed any more.";
 
     internal static string? ValidateRegistration(RegistrationRequest request)
     {

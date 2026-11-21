@@ -51,6 +51,7 @@ public static class ConnectorHosting
         b.Services.AddSingleton<IOAuthStore>(sp => new SqliteOAuthStore(OAuthDbPath(s), sp.GetRequiredService<TimeProvider>()));
         b.Services.AddSingleton<ITokenIssuer>(sp => new TokenIssuer(sp.GetRequiredService<IOAuthStore>(), sp.GetRequiredService<IDataProtectionProvider>(),
             publicBase, resource, sp.GetRequiredService<TimeProvider>()));
+        b.Services.AddSingleton(sp => new GrantLedger(sp.GetRequiredService<IOAuthStore>(), sp.GetRequiredService<TimeProvider>(), s));
         // Hosted services start in registration order: the check settles the state before the sweep first looks at it.
         b.Services.AddHostedService<StartupCheck>();
         b.Services.AddHostedService<OAuthSweepService>();

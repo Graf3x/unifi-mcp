@@ -1,0 +1,207 @@
+using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Time.Testing;
+
+namespace UnifiMcp.Tests;
+
+/// <summary>The grant rules, straight through the ledger: a real SQLite file, a fake clock, real settings. No HTTP.</summary>
+public sealed class GrantLedgerTests : IDisposable
+{
+    private const string Owner = "owner@example.test";
+    private const string Family = "family-1";
+
+    private readonly string _path = Path.Combine(Path.GetTempPath(), $"grants-{Guid.NewGuid():N}.db");
+    private readonly FakeTimeProvider _time = new(new DateTimeOffset(2026, 11, 20, 12, 0, 0, TimeSpan.Zero));
+    private readonly SqliteOAuthStore _store;
+    private Settings _settings = new() { SignIn = SignInMode.Google, AllowedGoogleEmailsValue = Owner };
+
+    private static readonly OAuthUser User = new() { Subject = "google-sub-1", Email = Owner, Name = "Owner" };
+    private static readonly OAuthEndpoints.ResolvedClient Client =
+        OAuthEndpoints.ResolvedClient.FromRegistered(new OAuthClient { ClientId = "client-1", ClientName = "Claude", RedirectUris = ["https://claude.ai/cb"] });
+    private static readonly OAuthEndpoints.ResolvedClient OtherClient =
+        OAuthEndpoints.ResolvedClient.FromRegistered(new OAuthClient { ClientId = "client-2", ClientName = "Other", RedirectUris = ["https://other.example/cb"] });
+
+    public GrantLedgerTests() => _store = new SqliteOAuthStore(_path, _time);
+
+    public void Dispose()
+    {
+        SqliteConnection.ClearAllPools();
+        foreach (var f in Directory.GetFiles(Path.GetDirectoryName(_path)!, Path.GetFileName(_path) + "*"))
+            File.Delete(f);
+    }
+
+    private GrantLedger Ledger() => new(_store, _time, _settings);
+
+    /// <summary>A standing grant: the owner's consent for <see cref="Client"/> and one live refresh token in its family.</summary>
+    private async Task<string> GrantAsync(string family = Family, TimeSpan? expiresIn = null)
+    {
+        await _store.UpsertConsentAsync(new Consent
+        {
+            UserId = User.Subject, ClientId = Client.Key, ClientName = Client.DisplayName, Scope = "mcp:tools", FamilyId = family,
+            CreatedAt = _time.GetUtcNow(), LastUsedAt = _time.GetUtcNow(),
+        });
+        var token = TokenIssuer.NewSecret();
+        await _store.SaveRefreshTokenAsync(new RefreshToken
+        {
+            TokenHash = TokenIssuer.Hash(token), ClientId = Client.ClientId, FamilyId = family, Scope = "mcp:tools", User = User,
+            ExpiresAt = _time.GetUtcNow().Add(expiresIn ?? TimeSpan.FromDays(30)),
+        });
+        return token;
+    }
+
+    private static GrantIssued Issued(GrantOutcome outcome) => Assert.IsType<GrantIssued>(outcome);
+    private static GrantRefused Refused(GrantOutcome outcome) => Assert.IsType<GrantRefused>(outcome);
+
+    // ---- rotation --------------------------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task Rotating_a_live_refresh_token_issues_the_next_one_in_the_same_family()
+    {
+        var token = await GrantAsync();
+
+        var issued = Issued(await Ledger().RotateAsync(token, Client));
+
+        Assert.NotEqual(token, issued.RefreshToken);
+        Assert.Equal(Owner, issued.User.Email);
+        Assert.Equal("mcp:tools", issued.Scope);
+        var next = await _store.GetRefreshTokenAsync(TokenIssuer.Hash(issued.RefreshToken));
+        Assert.NotNull(next);
+        Assert.Equal(Family, next.FamilyId);
+        Assert.Equal(_time.GetUtcNow().Add(GrantLedger.RefreshTokenLifetime), next.ExpiresAt);
+        Assert.True((await _store.GetRefreshTokenAsync(TokenIssuer.Hash(token)))!.Redeemed);
+    }
+
+    [Fact]
+    public async Task Rotating_marks_the_consent_as_used()
+    {
+        var token = await GrantAsync();
+        _time.Advance(TimeSpan.FromHours(3));
+
+        Issued(await Ledger().RotateAsync(token, Client));
+
+        Assert.Equal(_time.GetUtcNow(), (await _store.GetConsentAsync(User.Subject, Client.Key))!.LastUsedAt);
+    }
+
+    [Fact]
+    public async Task The_next_refresh_token_rotates_again()
+    {
+        var first = await GrantAsync();
+        var second = Issued(await Ledger().RotateAsync(first, Client)).RefreshToken;
+
+        Issued(await Ledger().RotateAsync(second, Client));
+    }
+
+    [Fact]
+    public async Task An_unknown_refresh_token_is_refused_as_invalid()
+    {
+        var refused = Refused(await Ledger().RotateAsync("not-a-token", Client));
+
+        Assert.Equal(GrantRefusal.Invalid, refused.Kind);
+        Assert.Equal("Refresh token is invalid or expired.", refused.Description);
+        Assert.Null(refused.Label);
+    }
+
+    [Fact]
+    public async Task A_refresh_token_presented_by_another_client_is_refused_and_the_family_survives()
+    {
+        var token = await GrantAsync();
+
+        var refused = Refused(await Ledger().RotateAsync(token, OtherClient));
+
+        Assert.Equal(GrantRefusal.Invalid, refused.Kind);
+        Assert.Equal(Owner, refused.Label);
+        Assert.Equal("refresh token was issued to another client", refused.Reason);
+        Assert.False(await _store.IsFamilyRevokedAsync(Family));
+        Issued(await Ledger().RotateAsync(token, Client));
+    }
+
+    [Fact]
+    public async Task An_expired_refresh_token_is_refused_as_invalid()
+    {
+        var token = await GrantAsync(expiresIn: TimeSpan.FromMinutes(5));
+        _time.Advance(TimeSpan.FromMinutes(5));
+
+        var refused = Refused(await Ledger().RotateAsync(token, Client));
+
+        Assert.Equal(GrantRefusal.Invalid, refused.Kind);
+        Assert.Equal("refresh token expired", refused.Reason);
+    }
+
+    [Fact]
+    public async Task A_refresh_token_of_a_revoked_family_is_refused_as_revoked()
+    {
+        var token = await GrantAsync();
+        await _store.RevokeFamilyAsync(Family);
+
+        var refused = Refused(await Ledger().RotateAsync(token, Client));
+
+        Assert.Equal(GrantRefusal.Revoked, refused.Kind);
+        Assert.Equal("Access was revoked.", refused.Description);
+    }
+
+    [Fact]
+    public async Task Reusing_a_rotated_out_refresh_token_revokes_the_whole_family()
+    {
+        var first = await GrantAsync();
+        var second = Issued(await Ledger().RotateAsync(first, Client)).RefreshToken;
+
+        var refused = Refused(await Ledger().RotateAsync(first, Client));
+
+        Assert.Equal(GrantRefusal.Reuse, refused.Kind);
+        Assert.Equal("Refresh token reuse detected; access was revoked. Reconnect the application.", refused.Description);
+        Assert.Equal("refresh token reuse; family revoked", refused.Reason);
+        Assert.True(await _store.IsFamilyRevokedAsync(Family));
+        Assert.Equal(GrantRefusal.Revoked, Refused(await Ledger().RotateAsync(second, Client)).Kind);
+    }
+
+    [Fact]
+    public async Task An_owner_no_longer_on_the_allow_list_is_refused_and_the_family_revoked()
+    {
+        var token = await GrantAsync();
+        _settings = _settings with { AllowedGoogleEmailsValue = "someone-else@example.test" };
+
+        var refused = Refused(await Ledger().RotateAsync(token, Client));
+
+        Assert.Equal(GrantRefusal.NotAdmitted, refused.Kind);
+        Assert.Equal("This Google account isn't allowed any more.", refused.Description);
+        Assert.StartsWith("allow-list ", refused.Reason);
+        Assert.EndsWith("; family revoked", refused.Reason);
+        Assert.True(await _store.IsFamilyRevokedAsync(Family));
+    }
+
+    [Fact]
+    public async Task A_google_grant_is_refused_after_switching_to_code_sign_in()
+    {
+        var token = await GrantAsync();
+        _settings = _settings with { SignIn = SignInMode.Code };
+
+        var refused = Refused(await Ledger().RotateAsync(token, Client));
+
+        Assert.Equal(GrantRefusal.NotAdmitted, refused.Kind);
+        Assert.Equal("This sign-in isn't allowed any more.", refused.Description);
+        Assert.True(await _store.IsFamilyRevokedAsync(Family));
+    }
+
+    [Fact]
+    public async Task A_withdrawn_consent_refuses_the_refresh_token()
+    {
+        var token = await GrantAsync();
+        await _store.DeleteConsentAsync(User.Subject, Client.Key);
+
+        var refused = Refused(await Ledger().RotateAsync(token, Client));
+
+        Assert.Equal(GrantRefusal.ConsentWithdrawn, refused.Kind);
+        Assert.Equal("Consent was withdrawn.", refused.Description);
+    }
+
+    [Fact]
+    public async Task A_consent_given_again_since_refuses_tokens_of_the_old_family()
+    {
+        var old = await GrantAsync("old-family");
+        await GrantAsync("new-family");
+
+        var refused = Refused(await Ledger().RotateAsync(old, Client));
+
+        Assert.Equal(GrantRefusal.ConsentWithdrawn, refused.Kind);
+        Assert.False(await _store.IsFamilyRevokedAsync("old-family"));
+    }
+}
