@@ -153,6 +153,37 @@ public sealed class GrantLedgerTests : IDisposable
         Assert.Equal(GrantRefusal.Revoked, Refused(await Ledger().RotateAsync(second, Client)).Kind);
     }
 
+    /// <summary>Runs the same call twice on two threads, released together, and returns both outcomes.</summary>
+    private static async Task<GrantOutcome[]> TwiceAtOnceAsync(Func<Task<GrantOutcome>> call)
+    {
+        var go = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = new[] { 0, 1 }.Select(_ => Task.Run(async () => { await go.Task; return await call(); })).ToArray();
+        go.SetResult();
+        return await Task.WhenAll(calls);
+    }
+
+    private const int Rounds = 20;
+
+    [Fact]
+    public async Task One_refresh_token_presented_twice_at_once_issues_one_successor_and_revokes_the_family()
+    {
+        // Whichever way the two requests interleave (the second reads the token after the first redeemed it, or both
+        // read it first and the second loses the conditional write), one wins and the other is reuse.
+        for (var round = 0; round < Rounds; round++)
+        {
+            var family = $"family-{round}";
+            var token = await GrantAsync(family);
+            var ledger = Ledger();
+
+            var outcomes = await TwiceAtOnceAsync(() => ledger.RotateAsync(token, Client));
+
+            var issued = Assert.Single(outcomes.OfType<GrantIssued>());
+            Assert.Equal(GrantRefusal.Reuse, Assert.Single(outcomes.OfType<GrantRefused>()).Kind);
+            Assert.True(await _store.IsFamilyRevokedAsync(family));
+            Assert.Equal(GrantRefusal.Revoked, Refused(await ledger.RotateAsync(issued.RefreshToken, Client)).Kind);
+        }
+    }
+
     [Fact]
     public async Task An_owner_no_longer_on_the_allow_list_is_refused_and_the_family_revoked()
     {
@@ -416,6 +447,24 @@ public sealed class GrantLedgerTests : IDisposable
         var code = await CodeAsync();
 
         Issued(await Ledger().ExchangeAsync(code, Verifier, "", Client));
+    }
+
+    [Fact]
+    public async Task One_code_exchanged_twice_at_once_issues_one_grant()
+    {
+        for (var round = 0; round < Rounds; round++)
+        {
+            var family = $"family-{round}";
+            var code = await CodeAsync(family);
+            var ledger = Ledger();
+
+            var outcomes = await TwiceAtOnceAsync(() => ledger.ExchangeAsync(code, Verifier, Redirect, Client));
+
+            var issued = Assert.Single(outcomes.OfType<GrantIssued>());
+            Assert.Equal(GrantRefusal.Invalid, Assert.Single(outcomes.OfType<GrantRefused>()).Kind);
+            Assert.False(await _store.IsFamilyRevokedAsync(family));
+            Issued(await ledger.RotateAsync(issued.RefreshToken, Client));
+        }
     }
 
     [Fact]
