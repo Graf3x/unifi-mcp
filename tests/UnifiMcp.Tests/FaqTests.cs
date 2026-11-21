@@ -28,6 +28,19 @@ public class FaqTests
     }
 
     [Fact]
+    public async Task A_faq_call_writes_one_audit_line_with_the_login_and_no_arguments()
+    {
+        await using var h = await Harness.StartAsync();
+        Seed(h.Unifi);
+        const string Arg = "argument-value-must-not-be-logged";
+        await h.CallAsync("client_path_faq", new() { ["client"] = Arg });
+        var line = Assert.Single(h.Logs.Entries, e => e.Line.StartsWith($"{Harness.Login} client_path_faq ", StringComparison.Ordinal));
+        Assert.Equal(Microsoft.Extensions.Logging.LogLevel.Debug, line.Level); // a read
+        Assert.EndsWith("-> ok", line.Line);
+        Assert.DoesNotContain(h.Logs.Lines, l => l.Contains(Arg, StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Who_is_on_a_network_groups_clients_by_subnet()
     {
         await using var h = await Harness.StartAsync();

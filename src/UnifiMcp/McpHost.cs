@@ -1,5 +1,6 @@
 using System.Reflection;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using ModelContextProtocol.AspNetCore.Authentication;
 using ModelContextProtocol.Server;
 
@@ -33,17 +34,22 @@ public static class McpHost
         var unixConnections = new UnixConnections();
         ConfigureListener(builder, settings, unixConnections);
         configure?.Invoke(builder);
+        // One clock for the host (tests register a fake one first): the console's throttle and cache, the system-log
+        // window and the connector's expiry checks all read it.
+        builder.Services.TryAddSingleton(TimeProvider.System);
 
         var pin = new PinState();
-        var client = new UnifiClient(settings, unifi ?? CertPin.CreateHandler(settings.CertPins, settings.Trust, pin), pin);
+        var handler = unifi ?? CertPin.CreateHandler(settings.CertPins, settings.Trust, pin);
         var catalog = OpenApiCatalog.Load();
-        // Reads share one tool; each write is its own destructive tool, listed only when writes are on.
-        var tools = new List<McpServerTool> { new ReadOperationTool(catalog, client) };
-        tools.AddRange(catalog.Operations.Where(o => o.IsWrite && settings.AllowWrites).Select(o => (McpServerTool)new ApiTool(o, client)));
-
         builder.Services.AddSingleton(settings);
-        builder.Services.AddSingleton(client);
+        builder.Services.AddSingleton(sp => new UnifiClient(settings, handler, pin, sp.GetRequiredService<TimeProvider>()));
         builder.Services.AddSingleton(catalog);
+        // Reads share one tool; each write is its own destructive tool, listed only when writes are on. Registered as
+        // services (which the MCP server collects) so they get the host's client.
+        var writes = catalog.Operations.Where(o => o.IsWrite && settings.AllowWrites).ToList();
+        builder.Services.AddSingleton<McpServerTool>(sp => new ReadOperationTool(catalog, sp.GetRequiredService<UnifiClient>()));
+        foreach (var op in writes)
+            builder.Services.AddSingleton<McpServerTool>(sp => new ApiTool(op, sp.GetRequiredService<UnifiClient>()));
         // The Google callback URL carries the authorization code and state in its query. Hosting logs every request URL at
         // Information and OIDC traces the message at Trace, so neither may reach the logs.
         builder.Logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning);
@@ -89,10 +95,11 @@ public static class McpHost
                 o.ServerInstructions = Instructions;
             })
             .WithHttpTransport(o => o.Stateless = true)
+            // Who ran which tool, for every tool; arguments are never logged.
+            .WithRequestFilters(f => f.AddCallToolFilter(Audit.Calls))
             .WithTools<GuideTools>()
             .WithTools<FaqTools>()
-            .WithTools<DiagnosticTools>()
-            .WithTools(tools);
+            .WithTools<DiagnosticTools>();
 
         var app = builder.Build();
         var publicOrigin = settings.PublicBaseUrl?.GetLeftPart(UriPartial.Authority);
@@ -120,7 +127,7 @@ public static class McpHost
         ConnectorHosting.MapConnector(app);
         SetupPage.Map(app);
 
-        var total = tools.Count + CountTools(typeof(GuideTools)) + CountTools(typeof(FaqTools)) + CountTools(typeof(DiagnosticTools));
+        var total = 1 + writes.Count + CountTools(typeof(GuideTools)) + CountTools(typeof(FaqTools)) + CountTools(typeof(DiagnosticTools));
         app.Lifetime.ApplicationStarted.Register(() =>
         {
             RestrictSocket(settings);
