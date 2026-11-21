@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 
@@ -59,6 +60,8 @@ public sealed class Harness : IAsyncDisposable
     public McpClient Client { get; private set; } = null!;
     public HttpClient Http { get; private set; } = null!;
     public string Dir { get; } = Directory.CreateTempSubdirectory("unifi-mcp-test").FullName;
+    /// <summary>Every log line the host writes, formatted; the audit category is captured down to Debug.</summary>
+    public LogCapture Logs { get; } = new();
 
     public static Settings NewSettings(string dir, bool writes = false, bool key = true, bool pin = true)
     {
@@ -75,11 +78,18 @@ public sealed class Harness : IAsyncDisposable
         };
     }
 
+    /// <param name="configure">Runs on the builder after the harness's own setup (e.g. a fake TimeProvider).</param>
     public static async Task<Harness> StartAsync(bool writes = false, bool key = true, bool pin = true, string? login = Login,
-        Func<HttpContext, Listener>? listenerOf = null)
+        Func<HttpContext, Listener>? listenerOf = null, Action<WebApplicationBuilder>? configure = null)
     {
         var h = new Harness();
-        h.App = McpHost.Build(NewSettings(h.Dir, writes, key, pin), h.Unifi, b => b.WebHost.UseTestServer(), listenerOf ?? (_ => Listener.Tailnet));
+        h.App = McpHost.Build(NewSettings(h.Dir, writes, key, pin), h.Unifi, b =>
+        {
+            b.WebHost.UseTestServer();
+            b.Logging.AddProvider(h.Logs);
+            b.Logging.AddFilter("UnifiMcp.Audit", LogLevel.Debug);
+            configure?.Invoke(b);
+        }, listenerOf ?? (_ => Listener.Tailnet));
         await h.App.StartAsync();
         h.Http = h.App.GetTestClient();
         if (login is not null) h.Http.DefaultRequestHeaders.Add(CallerPolicy.LoginHeader, login);

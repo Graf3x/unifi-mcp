@@ -86,9 +86,6 @@ public static class CodeSignIn
     private const string MethodClaim = "signin";
     private const string LogCategory = "UnifiMcp.SignIn";
 
-    public static bool IsCodeOwner(ClaimsPrincipal p) =>
-        p.FindFirst("sub")?.Value == Subject && p.FindFirst(MethodClaim)?.Value == "code";
-
     public static void Map(WebApplication app)
     {
         app.MapGet(Path, async Task<IResult> (HttpContext http, SignInCodes codes, Settings settings, ILoggerFactory lf) =>

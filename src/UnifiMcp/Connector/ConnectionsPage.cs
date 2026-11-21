@@ -32,16 +32,16 @@ public static class ConnectionsPage
                 })
                 .AllowAnonymous().ExcludeFromDescription();
 
-        app.MapGet("/connections", async Task<IResult> (HttpContext http, IOAuthStore store, CancellationToken ct) =>
+        app.MapGet("/connections", async Task<IResult> (HttpContext http, GrantLedger ledger, CancellationToken ct) =>
             {
-                if (OAuthEndpoints.UserFrom(http.User) is not { } user) return Results.Unauthorized();
-                var consents = await store.ListConsentsAsync(user.Subject, ct);
+                if (OAuthUser.From(http.User) is not { } user) return Results.Unauthorized();
+                var consents = await ledger.ListConsentsAsync(user, ct);
                 await Pages.WriteAsync(http.Response, StatusCodes.Status200OK, Render(consents, user));
                 return Results.Empty;
             })
             .RequireAuthorization(GoogleSignIn.Policy).ExcludeFromDescription();
 
-        app.MapPost("/connections/{clientId}/disconnect", async Task<IResult> (string clientId, HttpContext http, IOAuthStore store, Settings settings,
+        app.MapPost("/connections/{clientId}/disconnect", async Task<IResult> (string clientId, HttpContext http, GrantLedger ledger, Settings settings,
                 ILoggerFactory lf, CancellationToken ct) =>
             {
                 var log = lf.CreateLogger(LogCategory);
@@ -53,18 +53,15 @@ public static class ConnectionsPage
                     log.LogWarning("Connections: disconnect refused, Origin '{Origin}' is not this server's", Short(LogText.Clean(origin)));
                     return Results.StatusCode(StatusCodes.Status403Forbidden);
                 }
-                if (OAuthEndpoints.UserFrom(http.User) is not { } user) return Results.Unauthorized();
+                if (OAuthUser.From(http.User) is not { } user) return Results.Unauthorized();
 
                 // Only the signed-in user's own consent: an unknown or someone else's client id is the same 404, and changes nothing.
-                var consent = await store.GetConsentAsync(user.Subject, clientId, ct);
-                if (consent is null)
+                if (!await ledger.DisconnectAsync(user, clientId, ct))
                 {
                     await Pages.WriteAsync(http.Response, StatusCodes.Status404NotFound,
                         Pages.ErrorPage("Not connected", "That application isn't connected."));
                     return Results.Empty;
                 }
-                await store.RevokeFamilyAsync(consent.FamilyId, ct);
-                await store.DeleteConsentAsync(user.Subject, clientId, ct);
                 log.LogInformation("Connections: {Email} disconnected client {ClientId}", LogText.Clean(user.Label), Short(LogText.Clean(clientId)));
 
                 http.Response.StatusCode = StatusCodes.Status303SeeOther;

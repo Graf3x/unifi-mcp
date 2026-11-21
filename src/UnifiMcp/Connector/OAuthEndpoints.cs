@@ -23,7 +23,6 @@ public static class OAuthEndpoints
     internal const int MaxRegistrationBytes = 16 * 1024;
     internal const int MaxRedirectUriLength = 2000;
     internal const int MaxClientNameLength = 200;
-    internal static readonly TimeSpan CodeLifetime = TimeSpan.FromMinutes(5);
     internal static readonly TimeSpan PendingConsentLifetime = TimeSpan.FromMinutes(10);
     private const string ConsentProtectorPurpose = "UnifiMcp.OAuth.PendingConsent.v1";
     private const int MaxProblemLength = 300;
@@ -40,7 +39,7 @@ public static class OAuthEndpoints
         app.MapGet("/oauth/jwks", async (ITokenIssuer issuer, CancellationToken ct) => Results.Json(await issuer.GetJwksAsync(ct), Json));
 
         // ---- RFC 7591 dynamic client registration -----------------------------------------------------
-        app.MapPost("/oauth/register", async Task<IResult> (HttpContext http, IOAuthStore store, ILoggerFactory lf, CancellationToken ct) =>
+        app.MapPost("/oauth/register", async Task<IResult> (HttpContext http, SqliteOAuthStore store, ILoggerFactory lf, CancellationToken ct) =>
             {
                 // Anyone may call this, so the body is read only up to the cap: a declared length over it is refused
                 // unread, and a chunked one stops being read as soon as it proves larger.
@@ -93,7 +92,7 @@ public static class OAuthEndpoints
             .RequireRateLimiting(RegisterRateLimitPolicy);
 
         // ---- authorize ------------------------------------------------------------------------------
-        app.MapGet("/oauth/authorize", async Task<IResult> (HttpContext http, IOAuthStore store, ITokenIssuer issuer, IClientMetadataDocuments documents,
+        app.MapGet("/oauth/authorize", async Task<IResult> (HttpContext http, SqliteOAuthStore store, ITokenIssuer issuer, GrantLedger ledger, IClientMetadataDocuments documents,
                 IDataProtectionProvider dp, Settings settings, TimeProvider time, ILoggerFactory lf, CancellationToken ct) =>
             {
                 var q = http.Request.Query;
@@ -128,34 +127,30 @@ public static class OAuthEndpoints
                     await http.ChallengeAsync(GoogleSignIn.CookieScheme);
                     return Results.Empty;
                 }
-                var user = UserFrom(auth.Principal);
-                var admission = GoogleSignIn.AdmitOwner(auth.Principal, settings);
-                if (user is null || admission != GoogleSignIn.Admission.Allowed)
+                // Cookie validation already admitted the owner; a cookie with no subject never gets this far, but is refused.
+                if (OAuthUser.From(auth.Principal) is not { } user)
                 {
                     Log(lf).LogWarning("OAuth: authorize refused for {Email} ({Reason}) client {ClientId} from {Ip}",
-                        LogText.Clean(user?.Label) ?? "(no email)", admission, LogText.Clean(client.ClientId), ClientIp(http));
+                        LogText.Clean(auth.Principal.FindFirst("email")?.Value) ?? "(no email)", "no subject", LogText.Clean(client.ClientId), ClientIp(http));
                     return Fail("access_denied", settings.SignIn == SignInMode.Code
                         ? "This sign-in isn't allowed to use UniFi Network."
                         : "This Google account isn't allowed to use UniFi Network.");
                 }
 
+                // Consent once per client: a standing consent skips the page and keeps its family; otherwise the owner is
+                // asked, and the consent POST starts a fresh family.
+                if (await ledger.AuthorizeAsync(user, client, new CodeRequest(redirectUri, challenge, scope, NullIfEmpty(resource)), ct) is { } code)
+                    return CodeRedirect(redirectUri, code, state);
+
                 var pending = new PendingAuthorization(clientId, redirectUri, challenge, scope, NullIfEmpty(resource), state, user.Subject,
                     time.GetUtcNow().Add(PendingConsentLifetime));
-
-                // Consent once per client. A standing consent skips the page and keeps its family. A consent whose family was
-                // revoked (revoke, reuse, allow-list refusal) is not standing: every token minted into a tombstoned family is
-                // born revoked, so the owner is asked again and the consent POST starts a fresh family.
-                var existing = await store.GetConsentAsync(user.Subject, client.Key, ct);
-                if (existing is not null && !await store.IsFamilyRevokedAsync(existing.FamilyId, ct))
-                    return await IssueCodeAndRedirectAsync(pending, user, existing, client, store, time, ct);
-
                 var token = dp.CreateProtector(ConsentProtectorPurpose).Protect(JsonSerializer.Serialize(pending, Json));
                 return ConsentPage(client, user, token, redirectUri, settings);
             })
             .RequireRateLimiting(AuthorizeRateLimitPolicy);
 
-        app.MapPost("/oauth/consent", async Task<IResult> (HttpContext http, IOAuthStore store, IClientMetadataDocuments documents, IDataProtectionProvider dp,
-                Settings settings, TimeProvider time, ILoggerFactory lf, CancellationToken ct) =>
+        app.MapPost("/oauth/consent", async Task<IResult> (HttpContext http, SqliteOAuthStore store, GrantLedger ledger, IClientMetadataDocuments documents, IDataProtectionProvider dp,
+                TimeProvider time, ILoggerFactory lf, CancellationToken ct) =>
             {
                 if (!http.Request.HasFormContentType) return Page(400, Pages.ErrorPage("This request has expired", "Go back to the application and connect again."));
                 var form = await http.Request.ReadFormAsync(ct);
@@ -166,10 +161,10 @@ public static class OAuthEndpoints
                     return Page(400, Pages.ErrorPage("This request has expired", "Go back to the application and connect again."));
 
                 var auth = await http.AuthenticateAsync(GoogleSignIn.CookieScheme);
-                var user = auth.Succeeded && auth.Principal is not null ? UserFrom(auth.Principal) : null;
-                // The consent must be given by the same signed-in, still-allowed owner the request was rendered for.
-                if (user is null || user.Subject != pending.UserSubject
-                    || GoogleSignIn.AdmitOwner(auth.Principal!, settings) != GoogleSignIn.Admission.Allowed)
+                var user = auth.Succeeded && auth.Principal is not null ? OAuthUser.From(auth.Principal) : null;
+                // The consent must be given by the same owner the request was rendered for. Cookie validation already
+                // admitted whoever is signed in; a removed address has no cookie left, so no user.
+                if (user is null || user.Subject != pending.UserSubject)
                 {
                     Log(lf).LogWarning("OAuth: consent refused for {Email}: not the signed-in, allowed owner (from {Ip})", LogText.Clean(user?.Label) ?? "(none)", ClientIp(http));
                     return Page(400, Pages.ErrorPage("Sign-in changed", "The signed-in account is not the one this request was for. Connect again."));
@@ -185,20 +180,15 @@ public static class OAuthEndpoints
                     return RedirectWithError(pending.RedirectUri, "access_denied", "The user declined.", pending.State);
                 }
 
-                var consent = new Consent
-                {
-                    UserId = user.Subject, ClientId = client.Key, ClientName = client.DisplayName, ClientUri = client.FromMetadataDocument ? client.ClientId : null,
-                    Scope = pending.Scope, FamilyId = TokenIssuer.NewSecret(), CreatedAt = time.GetUtcNow(), LastUsedAt = time.GetUtcNow(),
-                };
-                await store.UpsertConsentAsync(consent, ct);
+                var code = await ledger.ApproveAsync(user, client, new CodeRequest(pending.RedirectUri, pending.CodeChallenge, pending.Scope, pending.Resource), ct);
                 Log(lf).LogInformation("OAuth: {Email} granted client {ClientId} '{Name}' scope {Scope}", LogText.Clean(user.Label), LogText.Clean(client.ClientId),
                     LogText.Clean(client.DisplayName), pending.Scope);
-                return await IssueCodeAndRedirectAsync(pending, user, consent, client, store, time, ct);
+                return CodeRedirect(pending.RedirectUri, code, pending.State);
             });
 
         // ---- token ---------------------------------------------------------------------------------
-        app.MapPost("/oauth/token", async Task<IResult> (HttpContext http, IOAuthStore store, ITokenIssuer issuer, IClientMetadataDocuments documents,
-                Settings settings, TimeProvider time, ILoggerFactory lf, CancellationToken ct) =>
+        app.MapPost("/oauth/token", async Task<IResult> (HttpContext http, SqliteOAuthStore store, ITokenIssuer issuer, GrantLedger ledger, IClientMetadataDocuments documents,
+                ILoggerFactory lf, CancellationToken ct) =>
             {
                 var log = Log(lf);
                 var clientId = "";
@@ -233,85 +223,27 @@ public static class OAuthEndpoints
                         var verifier = form["code_verifier"].ToString();
                         if (string.IsNullOrEmpty(code) || string.IsNullOrEmpty(verifier)) return Refuse(400, "invalid_request", "code and code_verifier are required.");
 
-                        var stored = await store.RedeemCodeAsync(TokenIssuer.Hash(code), ct);
-                        if (stored is null) return Refuse(400, "invalid_grant", "Authorization code is invalid, expired or already used.");
-                        if (stored.ClientId != client.ClientId)
-                            return Refuse(400, "invalid_grant", "Authorization code is invalid, expired or already used.", stored.User.Label, "code was issued to another client");
-                        var redirectUri = form["redirect_uri"].ToString();
-                        if (!string.IsNullOrEmpty(redirectUri) && redirectUri != stored.RedirectUri)
-                            return Refuse(400, "invalid_grant", "redirect_uri does not match.", stored.User.Label);
-                        if (!TokenIssuer.VerifyPkce(verifier, stored.CodeChallenge)) return Refuse(400, "invalid_grant", "PKCE verification failed.", stored.User.Label);
-                        if (Admit(stored.User, settings) is var admitted && admitted != GoogleSignIn.Admission.Allowed)
-                            return Refuse(400, "invalid_grant", NotAllowedAnyMore(settings), stored.User.Label, $"allow-list {admitted}");
-
-                        // A code issued under a family revoked since then never mints into it (the token would be born
-                        // revoked). The next authorize shows the consent page again, and that starts a fresh family.
-                        var consent = await store.GetConsentAsync(stored.User.Subject, client.Key, ct);
-                        if (consent is null) return Refuse(400, "invalid_grant", "Consent was withdrawn.", stored.User.Label);
-                        if (await store.IsFamilyRevokedAsync(consent.FamilyId, ct))
-                            return Refuse(400, "invalid_grant", "Access was revoked. Connect the application again.", stored.User.Label, "consent's family is revoked");
-
-                        var refresh = TokenIssuer.NewSecret();
-                        await store.SaveRefreshTokenAsync(new RefreshToken
-                        {
-                            TokenHash = TokenIssuer.Hash(refresh), ClientId = client.ClientId, FamilyId = consent.FamilyId, Scope = stored.Scope,
-                            User = stored.User, ExpiresAt = time.GetUtcNow().Add(issuer.RefreshTokenLifetime),
-                        }, ct);
+                        var outcome = await ledger.ExchangeAsync(code, verifier, form["redirect_uri"].ToString(), client, ct);
+                        if (outcome is GrantRefused refused)
+                            return Refuse(400, "invalid_grant", refused.Description, refused.Label, refused.Reason);
+                        var issued = (GrantIssued)outcome;
                         if (!client.FromMetadataDocument) await store.TouchClientAsync(client.ClientId, ct);
-                        log.LogInformation("OAuth: issued tokens to {Email} for client {ClientId} from {Ip}", LogText.Clean(stored.User.Label),
+                        log.LogInformation("OAuth: issued tokens to {Email} for client {ClientId} from {Ip}", LogText.Clean(issued.User.Label),
                             LogText.Clean(client.ClientId), ClientIp(http));
-                        return await TokenResponseAsync(issuer, stored.User, client.ClientId, stored.Scope, refresh, ct);
+                        return await TokenResponseAsync(issuer, issued.User, client.ClientId, issued.Scope, issued.RefreshToken, ct);
                     }
                     case "refresh_token":
                     {
                         var presented = form["refresh_token"].ToString();
                         if (string.IsNullOrEmpty(presented)) return Refuse(400, "invalid_request", "refresh_token is required.");
-                        var hash = TokenIssuer.Hash(presented);
-                        var stored = await store.GetRefreshTokenAsync(hash, ct);
-                        // The store keeps expired rows until the hourly sweep, so expiry is checked here.
-                        if (stored is null) return Refuse(400, "invalid_grant", "Refresh token is invalid or expired.");
-                        if (stored.ClientId != client.ClientId)
-                            return Refuse(400, "invalid_grant", "Refresh token is invalid or expired.", stored.User.Label, "refresh token was issued to another client");
-                        if (stored.ExpiresAt <= time.GetUtcNow())
-                            return Refuse(400, "invalid_grant", "Refresh token is invalid or expired.", stored.User.Label, "refresh token expired");
-                        if (stored.Revoked || await store.IsFamilyRevokedAsync(stored.FamilyId, ct))
-                            return Refuse(400, "invalid_grant", "Access was revoked.", stored.User.Label, "refresh token's family is revoked");
-                        if (stored.Redeemed)
-                        {
-                            // A rotated-out token presented again: either a replay or a leak. Kill the whole family.
-                            await store.RevokeFamilyAsync(stored.FamilyId, ct);
-                            return Refuse(400, "invalid_grant", "Refresh token reuse detected; access was revoked. Reconnect the application.", stored.User.Label,
-                                "refresh token reuse; family revoked");
-                        }
-                        // The allow-list is read again on every refresh, so removing the address ends access within the hour.
-                        if (Admit(stored.User, settings) is var admitted && admitted != GoogleSignIn.Admission.Allowed)
-                        {
-                            await store.RevokeFamilyAsync(stored.FamilyId, ct);
-                            return Refuse(400, "invalid_grant", NotAllowedAnyMore(settings), stored.User.Label, $"allow-list {admitted}; family revoked");
-                        }
-                        var consent = await store.GetConsentAsync(stored.User.Subject, client.Key, ct);
-                        if (consent is null || consent.FamilyId != stored.FamilyId)
-                            return Refuse(400, "invalid_grant", "Consent was withdrawn.", stored.User.Label);
-
-                        if (!await store.TryMarkRefreshTokenRedeemedAsync(hash, ct))
-                        {
-                            // Another request redeemed (or revoked) this token between our read and our write: treat as reuse.
-                            await store.RevokeFamilyAsync(stored.FamilyId, ct);
-                            return Refuse(400, "invalid_grant", "Refresh token reuse detected; access was revoked. Reconnect the application.", stored.User.Label,
-                                "concurrent refresh token reuse; family revoked");
-                        }
-                        var next = TokenIssuer.NewSecret();
-                        await store.SaveRefreshTokenAsync(new RefreshToken
-                        {
-                            TokenHash = TokenIssuer.Hash(next), ClientId = client.ClientId, FamilyId = stored.FamilyId, Scope = stored.Scope,
-                            User = stored.User, ExpiresAt = time.GetUtcNow().Add(issuer.RefreshTokenLifetime),
-                        }, ct);
-                        consent.LastUsedAt = time.GetUtcNow();
-                        await store.UpsertConsentAsync(consent, ct);
+                        var outcome = await ledger.RotateAsync(presented, client, ct);
+                        if (outcome is GrantRefused refused)
+                            return Refuse(400, "invalid_grant", refused.Description, refused.Label, refused.Reason);
+                        var issued = (GrantIssued)outcome;
                         if (!client.FromMetadataDocument) await store.TouchClientAsync(client.ClientId, ct);
-                        log.LogInformation("OAuth: refreshed tokens for {Email} client {ClientId} from {Ip}", LogText.Clean(stored.User.Label),
+                        log.LogInformation("OAuth: refreshed tokens for {Email} client {ClientId} from {Ip}", LogText.Clean(issued.User.Label),
                             LogText.Clean(client.ClientId), ClientIp(http));
-                        return await TokenResponseAsync(issuer, stored.User, client.ClientId, stored.Scope, next, ct);
+                        return await TokenResponseAsync(issuer, issued.User, client.ClientId, issued.Scope, issued.RefreshToken, ct);
                     }
                     default:
                         return Refuse(400, "unsupported_grant_type", "Supported: authorization_code, refresh_token.");
@@ -320,17 +252,14 @@ public static class OAuthEndpoints
             .RequireRateLimiting(TokenRateLimitPolicy);
 
         // RFC 7009: a client giving back its refresh token revokes its whole family.
-        app.MapPost("/oauth/revoke", async Task<IResult> (HttpContext http, IOAuthStore store, ILoggerFactory lf, CancellationToken ct) =>
+        app.MapPost("/oauth/revoke", async Task<IResult> (HttpContext http, GrantLedger ledger, ILoggerFactory lf, CancellationToken ct) =>
             {
                 if (!http.Request.HasFormContentType) return Results.Ok();
                 var form = await http.Request.ReadFormAsync(ct);
                 var token = form["token"].ToString();
-                if (!string.IsNullOrEmpty(token) && await store.GetRefreshTokenAsync(TokenIssuer.Hash(token), ct) is { } stored)
-                {
-                    await store.RevokeFamilyAsync(stored.FamilyId, ct);
-                    Log(lf).LogInformation("OAuth: revoked access for {Email} client {ClientId} from {Ip}", LogText.Clean(stored.User.Label),
-                        LogText.Clean(stored.ClientId), ClientIp(http));
-                }
+                if (!string.IsNullOrEmpty(token) && await ledger.RevokeAsync(token, ct) is { } revoked)
+                    Log(lf).LogInformation("OAuth: revoked access for {Email} client {ClientId} from {Ip}", LogText.Clean(revoked.User.Label),
+                        LogText.Clean(revoked.ClientId), ClientIp(http));
                 return Results.Ok(); // RFC 7009: always 200, say nothing about unknown tokens
             })
             .RequireRateLimiting(TokenRateLimitPolicy);
@@ -353,7 +282,7 @@ public static class OAuthEndpoints
             HttpClientMetadataDocuments.IsClientIdUrl(clientId, out _) ? "cimd_" + TokenIssuer.Hash(clientId)[..32] : clientId;
     }
 
-    private static async Task<(ResolvedClient? Client, string? Problem)> ResolveClientAsync(string clientId, IOAuthStore store, IClientMetadataDocuments documents, CancellationToken ct)
+    private static async Task<(ResolvedClient? Client, string? Problem)> ResolveClientAsync(string clientId, SqliteOAuthStore store, IClientMetadataDocuments documents, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(clientId)) return (null, "client_id is required.");
         if (HttpClientMetadataDocuments.IsClientIdUrl(clientId, out _))
@@ -391,19 +320,9 @@ public static class OAuthEndpoints
     private static bool ResourceAllowed(string resource, ITokenIssuer issuer) =>
         string.IsNullOrEmpty(resource) || string.Equals(resource.TrimEnd('/'), issuer.Audience.TrimEnd('/'), StringComparison.OrdinalIgnoreCase);
 
-    private static async Task<IResult> IssueCodeAndRedirectAsync(PendingAuthorization pending, OAuthUser user, Consent consent, ResolvedClient client,
-        IOAuthStore store, TimeProvider time, CancellationToken ct)
-    {
-        var code = TokenIssuer.NewSecret();
-        await store.SaveCodeAsync(new AuthorizationCode
-        {
-            CodeHash = TokenIssuer.Hash(code), ClientId = client.ClientId, RedirectUri = pending.RedirectUri, CodeChallenge = pending.CodeChallenge,
-            Scope = pending.Scope, Resource = pending.Resource, User = user, ExpiresAt = time.GetUtcNow().Add(CodeLifetime),
-        }, ct);
-        consent.LastUsedAt = time.GetUtcNow();
-        await store.UpsertConsentAsync(consent, ct);
-        return new QuietRedirect(WithQuery(pending.RedirectUri, ("code", code), ("state", pending.State)));
-    }
+    /// <summary>Back to the client with its code; the URL carries the code, so it is never logged.</summary>
+    private static IResult CodeRedirect(string redirectUri, string code, string state) =>
+        new QuietRedirect(WithQuery(redirectUri, ("code", code), ("state", state)));
 
     private static async Task<IResult> TokenResponseAsync(ITokenIssuer issuer, OAuthUser user, string clientId, string scope, string refreshToken, CancellationToken ct)
     {
@@ -417,28 +336,6 @@ public static class OAuthEndpoints
             scope,
         }, Json);
     }
-
-    internal static OAuthUser? UserFrom(ClaimsPrincipal principal)
-    {
-        var sub = principal.FindFirst("sub")?.Value;
-        if (string.IsNullOrEmpty(sub)) return null;
-        var email = principal.FindFirst("email")?.Value ?? "";
-        var name = principal.FindFirst("name")?.Value ?? email;
-        return new OAuthUser { Subject = sub, Email = email, Name = name };
-    }
-
-    /// <summary>
-    /// The owner check for a stored identity. With Google, its email was verified when the code was issued (the cookie
-    /// only exists for verified addresses), so only the list itself can change the answer. In code mode only the code
-    /// owner passes. Either way an identity from the other mode fails, so changing MCP_SIGNIN ends the old connections.
-    /// </summary>
-    private static GoogleSignIn.Admission Admit(OAuthUser user, Settings settings) => settings.SignIn == SignInMode.Code
-        ? user.Subject == CodeSignIn.Subject && user.Email.Length == 0 ? GoogleSignIn.Admission.Allowed : GoogleSignIn.Admission.NotAllowed
-        : GoogleSignIn.Admit(new ClaimsPrincipal(new ClaimsIdentity([new Claim("email", user.Email), new Claim("email_verified", "true")], "stored")),
-            settings.AllowedGoogleEmails());
-
-    private static string NotAllowedAnyMore(Settings settings) =>
-        settings.SignIn == SignInMode.Code ? "This sign-in isn't allowed any more." : "This Google account isn't allowed any more.";
 
     internal static string? ValidateRegistration(RegistrationRequest request)
     {

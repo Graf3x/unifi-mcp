@@ -15,7 +15,7 @@ namespace UnifiMcp;
 /// from named fields; raw objects are never passed through, because they carry secrets (device keys, a maps API key).
 /// </summary>
 [McpServerToolType]
-public sealed partial class DiagnosticTools(UnifiClient console)
+public sealed partial class DiagnosticTools(UnifiClient console, TimeProvider time)
 {
     private const int MaxHours = 720;
 
@@ -414,10 +414,11 @@ public sealed partial class DiagnosticTools(UnifiClient console)
         [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] string[]? severities,
         [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] string? searchText);
 
-    private static LogWindow Window(int hours)
+    /// <summary>The last <paramref name="hours"/> up to now by the host's clock.</summary>
+    private LogWindow Window(int hours)
     {
         var h = Math.Clamp(hours, 1, MaxHours);
-        var to = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var to = time.GetUtcNow().ToUnixTimeMilliseconds();
         return new LogWindow(h, to - h * 3_600_000L, to);
     }
 

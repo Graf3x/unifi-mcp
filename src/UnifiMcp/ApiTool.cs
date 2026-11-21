@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using System.Text.Json;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
@@ -85,14 +86,49 @@ public sealed class ApiTool(ApiOperation op, UnifiClient client) : McpServerTool
         : v.ValueKind is JsonValueKind.Number or JsonValueKind.True or JsonValueKind.False ? v.GetRawText()
         : null;
 
-    /// <summary>Who did what: method, path and status only, never the body or arguments.</summary>
-    private static void Log(ApiOperation op, RequestContext<CallToolRequestParams> request, string path, int status)
-    {
-        var logger = request.Services?.GetService<ILoggerFactory>()?.CreateLogger("UnifiMcp.Audit");
-        var level = op.IsWrite ? LogLevel.Information : LogLevel.Debug;
-        logger?.Log(level, "{Login} {Tool} {Method} {Path} -> {Status}", // A code sign-in's token has no email (the name claim), so fall back to its subject.
-            request.User?.Identity?.Name is { Length: > 0 } name ? name : request.User?.FindFirst("sub")?.Value ?? "?", op.ToolName, op.Method, path.Split('?')[0], status);
-    }
+    /// <summary>What was sent to the console: method, path and status only, never the body or arguments. <see cref="Audit.Calls"/> adds the call's outcome.</summary>
+    private static void Log(ApiOperation op, RequestContext<CallToolRequestParams> request, string path, int status) =>
+        Audit.Logger(request.Services)?.Log(Audit.Level(op.IsWrite), "{Login} {Tool} {Method} {Path} -> {Status}",
+            Audit.Login(request.User), op.ToolName, op.Method, path.Split('?')[0], status);
+}
+
+/// <summary>
+/// The audit log (category <see cref="Category"/>): who ran what, writes at Information and reads at Debug. It holds the
+/// login, tool, method, path, status and outcome only, never a body or arguments, because those can carry secrets.
+/// </summary>
+public static class Audit
+{
+    public const string Category = "UnifiMcp.Audit";
+
+    /// <summary>Who called: the name claim, or the subject for a code sign-in's token, which has no email.</summary>
+    public static string Login(ClaimsPrincipal? user) =>
+        user?.Identity?.Name is { Length: > 0 } name ? name : user?.FindFirst("sub")?.Value ?? "?";
+
+    public static ILogger? Logger(IServiceProvider? services) => services?.GetService<ILoggerFactory>()?.CreateLogger(Category);
+
+    public static LogLevel Level(bool write) => write ? LogLevel.Information : LogLevel.Debug;
+
+    /// <summary>
+    /// The call-tool filter: one line per call of any tool, "{Login} {Tool} -> ok", "error" (isError) or "failed" (it threw).
+    /// A tool not marked read-only counts as a write.
+    /// </summary>
+    public static McpRequestHandler<CallToolRequestParams, CallToolResult> Calls(McpRequestHandler<CallToolRequestParams, CallToolResult> next) =>
+        async (request, ct) =>
+        {
+            var tool = (request.MatchedPrimitive as McpServerTool)?.ProtocolTool;
+            var outcome = "failed";
+            try
+            {
+                var result = await next(request, ct);
+                outcome = result.IsError == true ? "error" : "ok";
+                return result;
+            }
+            finally
+            {
+                Logger(request.Services)?.Log(Level(tool?.Annotations?.ReadOnlyHint != true), "{Login} {Tool} -> {Outcome}",
+                    Login(request.User), tool?.Name ?? request.Params?.Name ?? "?", outcome);
+            }
+        };
 }
 
 public static class ToolText

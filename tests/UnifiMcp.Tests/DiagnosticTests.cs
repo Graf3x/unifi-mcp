@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Time.Testing;
 
 namespace UnifiMcp.Tests;
@@ -465,6 +466,91 @@ public class DiagnosticTests
             Assert.Equal(UnifiClient.ConsoleBurst + 1, fake.Requests.Count);
         }
         finally { Directory.Delete(dir, true); }
+    }
+
+    // --- the audit log: who ran which tool, never with what -----------------------------------------------------------
+
+    [Fact]
+    public async Task A_diagnostic_call_writes_one_audit_line_with_the_login_and_no_arguments()
+    {
+        await using var h = await StartAsync();
+        const string Arg = "argument-value-must-not-be-logged";
+        await h.CallAsync("client_diagnostics_faq", new() { ["client"] = Arg });
+        var line = Assert.Single(h.Logs.Entries, e => e.Line.StartsWith($"{Harness.Login} client_diagnostics_faq ", StringComparison.Ordinal));
+        Assert.Equal(Microsoft.Extensions.Logging.LogLevel.Debug, line.Level); // a read
+        Assert.EndsWith("-> ok", line.Line);
+        Assert.DoesNotContain(h.Logs.Lines, l => l.Contains(Arg, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task A_failed_diagnostic_call_is_audited_as_an_error()
+    {
+        await using var h = await Harness.StartAsync(key: false);
+        await h.CallAsync("system_log", new() { ["search"] = "argument-value-must-not-be-logged" });
+        var line = Assert.Single(h.Logs.Lines, l => l.StartsWith($"{Harness.Login} system_log ", StringComparison.Ordinal));
+        Assert.EndsWith("-> error", line);
+        Assert.DoesNotContain(h.Logs.Lines, l => l.Contains("argument-value-must-not-be-logged", StringComparison.Ordinal));
+    }
+
+    // --- the host's clock reaches the throttle, the cache and the system-log window ----------------------------------
+
+    /// <summary>The real host with a fake clock registered, as a test would; far from today so the real clock cannot pass for it.</summary>
+    private static async Task<(Harness H, FakeTimeProvider Time)> StartWithClockAsync()
+    {
+        var time = new FakeTimeProvider(new DateTimeOffset(2025, 3, 1, 12, 0, 0, TimeSpan.Zero));
+        var h = await Harness.StartAsync(configure: b => b.Services.AddSingleton<TimeProvider>(time));
+        Seed(h.Unifi);
+        return (h, time);
+    }
+
+    [Fact]
+    public async Task Through_the_host_the_internal_api_cache_follows_the_hosts_clock()
+    {
+        var (h, time) = await StartWithClockAsync();
+        await using var _ = h;
+        int DeviceReads() => h.Unifi.Requests.Count(r => r.Path == $"{Classic}/stat/device");
+
+        await h.CallAsync("device_diagnostics_faq");
+        await h.CallAsync("device_diagnostics_faq");
+        Assert.Equal(1, DeviceReads());
+
+        time.Advance(UnifiClient.ConsoleCacheFor + TimeSpan.FromSeconds(1));
+        await h.CallAsync("device_diagnostics_faq");
+        Assert.Equal(2, DeviceReads());
+    }
+
+    [Fact]
+    public async Task Through_the_host_the_internal_api_throttle_refills_by_the_hosts_clock()
+    {
+        var (h, time) = await StartWithClockAsync();
+        await using var _ = h;
+        // A different page each time, so the cache does not absorb the calls and no counts are fetched.
+        string? refused = null;
+        for (var page = 1; page <= UnifiClient.ConsoleBurst + 1 && refused is null; page++)
+        {
+            var (text, isError) = await h.CallAsync("system_log", new() { ["page"] = page });
+            if (isError) refused = text;
+        }
+        Assert.NotNull(refused);
+        Assert.Contains("Slow down", refused);
+
+        time.Advance(TimeSpan.FromSeconds(60.0 / UnifiClient.ConsolePerMinute + 0.1));
+        var (after, afterError) = await h.CallAsync("system_log", new() { ["page"] = 99 });
+        Assert.False(afterError, after);
+    }
+
+    [Fact]
+    public async Task System_log_window_comes_from_the_hosts_clock()
+    {
+        var (h, time) = await StartWithClockAsync();
+        await using var _ = h;
+        await h.CallAsync("system_log", new() { ["hours"] = 6 });
+        var now = time.GetUtcNow().ToUnixTimeMilliseconds();
+        foreach (var body in new[] { LastBody(h, "/system-log/all"), LastBody(h, "/system-log/count") })
+        {
+            Assert.Equal(now, body.GetProperty("timestampTo").GetInt64());
+            Assert.Equal(now - 6 * 3_600_000L, body.GetProperty("timestampFrom").GetInt64());
+        }
     }
 
     [Fact]

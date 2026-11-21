@@ -81,6 +81,22 @@ public class ToolTests
     }
 
     [Fact]
+    public async Task A_confirmed_write_is_audited_at_information_with_its_request_but_never_its_body()
+    {
+        await using var h = await Harness.StartAsync(writes: true);
+        h.Unifi.WithSite().Route("POST", $"/v1/sites/{Harness.SiteId}/dns/policies", """{"id":"new"}""", 201);
+        const string Secret = "body-value-must-not-be-logged";
+        await h.CallAsync("create_dns_policy", new() { ["body"] = new { type = "A_RECORD", domain = Secret }, ["confirm"] = "create_dns_policy" });
+
+        var audit = h.Logs.Entries.Where(e => e.Line.StartsWith($"{Harness.Login} create_dns_policy ", StringComparison.Ordinal)).ToList();
+        Assert.All(audit, e => Assert.Equal(Microsoft.Extensions.Logging.LogLevel.Information, e.Level));
+        // The request the tool sent (method, path, status) and the call's outcome.
+        Assert.Single(audit, e => e.Line == $"{Harness.Login} create_dns_policy POST /v1/sites/{Harness.SiteId}/dns/policies -> 201");
+        Assert.Single(audit, e => e.Line == $"{Harness.Login} create_dns_policy -> ok");
+        Assert.DoesNotContain(h.Logs.Lines, l => l.Contains(Secret, StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task A_read_fills_the_path_and_passes_paging_and_filter()
     {
         await using var h = await Harness.StartAsync();

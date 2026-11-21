@@ -5,6 +5,25 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Added
+
+- Every tool call writes an audit line (`UnifiMcp.Audit`): login, tool and outcome, never arguments. Before, only
+  `call_read_operation` and the write tools did. Writes log at Information, reads at Debug.
+
+### Fixed
+
+- The internal API's throttle and cache, and `system_log`'s time window, read the server's clock instead of their own.
+
+### Changed
+
+- The OAuth grant rules (consent, refresh-token families, rotation, revocation, disconnect) live in one module,
+  `GrantLedger`. No behaviour changes.
+- Whether an identity is the owner is decided in one place, `OwnerAdmission`, for the sign-in cookie, the Google
+  sign-in, code exchange and refresh. Authorize and consent no longer check it a second time.
+- Log reasons for a refused owner say `NotListed` (a Google address not on the list) or `OtherSignIn` (an identity
+  from the sign-in method `MCP_SIGNIN` no longer names) instead of `NotAllowed`. A refused refresh no longer says
+  "allow-list" in code mode.
+
 ## 0.6.1
 
 ### Changed

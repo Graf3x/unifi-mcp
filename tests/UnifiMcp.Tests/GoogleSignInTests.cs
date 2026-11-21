@@ -1,5 +1,4 @@
 using System.Net;
-using System.Security.Claims;
 using System.Text;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Http;
@@ -13,25 +12,6 @@ public class GoogleSignInTests
 {
     private const string Initialize =
         """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}""";
-
-    private static ClaimsPrincipal Principal(string? email, string? verified) =>
-        new(new ClaimsIdentity(new[] { email is null ? null : new Claim("email", email), verified is null ? null : new Claim("email_verified", verified) }
-            .OfType<Claim>(), "test"));
-
-    [Fact]
-    public void Admit_requires_verified_listed_email()
-    {
-        string[] allowed = [PublicHarness.GoogleEmail];
-        Assert.Equal(GoogleSignIn.Admission.Allowed, GoogleSignIn.Admit(Principal(PublicHarness.GoogleEmail, "true"), allowed));
-        Assert.Equal(GoogleSignIn.Admission.Unverified, GoogleSignIn.Admit(Principal(PublicHarness.GoogleEmail, "false"), allowed));
-        Assert.Equal(GoogleSignIn.Admission.Unverified, GoogleSignIn.Admit(Principal(PublicHarness.GoogleEmail, null), allowed));
-        Assert.Equal(GoogleSignIn.Admission.NotAllowed, GoogleSignIn.Admit(Principal("someone@else.test", "true"), allowed));
-        Assert.Equal(GoogleSignIn.Admission.NoEmail, GoogleSignIn.Admit(Principal(null, "true"), allowed));
-        Assert.Equal(GoogleSignIn.Admission.NoEmail, GoogleSignIn.Admit(Principal(" ", "true"), allowed));
-        Assert.Equal(GoogleSignIn.Admission.Allowed, GoogleSignIn.Admit(Principal("OWNER@Example.Test", "true"), allowed));
-        Assert.Equal(GoogleSignIn.Admission.Allowed, GoogleSignIn.Admit(Principal(PublicHarness.GoogleEmail, "True"), allowed));
-        Assert.Equal(GoogleSignIn.Admission.NotAllowed, GoogleSignIn.Admit(Principal(PublicHarness.GoogleEmail, "true"), []));
-    }
 
     [Fact]
     public async Task Allowed_account_gets_the_cookie()
@@ -76,7 +56,7 @@ public class GoogleSignInTests
         Assert.Contains("isn't allowed", await signIn.Callback.Content.ReadAsStringAsync());
         Assert.Null(h.Cookies.LastSetCookie(GoogleSignIn.CookieScheme));
         Assert.Empty(h.Cookies.Container.GetCookies(PublicHarness.BaseAddress)); // no half-signed-in state
-        Assert.Contains(h.Logs.Lines, l => l.Contains("someone@else.test") && l.Contains("NotAllowed"));
+        Assert.Contains(h.Logs.Lines, l => l.Contains("someone@else.test") && l.Contains("NotListed"));
         Assert.Equal(HttpStatusCode.Redirect, (await h.Http.GetAsync("/connections")).StatusCode);
     }
 
@@ -90,6 +70,17 @@ public class GoogleSignInTests
         Assert.Null(h.Cookies.LastSetCookie(GoogleSignIn.CookieScheme));
         Assert.Empty(h.Cookies.Container.GetCookies(PublicHarness.BaseAddress));
         Assert.Contains(h.Logs.Lines, l => l.Contains(PublicHarness.GoogleEmail) && l.Contains("Unverified"));
+    }
+
+    [Fact]
+    public async Task Account_without_email_is_refused()
+    {
+        await using var h = await PublicHarness.StartAsync();
+        var signIn = await h.SignInAsync(" ");
+
+        Assert.Equal(HttpStatusCode.Forbidden, signIn.Callback.StatusCode);
+        Assert.Null(h.Cookies.LastSetCookie(GoogleSignIn.CookieScheme));
+        Assert.Contains(h.Logs.Lines, l => l.Contains("(no email)") && l.Contains("NoEmail"));
     }
 
     [Fact]
@@ -137,7 +128,7 @@ public class GoogleSignInTests
         Assert.NotEqual(HttpStatusCode.OK, after.StatusCode);
         Assert.Null(h.Cookies.Get(PublicHarness.BaseAddress, GoogleSignIn.CookieScheme));
         Assert.Contains("expires=Thu, 01 Jan 1970", h.Cookies.LastSetCookie(GoogleSignIn.CookieScheme)!, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains(h.Logs.Lines, l => l.Contains(PublicHarness.GoogleEmail) && l.Contains("NotAllowed"));
+        Assert.Contains(h.Logs.Lines, l => l.Contains(PublicHarness.GoogleEmail) && l.Contains("NotListed"));
     }
 
     [Fact]

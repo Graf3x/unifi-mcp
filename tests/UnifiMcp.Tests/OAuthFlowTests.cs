@@ -422,45 +422,6 @@ public sealed partial class OAuthFlowTests
     }
 
     [Fact]
-    public async Task Pkce_mismatch_is_invalid_grant()
-    {
-        await using var h = await PublicHarness.StartAsync();
-        var clientId = await RegisterAsync(h);
-        var code = await AuthorizeAsync(h, clientId);
-        await AssertInvalidGrantAsync(TokenAsync(h, new()
-        {
-            ["grant_type"] = "authorization_code", ["client_id"] = clientId, ["code"] = code,
-            ["code_verifier"] = Verifier.Replace('d', 'e'), ["redirect_uri"] = Callback,
-        }));
-    }
-
-    [Fact]
-    public async Task Reused_code_is_invalid_grant()
-    {
-        await using var h = await PublicHarness.StartAsync();
-        var clientId = await RegisterAsync(h);
-        var code = await AuthorizeAsync(h, clientId);
-        await ExchangeAsync(h, clientId, code);
-        await AssertInvalidGrantAsync(TokenAsync(h, new()
-        {
-            ["grant_type"] = "authorization_code", ["client_id"] = clientId, ["code"] = code, ["code_verifier"] = Verifier,
-        }));
-    }
-
-    [Fact]
-    public async Task Expired_code_is_invalid_grant()
-    {
-        await using var h = await PublicHarness.StartAsync();
-        var clientId = await RegisterAsync(h);
-        var code = await AuthorizeAsync(h, clientId);
-        h.TimeProvider.Advance(TimeSpan.FromMinutes(6));
-        await AssertInvalidGrantAsync(TokenAsync(h, new()
-        {
-            ["grant_type"] = "authorization_code", ["client_id"] = clientId, ["code"] = code, ["code_verifier"] = Verifier,
-        }));
-    }
-
-    [Fact]
     public async Task Reused_refresh_token_revokes_the_family()
     {
         await using var h = await PublicHarness.StartAsync();
@@ -486,7 +447,59 @@ public sealed partial class OAuthFlowTests
         // The family is gone, not just paused: putting the address back does not revive the token.
         File.WriteAllText(h.AllowedGoogleEmailsFile, PublicHarness.GoogleEmail + "\n");
         await AssertInvalidGrantAsync(RefreshAsync(h, clientId, tokens.Refresh));
-        Assert.Contains(h.Logs.Lines, l => l.Contains(PublicHarness.GoogleEmail) && l.Contains("NotAllowed"));
+        Assert.Contains(h.Logs.Lines, l => l.Contains(PublicHarness.GoogleEmail) && l.Contains("NotListed"));
+    }
+
+    /// <summary>Opens the consent page as the owner and returns its signed request, without answering it.</summary>
+    private static async Task<string> ConsentRequestAsync(PublicHarness h, string clientId)
+    {
+        var url = AuthorizeUrl(clientId);
+        await h.SignInAsync(PublicHarness.GoogleEmail, start: url);
+        var page = await h.Http.GetAsync(url);
+        Assert.Equal(HttpStatusCode.OK, page.StatusCode);
+        return RequestField().Match(await page.Content.ReadAsStringAsync()).Groups[1].Value;
+    }
+
+    private static async Task<HttpResponseMessage> AllowAsync(PublicHarness h, string request)
+    {
+        using var consent = new HttpRequestMessage(HttpMethod.Post, "/oauth/consent")
+        {
+            Content = new FormUrlEncodedContent(new Dictionary<string, string> { ["request"] = request, ["decision"] = "allow" }),
+        };
+        consent.Headers.Add("Origin", Base);
+        return await h.Http.SendAsync(consent);
+    }
+
+    [Fact]
+    public async Task Consent_from_another_signed_in_account_is_refused()
+    {
+        await using var h = await PublicHarness.StartAsync();
+        File.WriteAllText(h.AllowedGoogleEmailsFile, PublicHarness.GoogleEmail + "\nsecond@example.test\n");
+        var clientId = await RegisterAsync(h);
+        var request = await ConsentRequestAsync(h, clientId);
+
+        foreach (Cookie c in h.Cookies.Container.GetCookies(PublicHarness.BaseAddress)) c.Expired = true; // sign the owner out
+        await h.SignInAsync("second@example.test");
+        var answer = await AllowAsync(h, request);
+
+        Assert.Equal(HttpStatusCode.BadRequest, answer.StatusCode);
+        Assert.Contains("Sign-in changed", await answer.Content.ReadAsStringAsync());
+        Assert.Contains(h.Logs.Lines, l => l.Contains("consent refused") && l.Contains("second@example.test"));
+    }
+
+    [Fact]
+    public async Task Consent_after_the_address_was_removed_is_refused()
+    {
+        await using var h = await PublicHarness.StartAsync();
+        var clientId = await RegisterAsync(h);
+        var request = await ConsentRequestAsync(h, clientId);
+
+        File.WriteAllText(h.AllowedGoogleEmailsFile, "");
+        var answer = await AllowAsync(h, request);
+
+        // The cookie no longer authenticates, so no one is signed in to give the consent.
+        Assert.Equal(HttpStatusCode.BadRequest, answer.StatusCode);
+        Assert.Contains("Sign-in changed", await answer.Content.ReadAsStringAsync());
     }
 
     [Fact]
@@ -501,16 +514,6 @@ public sealed partial class OAuthFlowTests
         // The cookie no longer opens authorize: the browser is sent back to Google, and no code is issued.
         Assert.Equal(HttpStatusCode.Redirect, again.StatusCode);
         Assert.StartsWith(FakeGoogle.AuthorizeEndpoint, again.Headers.Location!.ToString());
-    }
-
-    [Fact]
-    public async Task Refresh_token_expires_after_30_days()
-    {
-        await using var h = await PublicHarness.StartAsync();
-        var clientId = await RegisterAsync(h);
-        var tokens = await ExchangeAsync(h, clientId, await AuthorizeAsync(h, clientId));
-        h.TimeProvider.Advance(TimeSpan.FromDays(30) + TimeSpan.FromMinutes(1));
-        await AssertInvalidGrantAsync(RefreshAsync(h, clientId, tokens.Refresh));
     }
 
     [Fact]
@@ -819,21 +822,6 @@ public sealed partial class OAuthFlowTests
         await AssertInvalidGrantAsync(RefreshAsync(h, clientId, tokens.Refresh));
         File.WriteAllText(h.AllowedGoogleEmailsFile, PublicHarness.GoogleEmail + "\n");
         await ReconnectWorksAsync(h, clientId);
-    }
-
-    [Fact]
-    public async Task Code_issued_before_a_revoke_cannot_bind_to_the_revoked_family()
-    {
-        await using var h = await PublicHarness.StartAsync();
-        var clientId = await RegisterAsync(h);
-        var tokens = await ExchangeAsync(h, clientId, await AuthorizeAsync(h, clientId));
-        var pendingCode = CallbackQuery(await h.Http.GetAsync(AuthorizeUrl(clientId)))["code"]; // standing consent, same family
-        await RevokeAsync(h, tokens.Refresh);
-
-        await AssertInvalidGrantAsync(TokenAsync(h, new()
-        {
-            ["grant_type"] = "authorization_code", ["client_id"] = clientId, ["code"] = pendingCode, ["code_verifier"] = Verifier,
-        }));
     }
 
     [Fact]

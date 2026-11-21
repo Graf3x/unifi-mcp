@@ -11,7 +11,22 @@ public sealed class ConnectionsTests
     /// <summary>The Google subject FakeGoogle gives the owner.</summary>
     private static readonly string Owner = "google-sub-" + PublicHarness.GoogleEmail.ToLowerInvariant();
 
-    private static IOAuthStore Store(PublicHarness h) => h.App.Services.GetRequiredService<IOAuthStore>();
+    private static readonly OAuthUser OwnerUser = new() { Subject = Owner, Email = PublicHarness.GoogleEmail };
+
+    private static GrantLedger Ledger(PublicHarness h) => h.App.Services.GetRequiredService<GrantLedger>();
+
+    private static readonly CodeRequest Request = new("https://claude.ai/cb", "challenge", "mcp:tools", null);
+
+    /// <summary>A client approved straight through the ledger, as if it had gone through the consent page.</summary>
+    private static Task<string> ApproveAsync(PublicHarness h, OAuthUser user, OAuthEndpoints.ResolvedClient client) =>
+        Ledger(h).ApproveAsync(user, client, Request);
+
+    /// <summary>A client known by a metadata document: <paramref name="clientId"/> is what the page shows as its address.</summary>
+    private static OAuthEndpoints.ResolvedClient Client(string key, string name, string? clientId = null) =>
+        new(clientId ?? key, key, name, [Request.RedirectUri], clientId is not null);
+
+    private static async Task<bool> ConnectedAsync(PublicHarness h, OAuthUser user, string key) =>
+        (await Ledger(h).ListConsentsAsync(user)).Any(c => c.ClientId == key);
 
     /// <summary>Registers a client, connects it through the whole flow (the browser ends up signed in) and returns its tokens.</summary>
     private static async Task<(string ClientId, OAuthFlowTests.Tokens Tokens)> ConnectAsync(PublicHarness h)
@@ -37,12 +52,6 @@ public sealed class ConnectionsTests
         Assert.Equal(HttpStatusCode.OK, page.StatusCode);
         return await page.Content.ReadAsStringAsync();
     }
-
-    private static Consent NewConsent(string user, string clientId, string name, string? uri = null) => new()
-    {
-        UserId = user, ClientId = clientId, ClientName = name, ClientUri = uri, Scope = "mcp:tools", FamilyId = "fam-" + clientId,
-        CreatedAt = DateTimeOffset.UtcNow, LastUsedAt = DateTimeOffset.UtcNow,
-    };
 
     [Fact]
     public async Task Connections_lists_the_connected_client()
@@ -87,7 +96,7 @@ public sealed class ConnectionsTests
         await OAuthFlowTests.AssertInvalidGrantAsync(OAuthFlowTests.RefreshAsync(h, clientId, tokens.Refresh));
         // The access token is a short-lived JWT: it stays valid until it expires (accepted).
         Assert.Equal(HttpStatusCode.OK, await OAuthFlowTests.InitializeAsync(h, tokens.Access));
-        Assert.Null(await Store(h).GetConsentAsync(Owner, clientId));
+        Assert.False(await ConnectedAsync(h, OwnerUser, clientId));
         Assert.Contains("No connected applications", await PageAsync(h));
 
         var lines = h.Logs.Lines;
@@ -108,7 +117,7 @@ public sealed class ConnectionsTests
         // Stricter than the request guard: no Origin at all is refused too.
         Assert.Equal(HttpStatusCode.Forbidden, (await DisconnectAsync(h, clientId, origin: null)).StatusCode);
 
-        Assert.NotNull(await Store(h).GetConsentAsync(Owner, clientId));
+        Assert.True(await ConnectedAsync(h, OwnerUser, clientId));
         Assert.Contains(clientId, await PageAsync(h));
         Assert.Equal(HttpStatusCode.OK, (await OAuthFlowTests.RefreshAsync(h, clientId, tokens.Refresh)).Status);
     }
@@ -126,13 +135,15 @@ public sealed class ConnectionsTests
         await using var h = await PublicHarness.StartAsync();
         var (clientId, _) = await ConnectAsync(h);
         // Another user's consent: never listed, never deletable by the signed-in owner.
-        await Store(h).UpsertConsentAsync(NewConsent("someone-else", "mcp_foreign", "Foreign"));
+        var someoneElse = new OAuthUser { Subject = "someone-else", Email = "someone-else@example.test" };
+        var foreign = Client("mcp_foreign", "Foreign");
+        await ApproveAsync(h, someoneElse, foreign);
 
         Assert.Equal(HttpStatusCode.NotFound, (await DisconnectAsync(h, "mcp_foreign")).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await DisconnectAsync(h, "mcp_nobody")).StatusCode);
 
-        Assert.NotNull(await Store(h).GetConsentAsync("someone-else", "mcp_foreign"));
-        Assert.False(await Store(h).IsFamilyRevokedAsync("fam-mcp_foreign"));
+        // Their consent still stands: its family was not revoked.
+        Assert.NotNull(await Ledger(h).AuthorizeAsync(someoneElse, foreign, Request));
         var html = await PageAsync(h);
         Assert.Contains(clientId, html);
         Assert.DoesNotContain("Foreign", html);
@@ -144,14 +155,14 @@ public sealed class ConnectionsTests
         await using var h = await PublicHarness.StartAsync();
         await ConnectAsync(h); // signs the browser in as the owner
         const string url = "cimd_a b&c?d=1#e%f+g"; // route-hostile characters (a slash would be a path separator, which no key contains)
-        await Store(h).UpsertConsentAsync(NewConsent(Owner, url, "claude.ai", url));
+        await ApproveAsync(h, OwnerUser, Client(url, "claude.ai", url));
 
         var html = await PageAsync(h);
         Assert.Contains("action=\"/connections/cimd_a%20b%26c%3Fd%3D1%23e%25f%2Bg/disconnect\"", html);
 
         Assert.Equal(HttpStatusCode.SeeOther, (await DisconnectAsync(h, url)).StatusCode);
-        Assert.Null(await Store(h).GetConsentAsync(Owner, url));
-        Assert.True(await Store(h).IsFamilyRevokedAsync("fam-" + url));
+        Assert.False(await ConnectedAsync(h, OwnerUser, url));
+        Assert.Null(await Ledger(h).AuthorizeAsync(OwnerUser, Client(url, "claude.ai", url), Request));
     }
 
     [Fact]
@@ -160,8 +171,8 @@ public sealed class ConnectionsTests
         await using var h = await PublicHarness.StartAsync();
         await ConnectAsync(h);
         var longName = new string('n', 300);
-        await Store(h).UpsertConsentAsync(NewConsent(Owner, "mcp_xss", "<script>alert(1)</script>\"><img src=x>", "https://<b>evil</b>.example/x"));
-        await Store(h).UpsertConsentAsync(NewConsent(Owner, "mcp_long", longName));
+        await ApproveAsync(h, OwnerUser, Client("mcp_xss", "<script>alert(1)</script>\"><img src=x>", "https://<b>evil</b>.example/x"));
+        await ApproveAsync(h, OwnerUser, Client("mcp_long", longName));
 
         var html = await PageAsync(h);
         Assert.DoesNotContain("<script>", html);
@@ -258,7 +269,7 @@ public sealed class ConnectionsTests
         var (clientId, _) = await ConnectAsync(h);
 
         Assert.Equal(HttpStatusCode.Forbidden, (await DisconnectAsync(h, clientId, "null")).StatusCode);
-        Assert.NotNull(await Store(h).GetConsentAsync(Owner, clientId));
+        Assert.True(await ConnectedAsync(h, OwnerUser, clientId));
 
         using var consent = new HttpRequestMessage(HttpMethod.Post, "/oauth/consent")
         {
