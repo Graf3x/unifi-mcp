@@ -110,6 +110,10 @@ public sealed class Harness : IAsyncDisposable
         return (string.Join("\n", r.Content.OfType<TextContentBlock>().Select(t => t.Text)), r.IsError == true);
     }
 
+    /// <summary>The whole result, for tools that also answer with structured content.</summary>
+    public async Task<CallToolResult> CallRawAsync(string tool, Dictionary<string, object?>? args = null) =>
+        await Client.CallToolAsync(tool, args ?? []);
+
     public async ValueTask DisposeAsync()
     {
         if (Client is not null) await Client.DisposeAsync();

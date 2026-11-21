@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Device diagnostics</title>
+<style>
+  body { margin: 0; padding: 12px; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  p { margin: 0; }
+</style>
+</head>
+<body>
+<p id="rendered">unifi-mcp view probe: waiting for the host</p>
+<p id="blocks"></p>
+<p id="view"></p>
+<script>
+/* Probe: proves a host renders a view from this server and hands it the tool result. Replaced by the real view. */
+(function () {
+  "use strict";
+  var INITIALIZE = 1;
+
+  function post(message) { window.parent.postMessage(message, "*"); }
+  function line(id, text) { document.getElementById(id).textContent = text; }
+  function reportSize() {
+    post({ jsonrpc: "2.0", method: "ui/notifications/size-changed",
+           params: { width: document.body.scrollWidth, height: document.body.scrollHeight } });
+  }
+
+  window.addEventListener("message", function (event) {
+    if (event.source !== window.parent) return;
+    var message = event.data;
+    if (!message || message.jsonrpc !== "2.0") return;
+    if (message.id === INITIALIZE && !message.method) {
+      post({ jsonrpc: "2.0", method: "ui/notifications/initialized" });
+      line("rendered", "unifi-mcp view probe: rendered, waiting for the tool result");
+      reportSize();
+      return;
+    }
+    if (message.method === "ui/notifications/tool-result") {
+      var result = message.params || {};
+      var blocks = Array.isArray(result.content) ? result.content.filter(function (b) { return b && b.type === "text"; }) : [];
+      var model = result.structuredContent;
+      line("rendered", "unifi-mcp view probe: rendered");
+      line("blocks", "text blocks: " + blocks.length);
+      line("view", "structuredContent.view: " + (model && typeof model.view === "string" ? model.view : "missing"));
+      reportSize();
+    }
+  });
+
+  post({ jsonrpc: "2.0", id: INITIALIZE, method: "ui/initialize",
+         params: { protocolVersion: "2026-01-26", appInfo: { name: "unifi-device-diagnostics", version: "0" }, appCapabilities: {} } });
+})();
+</script>
+</body>
+</html>

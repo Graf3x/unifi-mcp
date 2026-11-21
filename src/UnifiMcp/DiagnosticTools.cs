@@ -268,12 +268,13 @@ public sealed partial class DiagnosticTools(UnifiClient console, TimeProvider ti
 
     [McpServerTool(Name = "device_diagnostics_faq", Title = "Device diagnostics", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
     [Description("[Composite] Hardware health of UniFi devices. Without a device: every gateway, switch and AP with state, uptime, CPU, memory, temperature, firmware updates and flagged ports. "
-                 + "With a device (name, IP or MAC): its CPU, memory, temperatures, fan, PoE budget, uplink and storage, plus every active port with speed, duplex, PoE draw, "
+                 + "With a device (name, IP or MAC): its CPU, memory, temperatures, fan, PoE budget, uplink and storage, plus every active port with what is connected to it, speed, duplex, PoE draw, "
                  + "errors, drops, link-down count and STP state, with bad ports flagged. Use for 'is this switch dropping packets' or 'which port is flapping'.")]
-    public Task<string> DeviceDiagnostics(
+    [McpMeta("ui", JsonValue = "{\"resourceUri\":\"" + ViewResources.DeviceDiagnosticsUri + "\"}")]
+    public async Task<CallToolResult> DeviceDiagnostics(
         [Description("Device name (partial match), IP address or MAC address. Omit for a summary of every device.")] string? device = null,
         [Description("Site UUID or name. Omit for the configured site.")] string? siteId = null,
-        CancellationToken ct = default) => Run(siteId, ct, async (siteRef, zone, sb) =>
+        CancellationToken ct = default) => WithProbe(await Run(siteId, ct, async (siteRef, zone, sb) =>
     {
         var devices = await console.ConsoleDataAsync($"/api/s/{siteRef}/stat/device", ct);
         if (string.IsNullOrWhiteSpace(device))
@@ -340,7 +341,14 @@ public sealed partial class DiagnosticTools(UnifiClient console, TimeProvider ti
             var idle = ports.Except(active).Select(p => V(p, "port_idx")).ToList();
             if (idle.Count > 0) sb.AppendLine($"Down with nothing to report: {string.Join(", ", idle)}.");
         }
-    });
+    }));
+
+    /// <summary>The text answer plus a placeholder for the view model, until the view model is built.</summary>
+    private static CallToolResult WithProbe(string text) => new()
+    {
+        Content = [new TextContentBlock { Text = text }],
+        StructuredContent = JsonSerializer.SerializeToElement(new { view = "probe" }),
+    };
 
     [McpServerTool(Name = "list_port_forwards", Title = "List port forwards", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
     [Description("[Firewall] Port forwarding rules (not in the official API): name, enabled, protocol, the WAN port, the internal address and port it forwards to, "
