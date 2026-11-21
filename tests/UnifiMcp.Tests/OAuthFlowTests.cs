@@ -447,7 +447,7 @@ public sealed partial class OAuthFlowTests
         // The family is gone, not just paused: putting the address back does not revive the token.
         File.WriteAllText(h.AllowedGoogleEmailsFile, PublicHarness.GoogleEmail + "\n");
         await AssertInvalidGrantAsync(RefreshAsync(h, clientId, tokens.Refresh));
-        Assert.Contains(h.Logs.Lines, l => l.Contains(PublicHarness.GoogleEmail) && l.Contains("NotAllowed"));
+        Assert.Contains(h.Logs.Lines, l => l.Contains(PublicHarness.GoogleEmail) && l.Contains("NotListed"));
     }
 
     [Fact]

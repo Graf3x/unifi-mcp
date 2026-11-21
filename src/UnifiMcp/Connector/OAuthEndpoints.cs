@@ -127,7 +127,7 @@ public static class OAuthEndpoints
                     await http.ChallengeAsync(GoogleSignIn.CookieScheme);
                     return Results.Empty;
                 }
-                var user = UserFrom(auth.Principal);
+                var user = OAuthUser.From(auth.Principal);
                 var admission = GoogleSignIn.AdmitOwner(auth.Principal, settings);
                 if (user is null || admission != GoogleSignIn.Admission.Allowed)
                 {
@@ -162,7 +162,7 @@ public static class OAuthEndpoints
                     return Page(400, Pages.ErrorPage("This request has expired", "Go back to the application and connect again."));
 
                 var auth = await http.AuthenticateAsync(GoogleSignIn.CookieScheme);
-                var user = auth.Succeeded && auth.Principal is not null ? UserFrom(auth.Principal) : null;
+                var user = auth.Succeeded && auth.Principal is not null ? OAuthUser.From(auth.Principal) : null;
                 // The consent must be given by the same signed-in, still-allowed owner the request was rendered for.
                 if (user is null || user.Subject != pending.UserSubject
                     || GoogleSignIn.AdmitOwner(auth.Principal!, settings) != GoogleSignIn.Admission.Allowed)
@@ -336,15 +336,6 @@ public static class OAuthEndpoints
             refresh_token = refreshToken,
             scope,
         }, Json);
-    }
-
-    internal static OAuthUser? UserFrom(ClaimsPrincipal principal)
-    {
-        var sub = principal.FindFirst("sub")?.Value;
-        if (string.IsNullOrEmpty(sub)) return null;
-        var email = principal.FindFirst("email")?.Value ?? "";
-        var name = principal.FindFirst("name")?.Value ?? email;
-        return new OAuthUser { Subject = sub, Email = email, Name = name };
     }
 
     internal static string? ValidateRegistration(RegistrationRequest request)

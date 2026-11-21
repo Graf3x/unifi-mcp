@@ -1,5 +1,3 @@
-using System.Security.Claims;
-
 namespace UnifiMcp;
 
 /// <summary>Why the ledger turned a request down. Every kind is an OAuth <c>invalid_grant</c>.</summary>
@@ -109,11 +107,11 @@ public sealed class GrantLedger(SqliteOAuthStore store, TimeProvider time, Setti
             await store.RevokeFamilyAsync(stored.FamilyId, ct);
             return new GrantRefused(GrantRefusal.Reuse, ReuseDetected, who, "refresh token reuse; family revoked");
         }
-        // The allow-list is read again on every refresh, so removing the address ends access within the hour.
-        if (Admit(stored.User, settings) is var admitted && admitted != GoogleSignIn.Admission.Allowed)
+        // Admission is decided again on every refresh, so removing the address ends access within the hour.
+        if (OwnerAdmission.Admit(stored.User, settings) is var admitted && admitted != Admission.Allowed)
         {
             await store.RevokeFamilyAsync(stored.FamilyId, ct);
-            return new GrantRefused(GrantRefusal.NotAdmitted, NotAllowedAnyMore(settings), who, $"allow-list {admitted}; family revoked");
+            return new GrantRefused(GrantRefusal.NotAdmitted, NotAllowedAnyMore(settings), who, $"{admitted}; family revoked");
         }
         var consent = await store.GetConsentAsync(stored.User.Subject, client.Key, ct);
         if (consent is null || consent.FamilyId != stored.FamilyId)
@@ -146,8 +144,8 @@ public sealed class GrantLedger(SqliteOAuthStore store, TimeProvider time, Setti
             return new GrantRefused(GrantRefusal.Invalid, "redirect_uri does not match.", who);
         if (!TokenIssuer.VerifyPkce(verifier, stored.CodeChallenge))
             return new GrantRefused(GrantRefusal.Invalid, "PKCE verification failed.", who);
-        if (Admit(stored.User, settings) is var admitted && admitted != GoogleSignIn.Admission.Allowed)
-            return new GrantRefused(GrantRefusal.NotAdmitted, NotAllowedAnyMore(settings), who, $"allow-list {admitted}");
+        if (OwnerAdmission.Admit(stored.User, settings) is var admitted && admitted != Admission.Allowed)
+            return new GrantRefused(GrantRefusal.NotAdmitted, NotAllowedAnyMore(settings), who, admitted.ToString());
 
         // A code issued under a family revoked since then never mints into it (the token would be born revoked). The
         // next authorize shows the consent page again, and that starts a fresh family.
@@ -202,16 +200,6 @@ public sealed class GrantLedger(SqliteOAuthStore store, TimeProvider time, Setti
         }, ct);
         return token;
     }
-
-    /// <summary>
-    /// The owner check for a stored identity. With Google, its email was verified when the code was issued (the cookie
-    /// only exists for verified addresses), so only the list itself can change the answer. In code mode only the code
-    /// owner passes. Either way an identity from the other mode fails, so changing MCP_SIGNIN ends the old connections.
-    /// </summary>
-    private static GoogleSignIn.Admission Admit(OAuthUser user, Settings settings) => settings.SignIn == SignInMode.Code
-        ? user.Subject == CodeSignIn.Subject && user.Email.Length == 0 ? GoogleSignIn.Admission.Allowed : GoogleSignIn.Admission.NotAllowed
-        : GoogleSignIn.Admit(new ClaimsPrincipal(new ClaimsIdentity([new Claim("email", user.Email), new Claim("email_verified", "true")], "stored")),
-            settings.AllowedGoogleEmails());
 
     private static string NotAllowedAnyMore(Settings settings) =>
         settings.SignIn == SignInMode.Code ? "This sign-in isn't allowed any more." : "This Google account isn't allowed any more.";

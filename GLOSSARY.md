@@ -8,6 +8,10 @@ An MCP server that lets Claude read, and with the owner's leave change, one home
 The one person allowed to use the server: a listed Google address, or whoever holds the sign-in code.
 _Avoid_: user, admin, account
 
+**Admission**:
+The decision that an identity is the owner under the current settings. It is made again each time the identity is used, so changing the allowed addresses or the sign-in method ends access for anyone who no longer qualifies.
+_Avoid_: authorization, allow-listing
+
 **Client**:
 An application that asks for access on the owner's behalf, such as Claude. It is identified by a registration or by a published metadata document.
 _Avoid_: app, connector (the connector is this server's public side)
