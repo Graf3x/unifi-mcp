@@ -9,8 +9,8 @@ namespace UnifiMcp;
 
 /// <summary>
 /// The owner's browser sign-in into the <c>unifi.auth</c> cookie: Google OIDC (code flow, PKCE, query callback) by
-/// default, or a one-time code from the log with MCP_SIGNIN=code (<see cref="CodeSignIn"/>). With Google, only an address
-/// on the allow-list with <c>email_verified</c> true gets the cookie, and every use of the cookie checks the list again,
+/// default, or a one-time code from the log with MCP_SIGNIN=code (<see cref="CodeSignIn"/>). With Google, only a verified
+/// address the owner admission accepts gets the cookie, and every use of the cookie asks <see cref="OwnerAdmission"/> again,
 /// so removing an address signs it out at once. The cookie is for the owner's pages (/oauth/authorize, /connections)
 /// only: /mcp never accepts it.
 /// </summary>
@@ -30,26 +30,6 @@ public static class GoogleSignIn
     /// measured from this instead.
     /// </summary>
     private const string SignedInKey = ".unifi.signed_in";
-
-    public enum Admission { Allowed, NoEmail, Unverified, NotAllowed }
-
-    /// <summary>Whether <paramref name="p"/> may have the cookie: a verified email on <paramref name="allowed"/>, ignoring case.</summary>
-    public static Admission Admit(ClaimsPrincipal p, IReadOnlyCollection<string> allowed)
-    {
-        var email = p.FindFirst("email")?.Value.Trim();
-        if (string.IsNullOrEmpty(email)) return Admission.NoEmail;
-        // Google sends a JSON boolean, which arrives as the claim value "true"; a string "true" is accepted too.
-        if (!string.Equals(p.FindFirst("email_verified")?.Value.Trim(), "true", StringComparison.OrdinalIgnoreCase)) return Admission.Unverified;
-        return allowed.Any(a => string.Equals(a.Trim(), email, StringComparison.OrdinalIgnoreCase)) ? Admission.Allowed : Admission.NotAllowed;
-    }
-
-    /// <summary>
-    /// Whether the cookie's principal is the owner under the configured MCP_SIGNIN: a listed, verified Google address, or
-    /// the code owner. A cookie from the other mode is never the owner, so changing the mode signs everyone out.
-    /// </summary>
-    public static Admission AdmitOwner(ClaimsPrincipal p, Settings s) => s.SignIn == SignInMode.Code
-        ? CodeSignIn.IsCodeOwner(p) ? Admission.Allowed : Admission.NotAllowed
-        : Admit(p, s.AllowedGoogleEmails());
 
     /// <summary>A browser navigating to an owner page is sent to Google; anything else (an API call, a POST) gets a bare 401.</summary>
     internal static bool SendsToGoogle(string method, PathString path) =>
@@ -174,8 +154,8 @@ public static class GoogleSignIn
         var google = ctx.Principal ?? new ClaimsPrincipal();
         var settings = ctx.HttpContext.RequestServices.GetRequiredService<Settings>();
         var email = google.FindFirst("email")?.Value.Trim();
-        // Only here is Google's own email_verified seen: an identity exists only for an address Google verified, so
-        // owner admission afterwards never asks about it.
+        // Only here is Google's own email_verified seen (a JSON boolean arrives as "true"; a string "true" is accepted too):
+        // an identity exists only for an address Google verified, so owner admission afterwards never asks about it.
         var reason = string.IsNullOrEmpty(email) ? "NoEmail"
             : !string.Equals(google.FindFirst("email_verified")?.Value.Trim(), "true", StringComparison.OrdinalIgnoreCase) ? "Unverified"
             : OwnerAdmission.Admit(new OAuthUser { Subject = google.FindFirst("sub")?.Value ?? "", Email = email }, settings).ToString();
@@ -192,9 +172,9 @@ public static class GoogleSignIn
         }
 
         log.LogInformation("Google sign-in for {Email}: {Reason}", email, reason);
-        // Only what the owner's pages need. email_verified stays until authorize and consent stop reading it.
+        // Only what the owner's pages need.
         var identity = new ClaimsIdentity(
-            new[] { Claim("sub", google), new Claim("email", email!), Claim("name", google), new Claim("email_verified", "true") }.OfType<Claim>(),
+            new[] { Claim("sub", google), new Claim("email", email!), Claim("name", google) }.OfType<Claim>(),
             CookieScheme, "email", null);
         ctx.Principal = new ClaimsPrincipal(identity);
     }
@@ -205,7 +185,7 @@ public static class GoogleSignIn
         var settings = ctx.HttpContext.RequestServices.GetRequiredService<Settings>();
         // A cookie without a subject is no identity at all; otherwise the owner check runs again on every use.
         string? reason = OAuthUser.From(principal) is not { } user ? "no subject"
-            : OwnerAdmission.Admit(user, settings) is var admission && admission != UnifiMcp.Admission.Allowed ? admission.ToString()
+            : OwnerAdmission.Admit(user, settings) is var admission && admission != Admission.Allowed ? admission.ToString()
             : null;
         if (reason is null)
         {
