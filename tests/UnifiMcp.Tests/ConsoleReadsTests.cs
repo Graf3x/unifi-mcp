@@ -78,6 +78,34 @@ public sealed class ConsoleReadsTests : IDisposable
     }
 
     [Fact]
+    public async Task Each_site_reads_in_its_own_time_zone()
+    {
+        _fake.Route("GET", "/v1/sites", FakeUnifi.Page(
+            $$"""{"id":"{{Harness.SiteId}}","internalReference":"default","name":"Home"}""",
+            """{"id":"22222222-2222-2222-2222-222222222222","internalReference":"cabin","name":"Cabin"}"""));
+        _fake.Route("GET", $"{Classic}/stat/sysinfo", """{"meta":{"rc":"ok"},"data":[{"timezone":"Europe/London"}]}""");
+        _fake.Route("GET", "/proxy/network/api/s/cabin/stat/sysinfo", """{"meta":{"rc":"ok"},"data":[{"timezone":"America/Denver"}]}""");
+
+        Assert.Equal("Europe/London", (await (await _reads.SiteAsync("Home", default)).TimeZoneAsync(default)).Name);
+        Assert.Equal("America/Denver", (await (await _reads.SiteAsync("Cabin", default)).TimeZoneAsync(default)).Name);
+        Assert.Equal("Europe/London", (await (await _reads.SiteAsync("Home", default)).TimeZoneAsync(default)).Name);
+    }
+
+    [Fact]
+    public async Task A_known_time_zone_is_not_asked_for_again_but_an_unknown_one_is()
+    {
+        var site = await _reads.SiteAsync(null, default);
+        Assert.Equal("UTC", (await site.TimeZoneAsync(default)).Name); // no sysinfo route: the fake answers 404
+        _fake.Route("GET", $"{Classic}/stat/sysinfo", """{"meta":{"rc":"ok"},"data":[{"timezone":"Europe/London"}]}""");
+        _time.Advance(ConsoleReads.CacheFor + TimeSpan.FromSeconds(1));
+        Assert.Equal("Europe/London", (await site.TimeZoneAsync(default)).Name);
+
+        _time.Advance(ConsoleReads.CacheFor + TimeSpan.FromSeconds(1));
+        Assert.Equal("Europe/London", (await site.TimeZoneAsync(default)).Name);
+        Assert.Equal(2, _fake.Requests.Count(r => r.Path.EndsWith("/stat/sysinfo", StringComparison.Ordinal)));
+    }
+
+    [Fact]
     public void No_caller_can_choose_the_path_or_method_of_an_internal_read()
     {
         // The named reads are the allow-list: the only string a caller passes is the site hint, which is looked up.

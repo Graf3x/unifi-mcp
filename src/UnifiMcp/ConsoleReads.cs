@@ -40,7 +40,7 @@ public sealed partial class ConsoleReads(UnifiClient client, TimeProvider time)
     private readonly Dictionary<string, (DateTimeOffset At, UnifiResponse Response)> _cache = new(StringComparer.Ordinal);
     private double _tokens = Burst;
     private DateTimeOffset _refilled = DateTimeOffset.MinValue;
-    private (TimeZoneInfo Zone, string Name)? _zone;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (TimeZoneInfo Zone, string Name)> _zones = new(StringComparer.Ordinal);
 
     /// <summary>A site by its id, name or internal name; omitted means the configured site.</summary>
     public async Task<ConsoleSite> SiteAsync(string? hint, CancellationToken ct)
@@ -113,15 +113,18 @@ public sealed partial class ConsoleReads(UnifiClient client, TimeProvider time)
         throw new UnifiError($"The console's answer to GET {path.Split('?')[0]} was not the list this server expects.");
     }
 
-    /// <summary>The console's own time zone (from stat/sysinfo, only that field), so times read as they do in its UI. UTC if unknown.</summary>
+    /// <summary>
+    /// A site's own time zone (from stat/sysinfo, only that field), so times read as they do in the console's UI. Kept per
+    /// site once known; UTC while unknown, asked again next time.
+    /// </summary>
     internal async Task<(TimeZoneInfo Zone, string Name)> TimeZoneAsync(string reference, CancellationToken ct)
     {
-        if (_zone is { } known) return known;
+        if (_zones.TryGetValue(reference, out var known)) return known;
         try
         {
             var info = await DataAsync($"/api/s/{reference}/stat/sysinfo", ct);
             if (info.Count > 0 && Str(info[0], "timezone") is { } id && TimeZoneInfo.TryFindSystemTimeZoneById(id, out var zone))
-                return (_zone = (zone, id)).Value;
+                return _zones[reference] = (zone, id);
         }
         catch (UnifiError)
         {
