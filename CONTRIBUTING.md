@@ -26,7 +26,8 @@ follow [guide 1](README.md#guide-1-quick-local-setup) in the README.
 |---|---|
 | `src/UnifiMcp/ApiTool.cs`, `ReadOperationTool.cs`, `OpenApiCatalog.cs` | Tools generated from the OpenAPI document in `openapi/` |
 | `src/UnifiMcp/FaqTools.cs`, `DiagnosticTools.cs` | The task-oriented and diagnostics tools |
-| `src/UnifiMcp/UnifiClient.cs` | The only code that talks to the console: pinning, throttling, scrubbing |
+| `src/UnifiMcp/UnifiClient.cs` | The only code that talks to the console: pinning, scrubbing, finding a site |
+| `src/UnifiMcp/ConsoleReads.cs` | The console's internal API: one named read per endpoint, cached and throttled |
 | `src/UnifiMcp/Connector/` | The Claude connector: OAuth, sign-in pages, token issuing |
 | `src/UnifiMcp/Setup/` | The setup page: its checks, its markup, script and styles, and the README guide it renders |
 | `tests/UnifiMcp.Tests/` | xUnit tests; `ToolContractTests` checks every tool against Claude's tool rules |
@@ -38,8 +39,8 @@ follow [guide 1](README.md#guide-1-quick-local-setup) in the README.
 - **Tools:** snake_case names, a title, read-only or destructive hints, a description that starts with its `[Category]`,
   and a description on every parameter. `ToolContractTests` fails if one is missing. Writes must stay behind
   `UNIFI_ALLOW_WRITES` and the per-call `confirm`.
-- **The console's internal API:** add new paths to the allow-list in `UnifiClient` only for reads, and return chosen
-  fields, never the raw JSON (it carries secrets).
+- **The console's internal API:** add a read as a named method on `ConsoleSite` in `ConsoleReads.cs`, never a way to
+  send a path of the caller's choosing, and return chosen fields, never the raw JSON (it carries secrets).
 - **Docs:** if you change setup steps or settings, update the README and `.env.example` together. The setup page renders
   the README's Setup section, and a test checks that every heading it links to still exists. After editing
   `tools/make-diagrams.mjs`, run `node tools/make-diagrams.mjs` and commit the regenerated SVGs.
