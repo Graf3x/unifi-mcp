@@ -6,6 +6,9 @@ Outcome of Verification item 1 (2026-11-21): Claude renders the view, but hands 
 of the markdown. So the fallback below is what was built: the view's data travels in the result's
 `_meta["unifi-network/view"]`, and wherever this document says `structuredContent`, read that key.
 
+Outcome of Verification item 4 (2026-11-22): the owner tried the view in Claude against the real network, on prerelease
+`v0.7.0-probe.3`, and reports that it works.
+
 ## Intent
 
 `device_diagnostics_faq` answers "which port is flapping" with a markdown table. The owner wants hosts that can render
