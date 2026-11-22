@@ -1,6 +1,4 @@
 using System.Collections.Concurrent;
-using System.Security.Cryptography;
-using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 
 namespace UnifiMcp;
@@ -18,27 +16,6 @@ public sealed record UnifiResponse(int Status, string Body)
 
 /// <summary>A site on the console: its id (the Integration API's name for it), its internal name (the Internal API's) and its display name.</summary>
 public sealed record Site(string Id, string? Reference, string Name);
-
-/// <summary>A certificate's pins: the SHA-256 of its DER and of its public key. <see cref="ConsoleTransport"/> checks them.</summary>
-public static class CertPin
-{
-    public static string Fingerprint(X509Certificate cert) => Convert.ToHexString(SHA256.HashData(cert.GetRawCertData()));
-
-    public static string KeyFingerprint(X509Certificate cert)
-    {
-        if (cert is X509Certificate2 c2) return Convert.ToHexString(SHA256.HashData(c2.PublicKey.ExportSubjectPublicKeyInfo()));
-        using var copy = X509CertificateLoader.LoadCertificate(cert.GetRawCertData());
-        return Convert.ToHexString(SHA256.HashData(copy.PublicKey.ExportSubjectPublicKeyInfo()));
-    }
-
-    public static bool Matches(X509Certificate? cert, IReadOnlyCollection<string>? pins)
-    {
-        if (cert is null || pins is not { Count: > 0 }) return false;
-        var certPin = Fingerprint(cert);
-        var keyPin = KeyFingerprint(cert);
-        return pins.Any(p => string.Equals(p, certPin, StringComparison.OrdinalIgnoreCase) || string.Equals(p, keyPin, StringComparison.OrdinalIgnoreCase));
-    }
-}
 
 /// <summary>
 /// The console's two APIs over one <see cref="ConsoleTransport"/>. Non-GET requests are refused here as well as by tool

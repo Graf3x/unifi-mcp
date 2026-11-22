@@ -1,8 +1,13 @@
 using System.Net.Security;
 using System.Security.Authentication;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 
 namespace UnifiMcp;
+
+/// <summary>Whether the console's certificate is trusted, and by what.</summary>
+public enum CertificateVerdict { Refused, KeyPin, CertificatePin, Ca }
 
 /// <summary>
 /// How a request reaches the console: nothing is sent until the key and pin exist, the key travels only in its header
@@ -68,6 +73,32 @@ public sealed class ConsoleTransport
         }
     }
 
+    /// <summary>
+    /// The one rule for trusting the console's certificate, at the handshake and on the setup page. In CA mode, trusted
+    /// when the platform has no complaint (chain, host name); pins are not read. Otherwise trusted when a pin is the
+    /// certificate's or its key's fingerprint, whatever the chain says; the key pin is reported when both are pinned.
+    /// </summary>
+    public static CertificateVerdict Judge(Settings settings, string certificateSha256, string keySha256, SslPolicyErrors errors)
+    {
+        if (settings.Trust == CertTrust.Ca) return errors == SslPolicyErrors.None ? CertificateVerdict.Ca : CertificateVerdict.Refused;
+        var pins = settings.CertPins() ?? [];
+        bool Pinned(string sha256) => pins.Contains(sha256, StringComparer.OrdinalIgnoreCase);
+        return Pinned(keySha256) ? CertificateVerdict.KeyPin
+            : Pinned(certificateSha256) ? CertificateVerdict.CertificatePin
+            : CertificateVerdict.Refused;
+    }
+
+    /// <summary>The SHA-256 of the certificate's DER, as a pin.</summary>
+    public static string CertificateSha256(X509Certificate cert) => Convert.ToHexString(SHA256.HashData(cert.GetRawCertData()));
+
+    /// <summary>The SHA-256 of the certificate's public key (SubjectPublicKeyInfo), as a pin that survives a re-issue with the same key.</summary>
+    public static string KeySha256(X509Certificate cert)
+    {
+        if (cert is X509Certificate2 c2) return Convert.ToHexString(SHA256.HashData(c2.PublicKey.ExportSubjectPublicKeyInfo()));
+        using var copy = X509CertificateLoader.LoadCertificate(cert.GetRawCertData());
+        return Convert.ToHexString(SHA256.HashData(copy.PublicKey.ExportSubjectPublicKeyInfo()));
+    }
+
     private SocketsHttpHandler PinnedHandler() => new()
     {
         AllowAutoRedirect = false, // the key must not follow a redirect elsewhere
@@ -76,9 +107,10 @@ public sealed class ConsoleTransport
         {
             RemoteCertificateValidationCallback = (_, cert, _, errors) =>
             {
-                var ok = _settings.Trust == CertTrust.Ca ? cert is not null && errors == SslPolicyErrors.None : CertPin.Matches(cert, _settings.CertPins());
-                if (ok) _refused = null;
-                else if (cert is not null) _refused = new(CertPin.Fingerprint(cert), CertPin.KeyFingerprint(cert), errors);
+                if (cert is null) return false;
+                var (certificate, key) = (CertificateSha256(cert), KeySha256(cert));
+                var ok = Judge(_settings, certificate, key, errors) != CertificateVerdict.Refused;
+                _refused = ok ? null : new(certificate, key, errors);
                 return ok;
             },
         },
