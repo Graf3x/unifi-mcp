@@ -364,6 +364,15 @@ public class DiagnosticTests
     }
 
     [Fact]
+    public async Task Device_diagnostics_prints_no_times_so_it_spends_nothing_on_the_time_zone()
+    {
+        await using var h = await StartAsync();
+        await h.CallAsync("device_diagnostics_faq");
+        await h.CallAsync("device_diagnostics_faq", new() { ["device"] = "core" });
+        Assert.DoesNotContain(h.Unifi.Requests, r => r.Path.EndsWith("/stat/sysinfo", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Device_diagnostics_for_a_switch_flags_the_bad_port()
     {
         await using var h = await StartAsync();

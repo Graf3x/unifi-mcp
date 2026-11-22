@@ -75,9 +75,10 @@ public sealed partial class DiagnosticTools(ConsoleReads reads, TimeProvider tim
     public Task<string> InternetHealth(
         [Description("History window in hours (1 to 168). Default 24.")] int hours = 24,
         [Description("Site UUID or name. Omit for the configured site.")] string? siteId = null,
-        CancellationToken ct = default) => Run(siteId, ct, async (site, zone, sb) =>
+        CancellationToken ct = default) => Run(siteId, ct, async (site, sb) =>
     {
         hours = Math.Clamp(hours, 1, 168);
+        var zone = await site.TimeZoneAsync(ct);
         var dash = await StepJson(sb, "Dashboard", () => site.DashboardAsync(hours, ct));
         var lb = await StepJson(sb, "WAN status", () => site.WanStatusAsync(ct));
 
@@ -167,7 +168,7 @@ public sealed partial class DiagnosticTools(ConsoleReads reads, TimeProvider tim
                  + "Problems are flagged (busy channel, interference, high retries). Use for 'why is Wi-Fi slow' or 'which channel should this AP use'.")]
     public Task<string> WifiHealth(
         [Description("Site UUID or name. Omit for the configured site.")] string? siteId = null,
-        CancellationToken ct = default) => Run(siteId, ct, async (site, zone, sb) =>
+        CancellationToken ct = default) => Run(siteId, ct, async (site, sb) =>
     {
         var devices = await Step(sb, "Access points", () => site.DevicesAsync(ct));
         if (devices is null) return;
@@ -192,6 +193,7 @@ public sealed partial class DiagnosticTools(ConsoleReads reads, TimeProvider tim
         if (offline.Count > 0)
             sb.AppendLine($"**Not online ({offline.Count}):** " + string.Join(", ", offline.Select(a => $"{V(a, "name")} ({V(a, "model")}, {DeviceState(V(a, "state"))})"))).AppendLine();
 
+        var zone = await site.TimeZoneAsync(ct);
         var events = await StepJson(sb, "Radio events", () => site.SystemLogAsync(
             LogQuery(Window(24), 15, 0, [], ["AP_CHANGED_CHANNELS", "AP_DETECTED_RADAR"], [], null), ct));
         if (events is { } ev)
@@ -206,7 +208,7 @@ public sealed partial class DiagnosticTools(ConsoleReads reads, TimeProvider tim
         [Description("Client name or hostname (partial match), IP address or MAC address.")] string client,
         [Description("How far back to read its events, in hours (1 to 720). Default 24.")] int hours = 24,
         [Description("Site UUID or name. Omit for the configured site.")] string? siteId = null,
-        CancellationToken ct = default) => Run(siteId, ct, async (site, zone, sb) =>
+        CancellationToken ct = default) => Run(siteId, ct, async (site, sb) =>
     {
         var q = (client ?? "").Trim();
         bool Matches(JsonElement x, params string[] names) =>
@@ -231,6 +233,7 @@ public sealed partial class DiagnosticTools(ConsoleReads reads, TimeProvider tim
             return;
         }
 
+        var zone = await site.TimeZoneAsync(ct);
         var c = found[0];
         sb.AppendLine($"## {Name(c)} ({(online ? "online" : "offline")})");
         sb.AppendLine($"- MAC {V(c, "mac")}, vendor {First(V(c, "oui"), "unknown")}, hostname {First(V(c, "hostname"), "none")}.");
@@ -272,7 +275,7 @@ public sealed partial class DiagnosticTools(ConsoleReads reads, TimeProvider tim
     public Task<string> DeviceDiagnostics(
         [Description("Device name (partial match), IP address or MAC address. Omit for a summary of every device.")] string? device = null,
         [Description("Site UUID or name. Omit for the configured site.")] string? siteId = null,
-        CancellationToken ct = default) => Run(siteId, ct, async (site, zone, sb) =>
+        CancellationToken ct = default) => Run(siteId, ct, async (site, sb) =>
     {
         var devices = await site.DevicesAsync(ct);
         if (string.IsNullOrWhiteSpace(device))
@@ -360,13 +363,12 @@ public sealed partial class DiagnosticTools(ConsoleReads reads, TimeProvider tim
     // --- running ----------------------------------------------------------------------------------------------------
 
     /// <summary>Composite tools: markdown in steps, so a failure is reported and the rest still runs.</summary>
-    private async Task<string> Run(string? site, CancellationToken ct, Func<ConsoleSite, (TimeZoneInfo Zone, string Name), StringBuilder, Task> steps)
+    private async Task<string> Run(string? site, CancellationToken ct, Func<ConsoleSite, StringBuilder, Task> steps)
     {
         var sb = new StringBuilder();
         try
         {
-            var handle = await reads.SiteAsync(site, ct);
-            await steps(handle, await handle.TimeZoneAsync(ct), sb);
+            await steps(await reads.SiteAsync(site, ct), sb);
         }
         catch (Exception e) when (e is UnifiError or UnifiNotConfigured)
         {
