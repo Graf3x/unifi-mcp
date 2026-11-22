@@ -83,23 +83,134 @@ public sealed partial class DiagnosticTools
                 radios.Select(r => new[] { Band(V(r, "radio")), V(r, "channel"), V(r, "bw"), V(r, "tx_power"), V(r, "num_sta"), V(r, "cu_total"), V(r, "cu_interf"), V(r, "tx_retries_pct") })));
 
         var ports = Array(dev, "port_table");
+        var portViews = new List<PortView>();
         if (ports.Count > 0)
         {
-            var active = ports.Where(p => Bool(p, "up") || PortFlags(p).Count > 0).ToList();
-            sb.AppendLine($"## Ports: {ports.Count(p => Bool(p, "up"))} up of {ports.Count}");
-            sb.AppendLine(FaqTools.Table(["Port", "Name", "Link", "Speed (Mbps)", "Duplex", "PoE W", "Rx errors", "Tx errors", "Drops", "Link downs", "STP", "Flags"], active.Select(p => new[]
+            // Two more reads, each a step that may fail without losing the rest: who is on each port, and what each port can do.
+            var connected = ConnectedDevices(devices, dev);
+            var stations = await Step(sb, "Connected clients", () => site.StationsAsync(ct)) ?? [];
+            foreach (var c in stations.Where(c => Bool(c, "is_wired") && SameMac(V(c, "sw_mac"), V(dev, "mac")) && V(c, "sw_port").Length > 0).OrderBy(Name))
+                Add(connected, V(c, "sw_port"), new Connected("client", Name(c), V(c, "mac")));
+            var capabilities = await Step(sb, "Port capabilities", () => PortCapabilitiesAsync(siteId, V(dev, "mac"), ct)) ?? [];
+
+            var rows = ports.Select(p =>
             {
-                V(p, "port_idx"), V(p, "name"), Bool(p, "up") ? "up" : Bool(p, "enable") ? "down" : "disabled", V(p, "speed"),
-                Bool(p, "up") ? (Bool(p, "full_duplex") ? "full" : "half") : "", Bool(p, "poe_enable") ? V(p, "poe_power") : "",
-                V(p, "rx_errors"), V(p, "tx_errors"), ((Dbl(p, "rx_dropped") ?? 0) + (Dbl(p, "tx_dropped") ?? 0)).ToString(CultureInfo.InvariantCulture),
-                V(p, "link_down_count"), V(p, "stp_state"), string.Join(", ", PortFlags(p)),
+                var idx = V(p, "port_idx");
+                var (max, connector) = capabilities.TryGetValue(idx, out var cap) ? cap : (null, "RJ45");
+                return (Json: p, View: Port(p, connected.TryGetValue(idx, out var on) ? on : [], max, connector));
+            }).ToList();
+            portViews = rows.Select(r => r.View).ToList();
+
+            var active = rows.Where(r => r.View.State == "up" || r.View.Flags.Count > 0).ToList();
+            sb.AppendLine($"## Ports: {ports.Count(p => Bool(p, "up"))} up of {ports.Count}");
+            sb.AppendLine(FaqTools.Table(["Port", "Name", "Connected", "Link", "Speed (Mbps)", "Max (Mbps)", "Duplex", "PoE W", "Rx errors", "Tx errors", "Drops", "Link downs", "STP", "Flags"], active.Select(r =>
+            {
+                var (p, v) = r;
+                return new[]
+                {
+                    V(p, "port_idx"), V(p, "name"), ConnectedCell(v), v.State, V(p, "speed"), v.MaxSpeedMbps?.ToString(CultureInfo.InvariantCulture) ?? "",
+                    v.Duplex ?? "", Bool(p, "poe_enable") ? V(p, "poe_power") : "",
+                    V(p, "rx_errors"), V(p, "tx_errors"), ((Dbl(p, "rx_dropped") ?? 0) + (Dbl(p, "tx_dropped") ?? 0)).ToString(CultureInfo.InvariantCulture),
+                    V(p, "link_down_count"), V(p, "stp_state"), string.Join(", ", v.Flags),
+                };
             })));
-            var idle = ports.Except(active).Select(p => V(p, "port_idx")).ToList();
+            var idle = rows.Where(r => r.View.State != "up" && r.View.Flags.Count == 0).Select(r => V(r.Json, "port_idx")).ToList();
             if (idle.Count > 0) sb.AppendLine($"Down with nothing to report: {string.Join(", ", idle)}.");
         }
 
-        return NewView("device", siteId) with { Device = Detail(dev, []) };
+        return NewView("device", siteId) with { Device = Detail(dev, portViews) };
     });
+
+    // --- ports ------------------------------------------------------------------------------------------------------
+
+    private static readonly HashSet<string> Connectors = new(StringComparer.Ordinal) { "RJ45", "SFP", "SFPPLUS", "SFP28", "QSFP28" };
+
+    /// <summary>
+    /// The UniFi devices plugged into this one, by its port number. No extra read: every device names its parent and the
+    /// parent's port in its own uplink.
+    /// </summary>
+    private static Dictionary<string, List<Connected>> ConnectedDevices(List<JsonElement> devices, JsonElement parent)
+    {
+        var byPort = new Dictionary<string, List<Connected>>(StringComparer.Ordinal);
+        string mac = V(parent, "mac"), name = V(parent, "name");
+        foreach (var d in devices.OrderBy(d => V(d, "name")))
+        {
+            if (SameMac(V(d, "mac"), mac) || Obj(d, "uplink") is not { } up || V(up, "uplink_remote_port") is not { Length: > 0 } port) continue;
+            var isChild = V(up, "uplink_mac") is { Length: > 0 } parentMac ? SameMac(parentMac, mac) : name.Length > 0 && V(up, "uplink_device_name") == name;
+            if (isChild) Add(byPort, port, new Connected("device", V(d, "name"), V(d, "mac")));
+        }
+        return byPort;
+    }
+
+    private static void Add(Dictionary<string, List<Connected>> byPort, string port, Connected item)
+    {
+        if (!byPort.TryGetValue(port, out var list)) byPort[port] = list = [];
+        list.Add(item);
+    }
+
+    /// <summary>
+    /// What each port can do, by port number, from the official API's device detail (the console's own port table does
+    /// not say): its maximum speed and its connector. A device the official list does not have gives an empty answer.
+    /// </summary>
+    private async Task<Dictionary<string, (long? Max, string Connector)>> PortCapabilitiesAsync(string? siteId, string mac, CancellationToken ct)
+    {
+        var capabilities = new Dictionary<string, (long? Max, string Connector)>(StringComparer.Ordinal);
+        var site = await console.FindSiteAsync(siteId, ct);
+        var listed = (await console.GetAllAsync($"/v1/sites/{site.Id}/devices", ct)).FirstOrDefault(d => SameMac(V(d, "macAddress"), mac));
+        if (!Guid.TryParse(V(listed, "id"), out var id)) return capabilities; // not listed, or an id this server will not put in a path
+        var detail = await console.GetJsonAsync($"/v1/sites/{site.Id}/devices/{id}", ct);
+        foreach (var p in Array(Obj(detail, "interfaces"), "ports"))
+            capabilities[V(p, "idx")] = (Long(p, "maxSpeedMbps"), Connectors.Contains(V(p, "connector")) ? V(p, "connector") : "RJ45");
+        return capabilities;
+    }
+
+    private static PortView Port(JsonElement p, List<Connected> connected, long? max, string connector)
+    {
+        var up = Bool(p, "up");
+        long? speed = up && Long(p, "speed") is > 0 and var s ? s : null;
+        var flags = PortFlags(p, max);
+        long rx = Long(p, "rx_errors") ?? 0, tx = Long(p, "tx_errors") ?? 0, downs = Long(p, "link_down_count") ?? 0;
+        return new((int)(Long(p, "port_idx") ?? 0), V(p, "name"), up ? "up" : Bool(p, "enable") ? "down" : "disabled", speed, max, connector,
+            up ? (Bool(p, "full_duplex") ? "full" : "half") : null, Bool(p, "poe_enable") ? Dbl(p, "poe_power") : null, rx, tx,
+            (long)((Dbl(p, "rx_dropped") ?? 0) + (Dbl(p, "tx_dropped") ?? 0)), downs, NullIfEmpty(V(p, "stp_state")), flags,
+            PortNote(flags, speed, max, rx, tx, downs), connected.Take(5).ToList(), connected.Count);
+    }
+
+    private static string ConnectedCell(PortView port) =>
+        string.Join(", ", port.Connected.Select(c => c.Name)) + (port.ConnectedCount > port.Connected.Count ? $" +{port.ConnectedCount - port.Connected.Count} more" : "");
+
+    /// <summary>MAC addresses compare by their hex digits: the console writes them lower case, the official API upper.</summary>
+    private static bool SameMac(string a, string b)
+    {
+        static string Hex(string mac) => string.Concat(mac.Where(Uri.IsHexDigit)).ToLowerInvariant();
+        return a.Length > 0 && Hex(a) == Hex(b);
+    }
+
+    /// <summary>A speed the way people say it: 100 Mb, 1 GbE, 2.5 GbE.</summary>
+    internal static string SpeedLabel(long? mbps) => mbps switch
+    {
+        null => "?",
+        < 1000 => $"{mbps} Mb",
+        _ => (mbps.Value / 1000.0).ToString(CultureInfo.InvariantCulture) + " GbE",
+    };
+
+    /// <summary>One plain sentence for a flagged port, from its flags and, when known, what the port can do. None for a port without flags.</summary>
+    internal static string? PortNote(IReadOnlyList<string> flags, long? speed, long? max, long rxErrors, long txErrors, long linkDowns)
+    {
+        if (flags.Count == 0) return null;
+        var parts = new List<string>();
+        if (flags.Contains("half duplex") || flags.Contains("slow link"))
+            parts.Add($"linked at {SpeedLabel(speed)}{(flags.Contains("half duplex") ? " half duplex" : "")}"
+                      + (max > speed ? $" on a port that can do {SpeedLabel(max)}" : ""));
+        if (flags.Contains("errors"))
+            parts.Add(rxErrors > 0 && txErrors > 0 ? "receive and send errors" : rxErrors > 0 ? "receive errors" : "send errors");
+        if (flags.Contains("flapping")) parts.Add($"link dropped {linkDowns} times since the device restarted");
+        var cause = flags.Contains("errors") || flags.Contains("half duplex") ? "suspect the cable or the device's network card"
+            : flags.Contains("flapping") ? "check the cable and the device's power"
+            : "the device or its cable may only support this speed";
+        var s = string.Join("; ", parts);
+        return char.ToUpperInvariant(s[0]) + s[1..] + ": " + cause + ".";
+    }
 
     /// <summary>
     /// Like <see cref="Run"/>, and the steps also return the view's data. A console failure is the answer, not a tool
@@ -148,20 +259,24 @@ public sealed partial class DiagnosticTools
 
     private static string? NullIfEmpty(string s) => s.Length == 0 ? null : s;
 
-    private static List<string> PortFlags(JsonElement p)
+    /// <summary>
+    /// The one place a port's flags are decided, for the text and the view alike. A port at 100 Mb or less is a slow
+    /// link unless that is all the port can do (<paramref name="maxSpeedMbps"/>, null when unknown).
+    /// </summary>
+    internal static List<string> PortFlags(JsonElement p, long? maxSpeedMbps)
     {
         var flags = new List<string>();
         if ((Dbl(p, "rx_errors") ?? 0) + (Dbl(p, "tx_errors") ?? 0) > 0) flags.Add("errors");
         if ((Dbl(p, "link_down_count") ?? 0) >= 5) flags.Add("flapping");
         if (Bool(p, "up") && !Bool(p, "full_duplex")) flags.Add("half duplex");
-        if (Bool(p, "up") && Dbl(p, "speed") is > 0 and <= 100) flags.Add("slow link");
+        if (Bool(p, "up") && Dbl(p, "speed") is > 0 and <= 100 && maxSpeedMbps is not <= 100) flags.Add("slow link");
         return flags;
     }
 
     private static IEnumerable<string> Issues(JsonElement d)
     {
         if (Bool(d, "overheating")) yield return "overheating";
-        var bad = Array(d, "port_table").Where(p => PortFlags(p).Count > 0).Select(p => V(p, "port_idx")).ToList();
+        var bad = Array(d, "port_table").Where(p => PortFlags(p, null).Count > 0).Select(p => V(p, "port_idx")).ToList();
         if (bad.Count > 0) yield return $"port(s) {string.Join(", ", bad)} flagged";
         if (Obj(d, "uplink") is { } up && (Dbl(up, "rx_errors") ?? 0) + (Dbl(up, "tx_errors") ?? 0) > 0) yield return "uplink errors";
     }

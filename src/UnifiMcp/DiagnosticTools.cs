@@ -11,11 +11,12 @@ namespace UnifiMcp;
 /// <summary>
 /// Diagnostics from the console's internal API (the one its own UI uses), which the official API does not cover:
 /// the system log, WAN quality, Wi-Fi radio health, a client's signal and switch port, device ports and temperatures,
-/// port forwards. Reads only, through <see cref="ConsoleReads"/>, which caches and throttles them. Answers are built
+/// port forwards. Reads only, through <see cref="ConsoleReads"/>, which caches and throttles them; device diagnostics also asks
+/// the official API what each port can do. Answers are built
 /// from named fields; raw objects are never passed through, because they carry secrets (device keys, a maps API key).
 /// </summary>
 [McpServerToolType]
-public sealed partial class DiagnosticTools(ConsoleReads reads, TimeProvider time)
+public sealed partial class DiagnosticTools(UnifiClient console, ConsoleReads reads, TimeProvider time)
 {
     private const int MaxHours = 720;
 
