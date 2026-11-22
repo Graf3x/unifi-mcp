@@ -210,13 +210,18 @@ function createApp(info) {
   /* --- calls the view makes itself ----------------------------------------------------------------------------- */
 
   /* Opens or refreshes one device. Only a device answer replaces the screen; a message or a refusal leaves the
-     screen as it is and says why underneath. */
-  function open(mac, button) {
+     screen as it is and says why underneath.
+     Each tile click, Back and result from the host starts a new navigation, and an answer is applied only while its
+     own is still the current one, so a slow answer cannot replace the screen the user moved on to. Refresh keeps the
+     current navigation: its answer belongs to the device on screen. */
+  var navigation = 0;
+  function open(mac, button, token) {
     var args = { device: mac };
     if (state.model && state.model.siteId) args.siteId = state.model.siteId;
     if (button) button.disabled = true;
     setStatus("");
     return app.callTool(TOOL, args).then(function (result) {
+      if (token !== navigation) return;
       var model = modelOf(result);
       if (model && model.view === "device" && model.device) {
         if (state.model && state.model.view !== "device") state.devicesModel = state.model;
@@ -224,6 +229,7 @@ function createApp(info) {
       }
       else setStatus((model && model.message) || textOf(result) || "The answer had nothing to show.");
     }, function (error) {
+      if (token !== navigation) return;
       setStatus("Could not refresh: " + (error && error.message ? error.message.replace(/[.\s]+$/, "") : "the host refused the call") + ".");
     }).then(function () { if (button && button.isConnected) button.disabled = false; });
   }
@@ -240,7 +246,7 @@ function createApp(info) {
       chips.forEach(function (chip) { row.appendChild(chip); });
       button.appendChild(row);
     }
-    button.addEventListener("click", function () { open(mac, button); });
+    button.addEventListener("click", function () { open(mac, button, ++navigation); });
     return button;
   }
 
@@ -285,6 +291,7 @@ function createApp(info) {
       back.type = "button";
       back.addEventListener("click", function () {
         var earlier = state.devicesModel;
+        navigation++;
         state.devicesModel = null;
         state.selectedPort = null;
         show(earlier);
@@ -317,7 +324,7 @@ function createApp(info) {
       // The console keeps an answer for 10 seconds, so a sooner refresh would only show the same one.
       refreshing = true;
       refresh.disabled = true;
-      open(d.mac, null).then(function () {
+      open(d.mac, null, navigation).then(function () {
         setTimeout(function () {
           refreshing = false;
           var current = document.getElementById("refresh");
@@ -503,6 +510,7 @@ function createApp(info) {
 
   /* A result the host hands over starts afresh: nothing to go back to, nothing selected. */
   app.onResult(function (result) {
+    navigation++;
     state.devicesModel = null;
     state.selectedPort = null;
     var model = modelOf(result);

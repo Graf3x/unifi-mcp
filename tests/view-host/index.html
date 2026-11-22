@@ -29,6 +29,7 @@
   <label><input type="checkbox" id="down"> console is down</label>
   <label><input type="checkbox" id="textonly"> text-only result</label>
   <label><input type="checkbox" id="nomessage"> refuse ui/message</label>
+  <label><input type="checkbox" id="slow"> answer tools/call after 3 s</label>
   <button id="reload" type="button">Reload the view</button>
   <button id="clear" type="button">Clear the log</button>
 </fieldset>
@@ -42,7 +43,7 @@
   var META_KEY = "unifi-network/view";
   var frame = document.getElementById("frame"), log = document.getElementById("log");
   var picks = { sample: document.getElementById("sample"), theme: document.getElementById("theme"), width: document.getElementById("width") };
-  var flags = { refuse: document.getElementById("refuse"), down: document.getElementById("down"), textonly: document.getElementById("textonly"), nomessage: document.getElementById("nomessage") };
+  var flags = { refuse: document.getElementById("refuse"), down: document.getElementById("down"), textonly: document.getElementById("textonly"), nomessage: document.getElementById("nomessage"), slow: document.getElementById("slow") };
   var samples = { devices: SAMPLES.devices, message: SAMPLES.message, messageOnly: SAMPLES.messageOnly };
   Object.keys(SAMPLES.named).forEach(function (k) { samples[k] = SAMPLES.named[k]; });
 
@@ -88,7 +89,9 @@
       var device = m.params && m.params.arguments && m.params.arguments.device;
       var answer = flags.down.checked ? SAMPLES.down : SAMPLES.byMac[device] ||
         { view: "message", builtAt: SAMPLES.down.builtAt, message: "No device matches '" + device + "'." };
-      send({ jsonrpc: "2.0", id: m.id, result: result(answer) });
+      // Slow answers arrive out of order: tick the box, click, untick it, click again.
+      var reply = function () { send({ jsonrpc: "2.0", id: m.id, result: result(answer) }); };
+      if (flags.slow.checked) setTimeout(reply, 3000); else reply();
     } else if (m.method === "ui/message" && !(m.params && m.params.role === "user" && Array.isArray(m.params.content))) {
       // Hosts built on the SDK check the shape: content is a list of blocks.
       send({ jsonrpc: "2.0", id: m.id, error: { code: -32602, message: "Invalid params: content must be a list of content blocks." } });

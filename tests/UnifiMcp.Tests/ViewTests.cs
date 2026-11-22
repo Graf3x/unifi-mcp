@@ -51,6 +51,18 @@ public class ViewTests
     public void The_view_speaks_the_protocol_the_way_hosts_check_it(string expected) =>
         Assert.Contains(expected, ViewResources.Html("views/device-diagnostics.html"));
 
+    // An answer that arrives after the user moved on (another tile, Back, a new result from the host) must not replace
+    // the screen. Each of those starts a new navigation; Refresh keeps the current one.
+    [Fact]
+    public void The_view_drops_answers_to_calls_the_user_moved_on_from()
+    {
+        var html = ViewResources.Html("views/device-diagnostics.html");
+        Assert.Equal(2, html.Split("if (token !== navigation) return;").Length - 1); // the answer and the refusal
+        Assert.Contains("open(mac, button, ++navigation)", html); // a tile
+        Assert.Contains("open(d.mac, null, navigation)", html);   // Refresh
+        Assert.Equal(3, html.Split("navigation++").Length - 1 + html.Split("++navigation").Length - 1); // tile, Back, host result
+    }
+
     [Fact]
     public async Task The_tool_description_does_not_mention_the_view()
     {
