@@ -39,10 +39,10 @@
     if (message.method === "ui/notifications/tool-result") {
       var result = message.params || {};
       var blocks = Array.isArray(result.content) ? result.content.filter(function (b) { return b && b.type === "text"; }) : [];
-      var model = result.structuredContent;
+      var model = result._meta && result._meta["unifi-network/view"];
       line("rendered", "unifi-mcp view probe: rendered");
       line("blocks", "text blocks: " + blocks.length);
-      line("view", "structuredContent.view: " + (model && typeof model.view === "string" ? model.view : "missing"));
+      line("view", "_meta view: " + (model && typeof model.view === "string" ? model.view : "missing"));
       reportSize();
     }
   });

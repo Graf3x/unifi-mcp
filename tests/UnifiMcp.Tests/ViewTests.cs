@@ -54,11 +54,13 @@ public class ViewTests
     }
 
     [Fact]
-    public async Task Device_diagnostics_answers_with_text_and_structured_content()
+    public async Task Device_diagnostics_answers_with_text_and_keeps_the_view_data_in_meta()
     {
         await using var h = await Harness.StartAsync();
         var r = await h.CallRawAsync("device_diagnostics_faq");
         Assert.IsType<TextContentBlock>(Assert.Single(r.Content));
-        Assert.NotNull(r.StructuredContent);
+        // Hosts hand the model structuredContent in place of the text when there is one, so the view's data is in _meta.
+        Assert.Null(r.StructuredContent);
+        Assert.Equal("probe", r.Meta!["unifi-network/view"]!["view"]!.GetValue<string>());
     }
 }

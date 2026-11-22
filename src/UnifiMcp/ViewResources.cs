@@ -13,6 +13,8 @@ public static class ViewResources
 {
     public const string DeviceDiagnosticsUri = "ui://unifi-network/device-diagnostics.html";
     public const string MimeType = "text/html;profile=mcp-app";
+    /// <summary>The key in a tool result's _meta that carries the view's data, where the model never sees it.</summary>
+    public const string ViewMetaKey = "unifi-network/view";
 
     /// <summary>An embedded view's HTML, by the logical name given in the project file.</summary>
     internal static string Html(string logicalName)

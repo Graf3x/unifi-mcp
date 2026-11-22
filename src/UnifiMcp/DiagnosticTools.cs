@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
@@ -347,7 +348,8 @@ public sealed partial class DiagnosticTools(UnifiClient console, TimeProvider ti
     private static CallToolResult WithProbe(string text) => new()
     {
         Content = [new TextContentBlock { Text = text }],
-        StructuredContent = JsonSerializer.SerializeToElement(new { view = "probe" }),
+        // In _meta, not structuredContent: hosts hand the model structuredContent in place of the text when there is one.
+        Meta = new JsonObject { [ViewResources.ViewMetaKey] = new JsonObject { ["view"] = "probe" } },
     };
 
     [McpServerTool(Name = "list_port_forwards", Title = "List port forwards", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
