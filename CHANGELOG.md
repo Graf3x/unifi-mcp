@@ -7,6 +7,11 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `device_diagnostics_faq` carries an interactive view (MCP Apps) for hosts that render one: a tile per device, and for
+  one device a switch faceplate where each port shows its link, errors, PoE and what is connected to it. Hosts without
+  views get the same answer as text. The view makes no writes and loads nothing from the network.
+- `device_diagnostics_faq` for one device lists what is connected to each port ("Connected") and the port's maximum
+  speed ("Max (Mbps)").
 - Every tool call writes an audit line (`UnifiMcp.Audit`): login, tool and outcome, never arguments. Before, only
   `call_read_operation` and the write tools did. Writes log at Information, reads at Debug.
 
@@ -20,6 +25,8 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- For one device, `device_diagnostics_faq` no longer flags `slow link` on a port linked at 100 Mb when 100 Mb is all
+  the port can do.
 - A prerelease tag (`v1.2.3-rc.1`) publishes only its own image version and no longer moves `latest`.
 - The OAuth grant rules (consent, refresh-token families, rotation, revocation, disconnect) live in one module,
   `GrantLedger`. No behaviour changes.

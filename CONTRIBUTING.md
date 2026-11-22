@@ -25,12 +25,14 @@ follow [guide 1](README.md#guide-1-quick-local-setup) in the README.
 | Path | What it is |
 |---|---|
 | `src/UnifiMcp/ApiTool.cs`, `ReadOperationTool.cs`, `OpenApiCatalog.cs` | Tools generated from the OpenAPI document in `openapi/` |
-| `src/UnifiMcp/FaqTools.cs`, `DiagnosticTools.cs` | The task-oriented and diagnostics tools |
+| `src/UnifiMcp/FaqTools.cs`, `DiagnosticTools.cs`, `DiagnosticTools.Devices.cs` | The task-oriented and diagnostics tools |
+| `src/UnifiMcp/ViewResources.cs`, `Views/`, `DeviceViewModel.cs` | Interactive views (MCP Apps): one embedded HTML file per view, and the data a tool hands it in `_meta` |
 | `src/UnifiMcp/UnifiClient.cs` | The only code that talks to the console: pinning, scrubbing, finding a site |
 | `src/UnifiMcp/ConsoleReads.cs` | The console's internal API: one named read per endpoint, cached and throttled |
 | `src/UnifiMcp/Connector/` | The Claude connector: OAuth, sign-in pages, token issuing |
 | `src/UnifiMcp/Setup/` | The setup page: its checks, its markup, script and styles, and the README guide it renders |
 | `tests/UnifiMcp.Tests/` | xUnit tests; `ToolContractTests` checks every tool against Claude's tool rules |
+| `tests/view-host/` | A development-only page that plays the host for a view, with sample answers |
 | `tools/make-diagrams.mjs` | Draws the README diagrams in `docs/images/` |
 | `deploy/` | The maintainer's own deployment bundle; you can ignore it |
 

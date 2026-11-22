@@ -1,6 +1,10 @@
 # Switch faceplate: an interactive view for device_diagnostics_faq
 
-Status: approved by the owner, 2026-11-21.
+Status: approved by the owner, 2026-11-21. Built on `feat/switch-faceplate`.
+
+Outcome of Verification item 1 (2026-11-21): Claude renders the view, but hands the model `structuredContent` in place
+of the markdown. So the fallback below is what was built: the view's data travels in the result's
+`_meta["unifi-network/view"]`, and wherever this document says `structuredContent`, read that key.
 
 ## Intent
 

@@ -53,6 +53,10 @@ Anything else the API offers, Claude finds with `search_operations` and runs wit
 - 6 read-only diagnostics the official API does not cover, from the console's internal API (the one its own UI uses):
   `system_log`, `internet_health_faq`, `wifi_health_faq`, `client_diagnostics_faq`, `device_diagnostics_faq`,
   `list_port_forwards`. They also give `client_path_faq` the switch port and `dhcp_reservation_faq` the fixed IP.
+- `device_diagnostics_faq` also carries an interactive view for hosts that render MCP Apps, such as Claude's apps:
+  a tile per device, and for one device a switch faceplate with each port's link, errors and what is connected to it.
+  Other hosts, Claude Code among them, get the same answer as text. The view makes no writes and loads nothing from
+  the network.
 - 4 guide tools: `getting_started`, `unifi_status`, `search_operations`, `describe_operation`.
 
 ## Safety
@@ -588,6 +592,8 @@ deploy an app that declares a key that is unset or not granted to it). `<host>` 
 
 `dotnet test unifi-mcp.slnx`. Tests run against a fake UniFi handler; nothing here talks to a real console.
 For a local run: `MCP_LISTEN=http://127.0.0.1:5199 MCP_ALLOW_LOOPBACK_TCP=true MCP_ALLOWED_LOGINS=you@example.com dotnet run --project src/UnifiMcp`.
+To exercise the device diagnostics view without a host, open `tests/view-host/index.html` (served by any static file
+server from the repository root): it plays the host's side with sample answers.
 
 Pushing a `v*` tag runs `.github/workflows/image.yml`: tests, then a multi-arch (amd64, arm64) image pushed to
 `ghcr.io/<owner>/unifi-mcp` as the version, `<major>.<minor>` and `latest`. Bump `<Version>` in `src/UnifiMcp/UnifiMcp.csproj`
