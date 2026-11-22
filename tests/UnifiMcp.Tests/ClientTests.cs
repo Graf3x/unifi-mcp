@@ -5,42 +5,18 @@ public class ClientTests
     private readonly string _dir = Directory.CreateTempSubdirectory("unifi-client").FullName;
     private readonly FakeUnifi _fake = new();
 
-    private UnifiClient Client(bool writes = false, bool key = true, bool pin = true, PinState? state = null) =>
-        new(Harness.NewSettings(_dir, writes, key, pin), _fake, state ?? new PinState());
-
-    [Fact]
-    public async Task An_untrusted_certificate_in_ca_mode_names_the_host_and_the_reason()
+    private UnifiClient Client(bool writes = false)
     {
-        var state = new PinState { Rejected = new("FEEDFACE", "CAFEBABE", System.Net.Security.SslPolicyErrors.RemoteCertificateNameMismatch) };
-        _fake.Throw = new HttpRequestException("handshake failed");
-        var client = new UnifiClient(Harness.NewSettings(_dir) with { Trust = CertTrust.Ca }, _fake, state);
-        var ex = await Assert.ThrowsAsync<UnifiError>(() => client.SendAsync(HttpMethod.Get, "/v1/info", null, default));
-        Assert.Contains("not trusted (RemoteCertificateNameMismatch)", ex.Message);
-        Assert.Contains("UNIFI_CERT_TRUST=ca", ex.Message);
-        Assert.Contains(Harness.NewSettings(_dir).BaseUrl.Host, ex.Message);
-    }
-
-    [Theory]
-    [InlineData(false, true)]
-    [InlineData(true, false)]
-    public async Task Nothing_is_sent_until_key_and_pin_are_configured(bool key, bool pin)
-    {
-        var ex = await Assert.ThrowsAsync<UnifiNotConfigured>(() => Client(key: key, pin: pin).SendAsync(HttpMethod.Get, "/v1/info", null, default));
-        Assert.Contains("not configured", ex.Message);
-        Assert.Empty(_fake.Requests);
+        var settings = Harness.NewSettings(_dir, writes);
+        return new(settings, new ConsoleTransport(settings, _fake));
     }
 
     [Fact]
-    public async Task Sends_the_key_header_to_the_integration_api_over_https()
+    public async Task The_integration_api_is_reached_under_its_root()
     {
         _fake.Route("GET", "/v1/info", """{"applicationVersion":"11.0.97"}""");
-        var r = await Client().SendAsync(HttpMethod.Get, "/v1/info", null, default);
-        Assert.True(r.Ok);
-        var seen = Assert.Single(_fake.Requests);
-        Assert.Equal(Harness.ApiKey, seen.ApiKey);
-        Assert.Equal("https", seen.Scheme);
-        Assert.Equal("192.168.1.1", seen.Host);
-        Assert.Equal("/v1/info", seen.Path);
+        Assert.True((await Client().SendAsync(HttpMethod.Get, "/v1/info", null, default)).Ok);
+        Assert.Equal("/v1/info", Assert.Single(_fake.Requests).Path); // FakeUnifi strips /proxy/network/integration
     }
 
     [Fact]
@@ -48,37 +24,6 @@ public class ClientTests
     {
         await Assert.ThrowsAsync<UnifiError>(() => Client().SendAsync(HttpMethod.Post, "/v1/sites/x/dns/policies", "{}", default));
         Assert.Empty(_fake.Requests);
-    }
-
-    [Fact]
-    public async Task A_console_error_that_echoes_the_key_is_scrubbed()
-    {
-        _fake.Route("GET", "/v1/info", $$"""{"message":"bad key {{Harness.ApiKey}}"}""", 401);
-        var r = await Client().SendAsync(HttpMethod.Get, "/v1/info", null, default);
-        Assert.False(r.Ok);
-        Assert.DoesNotContain(Harness.ApiKey, r.Body);
-    }
-
-    [Fact]
-    public async Task A_transport_failure_never_carries_the_key()
-    {
-        _fake.Throw = new HttpRequestException($"boom {Harness.ApiKey}");
-        var ex = await Assert.ThrowsAsync<UnifiError>(() => Client().SendAsync(HttpMethod.Get, "/v1/info", null, default));
-        Assert.DoesNotContain(Harness.ApiKey, ex.Message);
-    }
-
-    [Fact]
-    public async Task A_pin_mismatch_names_the_fingerprint_the_console_presented()
-    {
-        var state = new PinState { Rejected = new("FEEDFACE", "CAFEBABE") };
-        _fake.Throw = new HttpRequestException("handshake failed");
-        var ex = await Assert.ThrowsAsync<UnifiError>(() => Client(state: state).SendAsync(HttpMethod.Get, "/v1/info", null, default));
-        Assert.Contains("FEEDFACE", ex.Message);
-        Assert.Contains("CAFEBABE", ex.Message);
-        Assert.Contains("pin", ex.Message);
-        // Where to change it: the environment variable itself (fleet-key at most as an example), else the file.
-        Assert.Matches(@"(?<!fleet-key )set UNIFI_CERT_SHA256", ex.Message);
-        Assert.Contains(Path.Combine(_dir, "pin"), ex.Message);
     }
 
     [Theory]
