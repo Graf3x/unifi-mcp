@@ -93,6 +93,17 @@ public class ClientTests
     }
 
     [Fact]
+    public async Task A_site_id_wins_over_another_site_named_after_it()
+    {
+        const string Other = "22222222-2222-2222-2222-222222222222";
+        // The odd site comes first, and its name and internal name are the other site's id.
+        _fake.Route("GET", "/v1/sites", FakeUnifi.Page(
+            $$"""{"id":"{{Harness.SiteId}}","internalReference":"{{Other}}","name":"{{Other}}"}""",
+            $$"""{"id":"{{Other}}","internalReference":"cabin","name":"Cabin"}"""));
+        Assert.Equal(Other, (await Client().FindSiteAsync(Other, default)).Id);
+    }
+
+    [Fact]
     public async Task A_site_uuid_the_console_does_not_have_lists_the_ones_that_exist()
     {
         _fake.WithSite();

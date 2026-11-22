@@ -170,13 +170,11 @@ public sealed class UnifiClient(Settings settings, HttpMessageHandler handler, P
         var wanted = string.IsNullOrWhiteSpace(hint) ? settings.Site : hint.Trim();
         if (_sites.TryGetValue(wanted, out var known)) return known;
 
-        var sites = await GetAllAsync("/v1/sites", ct);
-        foreach (var s in sites)
-        {
-            if (Str(s, "id") is { Length: > 0 } id
-                && new[] { id, Str(s, "name"), Str(s, "internalReference") }.Any(v => string.Equals(v, wanted, StringComparison.OrdinalIgnoreCase)))
-                return _sites[wanted] = new Site(id, Str(s, "internalReference"), Str(s, "name") ?? id);
-        }
+        var sites = (await GetAllAsync("/v1/sites", ct)).Where(s => Str(s, "id") is { Length: > 0 }).ToList();
+        // An id names one site, so it wins over another site whose name or internal name happens to be that id.
+        bool Is(JsonElement s, string field) => string.Equals(Str(s, field), wanted, StringComparison.OrdinalIgnoreCase);
+        if (sites.Where(s => Is(s, "id")).Concat(sites.Where(s => Is(s, "name") || Is(s, "internalReference"))).FirstOrDefault() is { ValueKind: JsonValueKind.Object } found)
+            return _sites[wanted] = new Site(Str(found, "id")!, Str(found, "internalReference"), Str(found, "name") ?? Str(found, "id")!);
         throw new UnifiError($"The console has no site '{wanted}'. Sites: {string.Join(", ", sites.Select(s => Str(s, "name")))}.");
     }
 
