@@ -18,6 +18,9 @@ public sealed record UnifiResponse(int Status, string Body)
     public bool Ok => Status is >= 200 and < 300;
 }
 
+/// <summary>A site on the console: its id (the Integration API's name for it), its internal name (the Internal API's) and its display name.</summary>
+public sealed record Site(string Id, string? Reference, string Name);
+
 /// <summary>A certificate the console presented and the server refused: its fingerprints and, in CA mode, why.</summary>
 public sealed record RejectedCertificate(string Certificate, string Key, SslPolicyErrors Errors = SslPolicyErrors.None);
 
@@ -87,8 +90,7 @@ public sealed class UnifiClient(Settings settings, HttpMessageHandler handler, P
     public static readonly TimeSpan ConsoleCacheFor = TimeSpan.FromSeconds(10);
 
     private readonly HttpClient _http = new(handler, disposeHandler: false) { Timeout = TimeSpan.FromSeconds(30) };
-    private readonly ConcurrentDictionary<string, string> _sites = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<string, string> _siteRefs = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, Site> _sites = new(StringComparer.OrdinalIgnoreCase);
     private readonly TimeProvider _time = time ?? TimeProvider.System;
     private readonly SemaphoreSlim _consoleGate = new(1, 1);
     private readonly Dictionary<string, (DateTimeOffset At, UnifiResponse Response)> _consoleCache = new(StringComparer.Ordinal);
@@ -173,23 +175,12 @@ public sealed class UnifiClient(Settings settings, HttpMessageHandler handler, P
         throw new UnifiError($"The console's answer to GET {path.Split('?')[0]} was not the list this server expects.");
     }
 
-    /// <summary>
-    /// The internal API names a site by its internal reference ("default"), not its UUID. Takes a UUID, name or reference;
-    /// omitted means the configured site.
-    /// </summary>
+    /// <summary>The internal API names a site by its internal reference ("default"), not its UUID.</summary>
     public async Task<string> ResolveSiteReferenceAsync(string? hint, CancellationToken ct)
     {
-        var wanted = string.IsNullOrWhiteSpace(hint) ? settings.Site : hint.Trim();
-        if (_siteRefs.TryGetValue(wanted, out var known)) return known;
-        var sites = await GetAllAsync("/v1/sites", ct);
-        foreach (var s in sites)
-        {
-            if (new[] { Str(s, "id"), Str(s, "name"), Str(s, "internalReference") }.Any(v => string.Equals(v, wanted, StringComparison.OrdinalIgnoreCase))
-                && Str(s, "internalReference") is { Length: > 0 } reference
-                && System.Text.RegularExpressions.Regex.IsMatch(reference, "^[A-Za-z0-9_-]+$"))
-                return _siteRefs[wanted] = reference;
-        }
-        throw new UnifiError($"The console has no site '{wanted}'. Sites: {string.Join(", ", sites.Select(s => Str(s, "name")))}.");
+        var site = await FindSiteAsync(hint, ct);
+        if (site.Reference is { Length: > 0 } reference && System.Text.RegularExpressions.Regex.IsMatch(reference, "^[A-Za-z0-9_-]+$")) return reference;
+        throw new UnifiError($"The console has no internal name for site '{site.Name}' that this server can use.");
     }
 
     private (TimeZoneInfo Zone, string Name)? _zone;
@@ -273,19 +264,21 @@ public sealed class UnifiClient(Settings settings, HttpMessageHandler handler, P
         }
     }
 
-    /// <summary>A site UUID as is; a name or internal reference (default: the configured site) looked up.</summary>
-    public async Task<string> ResolveSiteAsync(string? hint, CancellationToken ct)
+    /// <summary>
+    /// A site by its id, name or internal name, ignoring case; omitted means the configured site. One lookup per hint,
+    /// then cached: the console's sites do not change under a running server often enough to look again.
+    /// </summary>
+    public async Task<Site> FindSiteAsync(string? hint, CancellationToken ct)
     {
         var wanted = string.IsNullOrWhiteSpace(hint) ? settings.Site : hint.Trim();
-        if (Guid.TryParse(wanted, out _)) return wanted;
         if (_sites.TryGetValue(wanted, out var known)) return known;
 
         var sites = await GetAllAsync("/v1/sites", ct);
         foreach (var s in sites)
         {
-            if (string.Equals(Str(s, "name"), wanted, StringComparison.OrdinalIgnoreCase)
-                || string.Equals(Str(s, "internalReference"), wanted, StringComparison.OrdinalIgnoreCase))
-                return _sites[wanted] = Str(s, "id")!;
+            if (Str(s, "id") is { Length: > 0 } id
+                && new[] { id, Str(s, "name"), Str(s, "internalReference") }.Any(v => string.Equals(v, wanted, StringComparison.OrdinalIgnoreCase)))
+                return _sites[wanted] = new Site(id, Str(s, "internalReference"), Str(s, "name") ?? id);
         }
         throw new UnifiError($"The console has no site '{wanted}'. Sites: {string.Join(", ", sites.Select(s => Str(s, "name")))}.");
     }

@@ -52,7 +52,7 @@ public sealed class GuideTools(Settings settings, UnifiClient client, OpenApiCat
         {
             var info = await client.GetJsonAsync("/v1/info", ct);
             sb.AppendLine($"- Console application version: {info.GetProperty("applicationVersion").GetString()}");
-            sb.AppendLine($"- Default site '{settings.Site}': {await client.ResolveSiteAsync(null, ct)}");
+            sb.AppendLine($"- Default site '{settings.Site}': {(await client.FindSiteAsync(null, ct)).Id}");
         }
         catch (Exception e) when (e is UnifiError or UnifiNotConfigured or KeyNotFoundException)
         {

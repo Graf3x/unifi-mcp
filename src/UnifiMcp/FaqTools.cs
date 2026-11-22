@@ -153,7 +153,7 @@ public sealed class FaqTools(UnifiClient console)
         var sb = new StringBuilder();
         try
         {
-            await steps(await console.ResolveSiteAsync(site, ct), sb);
+            await steps((await console.FindSiteAsync(site, ct)).Id, sb);
         }
         catch (Exception e) when (e is UnifiError or UnifiNotConfigured)
         {
