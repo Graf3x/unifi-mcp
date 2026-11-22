@@ -98,7 +98,8 @@ public static class McpHost
             .WithRequestFilters(f => f.AddCallToolFilter(Audit.Calls))
             .WithTools<GuideTools>()
             .WithTools<FaqTools>()
-            .WithTools<DiagnosticTools>();
+            .WithTools<DiagnosticTools>()
+            .WithResources(ViewResources.All());
 
         var app = builder.Build();
         var publicOrigin = settings.PublicBaseUrl?.GetLeftPart(UriPartial.Authority);

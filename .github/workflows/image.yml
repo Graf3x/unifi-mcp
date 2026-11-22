@@ -1,6 +1,7 @@
 # Tests on every push and pull request, and builds the image without pushing it, so a broken Dockerfile shows before a
 # release. On a v* tag, builds the multi-arch image (linux/amd64, linux/arm64) and
 # pushes it to ghcr.io/<owner>/unifi-mcp as <version>, <major>.<minor> and latest. Uses only GITHUB_TOKEN.
+# A prerelease tag (a hyphen in it, e.g. v1.2.3-rc.1) pushes only its own version and leaves latest alone.
 # A new GHCR package starts private: make it public under the package's settings so others can pull without logging in.
 name: test and image
 
@@ -63,7 +64,7 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
       - uses: docker/build-push-action@v6
         with:
           context: .

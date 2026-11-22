@@ -1,4 +1,5 @@
 using System.Text.Json;
+using ModelContextProtocol.Protocol;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Time.Testing;
 
@@ -26,7 +27,7 @@ public class DiagnosticTests
          "radio_table_stats":[
            {"name":"wifi0","radio":"ng","channel":6,"bw":20,"tx_power":12,"num_sta":4,"cu_total":71,"cu_interf":55,"tx_retries_pct":22.5,"satisfaction":80,"state":"RUN"},
            {"name":"wifi1","radio":"na","channel":36,"bw":80,"tx_power":20,"num_sta":9,"cu_total":12,"cu_interf":3,"tx_retries_pct":4.1,"satisfaction":99,"state":"RUN"}],
-         "uplink":{"type":"wire","uplink_device_name":"Core Switch","uplink_remote_port":3,"speed":1000,"full_duplex":true,"rx_errors":0,"tx_errors":0} }
+         "uplink":{"type":"wire","uplink_device_name":"Core Switch","uplink_mac":"aa:00:00:00:00:03","uplink_remote_port":1,"speed":1000,"full_duplex":true,"rx_errors":0,"tx_errors":0} }
         """;
 
     private const string OfflineAp = """{"_id":"d2","mac":"aa:00:00:00:00:02","type":"uap","model":"U6M","name":"Garage AP","state":0,"radio_table_stats":[]}""";
@@ -34,12 +35,26 @@ public class DiagnosticTests
     private const string Switch = """
         {"_id":"d3","mac":"aa:00:00:00:00:03","type":"usw","model":"US24","name":"Core Switch","state":1,"ip":"192.168.1.2","version":"7.4.1",
          "uptime":172800,"system-stats":{"cpu":"3.0","mem":"55.0","uptime":"172800"},"general_temperature":61,"overheating":false,"has_fan":true,"fan_level":0,
-         "total_max_power":95,"total_used_power":21.5,"upgradable":true,"upgrade_to_firmware":"7.4.12",
-         "uplink":{"type":"wire","uplink_device_name":"Gateway","uplink_remote_port":9,"speed":10000,"full_duplex":true,"rx_errors":0,"tx_errors":0},
+         "total_max_power":95,"total_used_power":21.5,"upgradable":true,"upgrade_to_firmware":"7.4.12","x_authkey":"authkey-must-not-leak",
+         "uplink":{"type":"wire","port_idx":5,"uplink_device_name":"Gateway","uplink_remote_port":9,"speed":10000,"full_duplex":true,"rx_errors":0,"tx_errors":0},
          "port_table":[
            {"port_idx":1,"name":"Port 1","up":true,"enable":true,"speed":1000,"full_duplex":true,"poe_enable":true,"poe_power":"6.65","rx_errors":0,"tx_errors":0,"rx_dropped":0,"tx_dropped":0,"link_down_count":0,"stp_state":"forwarding","last_connection":{"mac":"aa:00:00:00:00:01"}},
            {"port_idx":2,"name":"NAS","up":true,"enable":true,"speed":100,"full_duplex":false,"poe_enable":false,"poe_power":"0.00","rx_errors":1532,"tx_errors":0,"rx_dropped":12,"tx_dropped":0,"link_down_count":14,"stp_state":"forwarding"},
-           {"port_idx":3,"name":"Port 3","up":false,"enable":true,"speed":0,"rx_errors":0,"tx_errors":0,"link_down_count":0}]}
+           {"port_idx":3,"name":"Port 3","up":false,"enable":true,"speed":0,"rx_errors":0,"tx_errors":0,"link_down_count":0},
+           {"port_idx":4,"name":"Printer","up":true,"enable":true,"speed":100,"full_duplex":true,"rx_errors":0,"tx_errors":0,"link_down_count":0},
+           {"port_idx":5,"name":"SFP 1","up":true,"enable":true,"speed":10000,"full_duplex":true,"rx_errors":0,"tx_errors":0,"link_down_count":0},
+           {"port_idx":6,"name":"a|b","up":false,"enable":false,"rx_errors":0,"tx_errors":0,"link_down_count":0}]}
+        """;
+
+    // The official API's view of the same switch: the console's MAC is lower case, the official one upper.
+    private const string OfficialId = "33333333-3333-3333-3333-333333333333";
+    private const string OfficialSwitch = $$"""{"id":"{{OfficialId}}","macAddress":"AA:00:00:00:00:03","name":"Core Switch"}""";
+    private const string OfficialDetail = $$"""
+        {"id":"{{OfficialId}}","macAddress":"AA:00:00:00:00:03","name":"Core Switch","adoptionKey":"official-must-not-leak",
+         "interfaces":{"ports":[
+           {"idx":1,"state":"UP","connector":"RJ45","maxSpeedMbps":1000},{"idx":2,"state":"UP","connector":"RJ45","maxSpeedMbps":1000},
+           {"idx":3,"state":"DOWN","connector":"RJ45","maxSpeedMbps":1000},{"idx":4,"state":"UP","connector":"RJ45","maxSpeedMbps":100},
+           {"idx":5,"state":"UP","connector":"SFPPLUS","maxSpeedMbps":10000},{"idx":6,"state":"DOWN","connector":"RJ45","maxSpeedMbps":1000}]} }
         """;
 
     private const string Gateway = """
@@ -119,6 +134,8 @@ public class DiagnosticTests
         f.Route("GET", $"{Classic}/stat/sysinfo", Ok(SysInfo));
         f.Route("GET", $"{Classic}/stat/device", Ok(Ap, OfflineAp, Switch, Gateway));
         f.Route("GET", $"{Classic}/stat/sta", Ok(WiredClient, WirelessClient));
+        f.Route("GET", $"/v1/sites/{Harness.SiteId}/devices", FakeUnifi.Page(OfficialSwitch));
+        f.Route("GET", $"/v1/sites/{Harness.SiteId}/devices/{OfficialId}", OfficialDetail);
         f.Route("GET", $"{Classic}/stat/health", Health);
         f.Route("GET", $"{Classic}/stat/rogueap", Ok(
             """{"bssid":"ee:00:00:00:00:01","essid":"Neighbour1","band":"ng","channel":6,"signal":-60,"ap_mac":"aa:00:00:00:00:01"}""",
@@ -144,7 +161,7 @@ public class DiagnosticTests
 
     private static void NoSecrets(string text)
     {
-        foreach (var s in new[] { MapsKey, VwireKey, "syslog-must-not-leak", "sso-must-not-leak", Harness.ApiKey })
+        foreach (var s in new[] { MapsKey, VwireKey, "syslog-must-not-leak", "sso-must-not-leak", "authkey-must-not-leak", "official-must-not-leak", Harness.ApiKey })
             Assert.DoesNotContain(s, text);
     }
 
@@ -394,6 +411,279 @@ public class DiagnosticTests
         Assert.Contains("CPU", text);
         Assert.Contains("45", text);
         Assert.Contains("53.2", text);
+    }
+
+    // --- device_diagnostics_faq: the view's data, carried in the result's _meta ---------------------------------------
+
+    private static async Task<JsonElement> ViewAsync(Harness h, Dictionary<string, object?>? args = null)
+    {
+        var r = await h.CallRawAsync("device_diagnostics_faq", args);
+        Assert.NotEqual(true, r.IsError);
+        Assert.Null(r.StructuredContent);
+        var raw = r.Meta!["unifi-network/view"]!.ToJsonString();
+        NoSecrets(raw);
+        return JsonDocument.Parse(raw).RootElement;
+    }
+
+    [Fact]
+    public async Task Device_view_without_a_device_lists_tiles_offline_first()
+    {
+        await using var h = await StartAsync();
+        var v = await ViewAsync(h);
+        Assert.Equal("devices", v.GetProperty("view").GetString());
+        Assert.False(v.TryGetProperty("siteId", out _));
+        Assert.True(DateTimeOffset.TryParse(v.GetProperty("builtAt").GetString(), out _));
+        var tiles = v.GetProperty("devices").EnumerateArray().ToList();
+        Assert.Equal(["Garage AP", "Core Switch", "Gateway", "Hall AP"], tiles.Select(t => t.GetProperty("name").GetString()));
+        Assert.Equal("offline", tiles[0].GetProperty("state").GetString());
+        var sw = tiles[1];
+        Assert.Equal("aa:00:00:00:00:03", sw.GetProperty("mac").GetString());
+        Assert.Equal(172800, sw.GetProperty("uptimeSeconds").GetInt64());
+        Assert.Equal(3.0, sw.GetProperty("cpuPct").GetDouble());
+        Assert.Equal(55.0, sw.GetProperty("memoryPct").GetDouble());
+        Assert.Equal(61, sw.GetProperty("temperatureC").GetDouble());
+        Assert.Equal("7.4.12", sw.GetProperty("updateTo").GetString());
+        Assert.StartsWith("port(s) 2", sw.GetProperty("issues")[0].GetString());
+        Assert.Equal(45, tiles[2].GetProperty("temperatureC").GetDouble());
+        Assert.False(tiles[3].TryGetProperty("updateTo", out _));
+    }
+
+    [Fact]
+    public async Task Device_view_keeps_the_site_argument_as_given()
+    {
+        await using var h = await StartAsync();
+        Assert.Equal("Default", (await ViewAsync(h, new() { ["siteId"] = "Default" })).GetProperty("siteId").GetString());
+    }
+
+    [Fact]
+    public async Task Device_view_for_no_match_or_several_is_a_message()
+    {
+        await using var h = await StartAsync();
+        var none = await ViewAsync(h, new() { ["device"] = "toaster" });
+        Assert.Equal("message", none.GetProperty("view").GetString());
+        Assert.Contains("No device matches 'toaster'", none.GetProperty("message").GetString());
+        Assert.False(none.TryGetProperty("candidates", out _));
+        var two = await ViewAsync(h, new() { ["device"] = "AP" });
+        Assert.Equal("message", two.GetProperty("view").GetString());
+        Assert.DoesNotContain("|", two.GetProperty("message").GetString()); // the sentence alone, not the table
+        var c = two.GetProperty("candidates").EnumerateArray().Single(x => x.GetProperty("name").GetString() == "Hall AP");
+        Assert.Equal("192.168.1.20", c.GetProperty("ip").GetString());
+        Assert.Equal("aa:00:00:00:00:01", c.GetProperty("mac").GetString());
+    }
+
+    [Fact]
+    public async Task Device_view_for_a_console_error_is_a_message()
+    {
+        await using var h = await StartAsync();
+        h.Unifi.Route("GET", $"{Classic}/stat/device", "{}", status: 500);
+        var v = await ViewAsync(h);
+        Assert.Equal("message", v.GetProperty("view").GetString());
+        Assert.Contains("500", v.GetProperty("message").GetString());
+    }
+
+    [Fact]
+    public async Task Device_view_for_one_device_has_its_header_facts()
+    {
+        await using var h = await StartAsync();
+        var d = (await ViewAsync(h, new() { ["device"] = "core" })).GetProperty("device");
+        Assert.Equal("Core Switch", d.GetProperty("name").GetString());
+        Assert.Equal("192.168.1.2", d.GetProperty("ip").GetString());
+        Assert.Equal(21.5, d.GetProperty("poeUsedW").GetDouble());
+        Assert.Equal(95, d.GetProperty("poeBudgetW").GetDouble());
+        Assert.False(d.GetProperty("overheating").GetBoolean());
+        var up = d.GetProperty("uplink");
+        Assert.Equal("Gateway", up.GetProperty("deviceName").GetString());
+        Assert.Equal("9", up.GetProperty("remotePort").GetString());
+        Assert.Equal(10000, up.GetProperty("speedMbps").GetInt64());
+    }
+
+    private static JsonElement ViewOf(CallToolResult r) => JsonDocument.Parse(r.Meta!["unifi-network/view"]!.ToJsonString()).RootElement;
+
+    private static List<JsonElement> PortsOf(CallToolResult r) => ViewOf(r).GetProperty("device").GetProperty("ports").EnumerateArray().ToList();
+
+    private static async Task<List<JsonElement>> PortsAsync(Harness h) =>
+        (await ViewAsync(h, new() { ["device"] = "core" })).GetProperty("device").GetProperty("ports").EnumerateArray().ToList();
+
+    private static string[] Flags(JsonElement port) => port.GetProperty("flags").EnumerateArray().Select(f => f.GetString()!).ToArray();
+
+    private const string NasNote = "Linked at 100 Mb half duplex on a port that can do 1 GbE; receive errors; link dropped 14 times since the device restarted: suspect the cable or the device's network card.";
+
+    [Fact]
+    public async Task Device_view_for_a_switch_has_every_port_with_flags_notes_and_what_is_connected()
+    {
+        await using var h = await StartAsync();
+        var p = await PortsAsync(h);
+        Assert.Equal([1, 2, 3, 4, 5, 6], p.Select(x => x.GetProperty("index").GetInt32()));
+        Assert.Equal(["up", "up", "down", "up", "up", "disabled"], p.Select(x => x.GetProperty("state").GetString()));
+        Assert.Equal("device", p[0].GetProperty("connected")[0].GetProperty("kind").GetString());
+        Assert.Equal("Hall AP", p[0].GetProperty("connected")[0].GetProperty("name").GetString());
+        Assert.Equal(6.65, p[0].GetProperty("poeW").GetDouble());
+        Assert.Empty(Flags(p[0]));
+        Assert.False(p[0].TryGetProperty("note", out _));
+        Assert.Equal(["errors", "flapping", "half duplex", "slow link"], Flags(p[1]));
+        Assert.Equal(NasNote, p[1].GetProperty("note").GetString());
+        Assert.Equal(100, p[1].GetProperty("speedMbps").GetInt64());
+        Assert.Equal(1000, p[1].GetProperty("maxSpeedMbps").GetInt64());
+        Assert.Equal("half", p[1].GetProperty("duplex").GetString());
+        Assert.Equal(1532, p[1].GetProperty("rxErrors").GetInt64());
+        Assert.Equal(12, p[1].GetProperty("drops").GetInt64());
+        Assert.Equal(14, p[1].GetProperty("linkDowns").GetInt64());
+        Assert.Equal("forwarding", p[1].GetProperty("stp").GetString());
+        Assert.Equal("client", p[1].GetProperty("connected")[0].GetProperty("kind").GetString());
+        Assert.Equal("cc:00:00:00:00:01", p[1].GetProperty("connected")[0].GetProperty("mac").GetString());
+        Assert.Equal(1, p[1].GetProperty("connectedCount").GetInt32());
+        Assert.False(p[2].TryGetProperty("speedMbps", out _)); // no link, no speed
+        Assert.False(p[2].TryGetProperty("duplex", out _));
+        Assert.Empty(Flags(p[3]));                       // 100 Mb on a port whose maximum is 100 Mb is full speed
+        Assert.Equal("SFPPLUS", p[4].GetProperty("connector").GetString());
+        Assert.Equal("RJ45", p[0].GetProperty("connector").GetString());
+        Assert.False(p[1].TryGetProperty("poeW", out _)); // PoE is off on that port
+    }
+
+    [Fact]
+    public async Task The_text_answer_gains_connected_and_maximum_columns()
+    {
+        await using var h = await StartAsync();
+        var (text, _) = await h.CallAsync("device_diagnostics_faq", new() { ["device"] = "core" });
+        Assert.Contains("| Port | Name | Connected | Link | Speed (Mbps) | Max (Mbps) |", text);
+        Assert.Contains("| 2 | NAS | nas | up | 100 | 1000 | half |", text);
+        Assert.Contains("| 1 | Port 1 | Hall AP |", text);
+        Assert.Contains("Down with nothing to report: 3, 6.", text);
+        Assert.DoesNotContain("step failed", text);
+        NoSecrets(text);
+    }
+
+    [Fact]
+    public async Task Device_view_survives_a_failing_clients_step()
+    {
+        await using var h = await StartAsync();
+        h.Unifi.Route("GET", $"{Classic}/stat/sta", "{}", status: 500);
+        var r = await h.CallRawAsync("device_diagnostics_faq", new() { ["device"] = "core" });
+        Assert.Contains("**Connected clients step failed:**", ((TextContentBlock)r.Content[0]).Text);
+        var p = PortsOf(r);
+        Assert.Equal(0, p[1].GetProperty("connectedCount").GetInt32());
+        Assert.Equal(1, p[0].GetProperty("connectedCount").GetInt32()); // the AP comes from stat/device
+        Assert.Equal(1000, p[1].GetProperty("maxSpeedMbps").GetInt64());
+    }
+
+    [Fact]
+    public async Task Device_view_survives_a_failing_official_step()
+    {
+        await using var h = await StartAsync();
+        h.Unifi.Route("GET", $"/v1/sites/{Harness.SiteId}/devices", "{}", status: 500);
+        var r = await h.CallRawAsync("device_diagnostics_faq", new() { ["device"] = "core" });
+        Assert.Contains("**Port capabilities step failed:**", ((TextContentBlock)r.Content[0]).Text);
+        var p = PortsOf(r);
+        Assert.All(p, x => Assert.Equal("RJ45", x.GetProperty("connector").GetString()));
+        Assert.All(p, x => Assert.False(x.TryGetProperty("maxSpeedMbps", out _)));
+        Assert.Equal(["slow link"], Flags(p[3]));
+        Assert.Equal("Linked at 100 Mb half duplex; receive errors; link dropped 14 times since the device restarted: suspect the cable or the device's network card.", p[1].GetProperty("note").GetString());
+        Assert.Equal("nas", p[1].GetProperty("connected")[0].GetProperty("name").GetString());
+    }
+
+    [Fact]
+    public async Task Device_missing_from_the_official_list_is_not_an_error()
+    {
+        await using var h = await StartAsync();
+        h.Unifi.Route("GET", $"/v1/sites/{Harness.SiteId}/devices", FakeUnifi.Page());
+        var (text, _) = await h.CallAsync("device_diagnostics_faq", new() { ["device"] = "core" });
+        Assert.DoesNotContain("step failed", text);
+        Assert.Contains("| 2 | NAS | nas | up | 100 |  | half |", text);
+    }
+
+    [Fact]
+    public async Task An_official_device_id_that_is_not_an_id_is_never_put_in_a_path()
+    {
+        await using var h = await StartAsync();
+        h.Unifi.Route("GET", $"/v1/sites/{Harness.SiteId}/devices", FakeUnifi.Page("""{"id":"../../sites","macAddress":"aa:00:00:00:00:03"}"""));
+        var (text, _) = await h.CallAsync("device_diagnostics_faq", new() { ["device"] = "core" });
+        Assert.DoesNotContain("step failed", text);
+        Assert.DoesNotContain(h.Unifi.Requests, r => r.Path.Contains(".."));
+    }
+
+    [Fact]
+    public async Task Official_mac_match_ignores_case() // the fixture's official MAC is upper case, the console's lower
+    {
+        await using var h = await StartAsync();
+        Assert.Equal(10000, (await PortsAsync(h))[4].GetProperty("maxSpeedMbps").GetInt64());
+    }
+
+    [Fact]
+    public async Task A_port_lists_five_connected_and_counts_the_rest()
+    {
+        await using var h = await StartAsync();
+        h.Unifi.Route("GET", $"{Classic}/stat/sta", Ok(Enumerable.Range(1, 7).Select(i =>
+            $$"""{"mac":"cc:00:00:00:01:0{{i}}","name":"cam {{i}}","is_wired":true,"sw_mac":"AA:00:00:00:00:03","sw_port":4}""").ToArray()));
+        var r = await h.CallRawAsync("device_diagnostics_faq", new() { ["device"] = "core" });
+        var port4 = PortsOf(r)[3];
+        Assert.Equal(5, port4.GetProperty("connected").GetArrayLength());
+        Assert.Equal(7, port4.GetProperty("connectedCount").GetInt32());
+        Assert.Contains("cam 5 +2 more", ((TextContentBlock)r.Content[0]).Text);
+    }
+
+    [Fact]
+    public async Task Names_with_pipes_do_not_break_the_table()
+    {
+        await using var h = await StartAsync();
+        h.Unifi.Route("GET", $"{Classic}/stat/sta", Ok("""{"mac":"cc:00:00:00:02:01","name":"<img src=x onerror=alert(1)>|x","is_wired":true,"sw_mac":"aa:00:00:00:00:03","sw_port":4}"""));
+        var (text, _) = await h.CallAsync("device_diagnostics_faq", new() { ["device"] = "core" });
+        Assert.Contains(@"<img src=x onerror=alert(1)>\|x", text);
+    }
+
+    [Fact]
+    public async Task The_uplink_port_names_the_device_upstream()
+    {
+        await using var h = await StartAsync();
+        var sfp = (await PortsAsync(h))[4];
+        var upstream = sfp.GetProperty("connected")[0];
+        Assert.Equal("device", upstream.GetProperty("kind").GetString());
+        Assert.Equal("Gateway", upstream.GetProperty("name").GetString());
+        Assert.Equal("aa:00:00:00:00:04", upstream.GetProperty("mac").GetString()); // found by name: this uplink carries no MAC
+        Assert.Equal(1, sfp.GetProperty("connectedCount").GetInt32());
+        var (text, _) = await h.CallAsync("device_diagnostics_faq", new() { ["device"] = "core" });
+        Assert.Contains("| 5 | SFP 1 | Gateway | up |", text);
+    }
+
+    [Fact]
+    public async Task The_uplink_port_is_found_by_the_console_mark_when_the_uplink_gives_no_port()
+    {
+        await using var h = await StartAsync();
+        var marked = Switch.Replace("\"type\":\"wire\",\"port_idx\":5,", "\"type\":\"wire\",").Replace("{\"port_idx\":5,\"name\":\"SFP 1\",", "{\"port_idx\":5,\"is_uplink\":true,\"name\":\"SFP 1\",");
+        Assert.Contains("\"is_uplink\":true", marked);
+        h.Unifi.Route("GET", $"{Classic}/stat/device", Ok(Ap, OfflineAp, marked, Gateway));
+        Assert.Equal("Gateway", (await PortsAsync(h))[4].GetProperty("connected")[0].GetProperty("name").GetString());
+    }
+
+    [Fact]
+    public async Task A_port_name_with_a_pipe_does_not_break_the_table()
+    {
+        await using var h = await StartAsync();
+        h.Unifi.Route("GET", $"{Classic}/stat/device", Ok(Ap, OfflineAp, Switch.Replace("\"name\":\"NAS\"", "\"name\":\"a|b\""), Gateway));
+        var (text, _) = await h.CallAsync("device_diagnostics_faq", new() { ["device"] = "core" });
+        Assert.Contains(@"| 2 | a\|b | nas | up |", text);
+    }
+
+    [Fact]
+    public async Task A_device_without_ports_reads_nothing_more()
+    {
+        await using var h = await StartAsync();
+        var v = await ViewAsync(h, new() { ["device"] = "192.168.1.1" });
+        Assert.Empty(v.GetProperty("device").GetProperty("ports").EnumerateArray());
+        Assert.DoesNotContain(h.Unifi.Requests, r => r.Path.Contains("/stat/sta") || r.Path.Contains("/devices"));
+    }
+
+    [Theory]
+    [InlineData(100L, "100 Mb")] [InlineData(1000L, "1 GbE")] [InlineData(2500L, "2.5 GbE")] [InlineData(10000L, "10 GbE")]
+    public void Speeds_read_the_way_people_say_them(long mbps, string label) => Assert.Equal(label, DiagnosticTools.SpeedLabel(mbps));
+
+    [Fact]
+    public void A_slow_only_port_gets_a_note_about_the_device()
+    {
+        Assert.Equal("Linked at 100 Mb on a port that can do 1 GbE: the device or its cable may only support this speed.",
+            DiagnosticTools.PortNote(["slow link"], 100, 1000, 0, 0, 0));
+        Assert.Equal("Link dropped 6 times since the device restarted: check the cable and the device's power.",
+            DiagnosticTools.PortNote(["flapping"], 1000, 1000, 0, 0, 6));
+        Assert.Null(DiagnosticTools.PortNote([], 1000, 1000, 0, 0, 0));
     }
 
     // --- list_port_forwards -----------------------------------------------------------------------------------------

@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>View host (development only)</title>
+<style>
+  body { margin: 0; padding: 16px; font: 14px/1.4 system-ui, sans-serif; background: #e9edf2; color: #1b2430; }
+  body.dark { background: #06080b; color: #e6eaf0; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  p { margin: 0 0 12px; }
+  fieldset { border: 1px solid #9aa6b5; border-radius: 6px; margin: 0 0 12px; padding: 8px 12px; display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; }
+  label { white-space: nowrap; }
+  iframe { display: block; border: 1px dashed #9aa6b5; background: transparent; height: 80px; }
+  ol { margin: 12px 0 0; padding-left: 28px; font: 12px/1.5 ui-monospace, Consolas, monospace; max-height: 320px; overflow: auto; }
+  li { white-space: pre-wrap; word-break: break-word; }
+  li.in { color: #1f6fd6; }
+  body.dark li.in { color: #5aa9ff; }
+</style>
+</head>
+<body>
+<h1>View host: plays the MCP Apps host for the device diagnostics view</h1>
+<p>Development only. Not embedded, not shipped. The frame is sandboxed the way a real host frames a view.</p>
+<fieldset>
+  <label>Sample <select id="sample"></select></label>
+  <label>Theme <select id="theme"><option>dark</option><option>light</option></select></label>
+  <label>Width <select id="width"><option>760</option><option>480</option><option>320</option></select></label>
+  <label><input type="checkbox" id="refuse"> refuse tools/call</label>
+  <label><input type="checkbox" id="down"> console is down</label>
+  <label><input type="checkbox" id="textonly"> text-only result</label>
+  <label><input type="checkbox" id="nomessage"> refuse ui/message</label>
+  <label><input type="checkbox" id="slow"> answer tools/call after 3 s</label>
+  <button id="reload" type="button">Reload the view</button>
+  <button id="clear" type="button">Clear the log</button>
+</fieldset>
+<iframe id="frame" title="The view" sandbox="allow-scripts"></iframe>
+<ol id="log" aria-label="Messages (blue: from the view)"></ol>
+<script src="samples.js"></script>
+<script>
+(function () {
+  "use strict";
+  var VIEW = "../../src/UnifiMcp/Views/device-diagnostics.html";
+  var META_KEY = "unifi-network/view";
+  var frame = document.getElementById("frame"), log = document.getElementById("log");
+  var picks = { sample: document.getElementById("sample"), theme: document.getElementById("theme"), width: document.getElementById("width") };
+  var flags = { refuse: document.getElementById("refuse"), down: document.getElementById("down"), textonly: document.getElementById("textonly"), nomessage: document.getElementById("nomessage"), slow: document.getElementById("slow") };
+  var samples = { devices: SAMPLES.devices, message: SAMPLES.message, messageOnly: SAMPLES.messageOnly };
+  Object.keys(SAMPLES.named).forEach(function (k) { samples[k] = SAMPLES.named[k]; });
+
+  var query = new URLSearchParams(location.search);
+  Object.keys(samples).forEach(function (name) { picks.sample.appendChild(new Option(name, name)); });
+  Object.keys(picks).forEach(function (k) { if (query.get(k)) picks[k].value = query.get(k); });
+  Object.keys(flags).forEach(function (k) { flags[k].checked = query.get(k) === "1"; });
+
+  function line(direction, message) {
+    var item = document.createElement("li");
+    item.className = direction;
+    item.textContent = (direction === "in" ? "view -> " : "host -> ") + (message.method || (message.error ? "error" : "result")) +
+      (message.id !== undefined ? " #" + message.id : "") + " " + JSON.stringify(message.params || message.error || message.result || {});
+    log.appendChild(item);
+    log.scrollTop = log.scrollHeight;
+  }
+  function send(message) { line("out", message); frame.contentWindow.postMessage(message, "*"); }
+  function result(model) {
+    var r = { content: [{ type: "text", text: "(the markdown answer for a '" + model.view + "' result)" }] };
+    if (!flags.textonly.checked) { r._meta = {}; r._meta[META_KEY] = model; }
+    return r;
+  }
+  function context() { return { theme: picks.theme.value, styles: { variables: { "--font-sans": "Georgia, serif" } } }; }
+
+  window.addEventListener("message", function (event) {
+    if (event.source !== frame.contentWindow) return;
+    var m = event.data;
+    if (!m || m.jsonrpc !== "2.0") return;
+    line("in", m);
+    if (m.method === "ui/initialize") {
+      send({ jsonrpc: "2.0", id: m.id, result: { protocolVersion: "2026-01-26", hostInfo: { name: "view-host", version: "0" }, hostCapabilities: {}, hostContext: context() } });
+    } else if (m.method === "ui/notifications/initialized") {
+      var model = samples[picks.sample.value];
+      var args = model.view === "device" ? { device: model.device.mac } : {};
+      send({ jsonrpc: "2.0", method: "ui/notifications/tool-input", params: { arguments: args } });
+      send({ jsonrpc: "2.0", method: "ui/notifications/tool-result", params: result(model) });
+    } else if (m.method === "ui/notifications/size-changed") {
+      // As the reference host does: apply whatever the view reports, a width included.
+      if (m.params.width != null) frame.style.width = m.params.width + "px";
+      if (m.params.height != null) frame.style.height = Math.max(40, m.params.height) + "px";
+    } else if (m.method === "tools/call") {
+      if (flags.refuse.checked) return send({ jsonrpc: "2.0", id: m.id, error: { code: -32000, message: "The user declined the tool call." } });
+      var device = m.params && m.params.arguments && m.params.arguments.device;
+      var answer = flags.down.checked ? SAMPLES.down : SAMPLES.byMac[device] ||
+        { view: "message", builtAt: SAMPLES.down.builtAt, message: "No device matches '" + device + "'." };
+      // Slow answers arrive out of order: tick the box, click, untick it, click again.
+      var reply = function () { send({ jsonrpc: "2.0", id: m.id, result: result(answer) }); };
+      if (flags.slow.checked) setTimeout(reply, 3000); else reply();
+    } else if (m.method === "ui/message" && !(m.params && m.params.role === "user" && Array.isArray(m.params.content))) {
+      // Hosts built on the SDK check the shape: content is a list of blocks.
+      send({ jsonrpc: "2.0", id: m.id, error: { code: -32602, message: "Invalid params: content must be a list of content blocks." } });
+    } else if (m.method === "ui/message" && flags.nomessage.checked) {
+      send({ jsonrpc: "2.0", id: m.id, error: { code: -32000, message: "The user declined the message." } });
+    } else if (m.id !== undefined && m.method) {
+      send({ jsonrpc: "2.0", id: m.id, result: {} });
+    }
+  });
+
+  function load() {
+    document.body.className = picks.theme.value;
+    frame.style.width = picks.width.value + "px";
+    frame.style.height = "80px";
+    log.textContent = "";
+    // The way a host does it: read the HTML and hand it to the sandboxed frame. Opened as a file, where the read is
+    // refused, the frame loads the file itself.
+    fetch(VIEW, { cache: "no-store" }).then(function (r) { if (!r.ok) throw new Error(String(r.status)); return r.text(); }).then(
+      function (html) { frame.removeAttribute("src"); frame.srcdoc = html; },
+      function () { frame.removeAttribute("srcdoc"); frame.setAttribute("src", VIEW + "?t=" + Date.now()); });
+  }
+  picks.sample.addEventListener("change", load);
+  picks.width.addEventListener("change", function () { frame.style.width = picks.width.value + "px"; });
+  picks.theme.addEventListener("change", function () {
+    document.body.className = picks.theme.value;
+    send({ jsonrpc: "2.0", method: "ui/notifications/host-context-changed", params: { theme: picks.theme.value } });
+  });
+  document.getElementById("reload").addEventListener("click", load);
+  document.getElementById("clear").addEventListener("click", function () { log.textContent = ""; });
+  load();
+})();
+</script>
+</body>
+</html>
