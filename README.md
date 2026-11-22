@@ -591,7 +591,7 @@ For a local run: `MCP_LISTEN=http://127.0.0.1:5199 MCP_ALLOW_LOOPBACK_TCP=true M
 
 Pushing a `v*` tag runs `.github/workflows/image.yml`: tests, then a multi-arch (amd64, arm64) image pushed to
 `ghcr.io/<owner>/unifi-mcp` as the version, `<major>.<minor>` and `latest`. Bump `<Version>` in `src/UnifiMcp/UnifiMcp.csproj`
-to match.
+to match. A prerelease tag (`v1.2.3-rc.1`) pushes only its own version and leaves `latest` alone.
 
 Issues and pull requests are welcome; [CONTRIBUTING.md](CONTRIBUTING.md) covers the conventions, and
 [SECURITY.md](SECURITY.md) how to report a vulnerability privately. Changes are listed in [CHANGELOG.md](CHANGELOG.md).

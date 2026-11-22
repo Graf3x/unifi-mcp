@@ -16,6 +16,7 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- A prerelease tag (`v1.2.3-rc.1`) publishes only its own image version and no longer moves `latest`.
 - The OAuth grant rules (consent, refresh-token families, rotation, revocation, disconnect) live in one module,
   `GrantLedger`. No behaviour changes.
 - Whether an identity is the owner is decided in one place, `OwnerAdmission`, for the sign-in cookie, the Google
