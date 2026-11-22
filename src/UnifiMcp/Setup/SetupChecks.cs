@@ -222,7 +222,7 @@ public sealed class SetupChecks(Settings settings, UnifiClient client, Connector
         if (settings.Missing().Count > 0) return new("site", CheckStatus.Blocked, "Waiting for the API key and pin.");
         try
         {
-            await client.ResolveSiteAsync(null, ct);
+            await client.FindSiteAsync(null, ct);
             return new("site", CheckStatus.Ok, $"Found the site '{settings.Site}'.");
         }
         catch (UnifiError e) when (IsCertificate(e) || e.Message.Contains("answered 401", StringComparison.Ordinal) || e.Message.Contains("answered 403", StringComparison.Ordinal))

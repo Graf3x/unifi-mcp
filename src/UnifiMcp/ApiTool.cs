@@ -62,7 +62,7 @@ public sealed class ApiTool(ApiOperation op, UnifiClient client) : McpServerTool
             var value = Value(args, p.Name);
             if (p.In == "path")
             {
-                if (p.Name == "siteId") value = await client.ResolveSiteAsync(value, ct);
+                if (p.Name == "siteId") value = (await client.FindSiteAsync(value, ct)).Id;
                 if (string.IsNullOrWhiteSpace(value)) throw new UnifiError($"{p.Name} is required.");
                 // EscapeDataString leaves dots alone, and "." or ".." would change which resource the path names.
                 if (value is "." or "..") throw new UnifiError($"{p.Name} is not a valid value.");

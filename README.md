@@ -75,8 +75,8 @@ Anything else the API offers, Claude finds with `search_operations` and runs wit
   tunnel never reaches. It opens only from the link in the server's startup log, whose key changes on every start, so
   it shows the sign-in code to nobody who couldn't already read it in the log.
 
-- The internal API is reached only for a fixed list of reads (anything else is refused before a request is made, writes
-  on or off), and is throttled: one request at a time, identical reads within 10 s served from cache, and at most 30
+- The internal API is reached only through a fixed set of named reads (the server has no way to send it anything else,
+  writes on or off), and is throttled: one request at a time, identical reads within 10 s served from cache, and at most 30
   calls a minute after a burst of 20. That API was not built for outside tools, and frequent polling of it can make a
   console drop packets. Its answers carry secrets (device keys, a maps API key), so these tools return chosen fields
   only, never the raw JSON.

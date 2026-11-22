@@ -33,7 +33,7 @@ public sealed class GuideTools(Settings settings, UnifiClient client, OpenApiCat
         sb.AppendLine("- Lists take `offset`, `limit` (max 200) and `filter`, e.g. `name.like('guest*')` or `and(a.eq(1), b.isNotNull())`. The `filter` parameter lists the properties each list supports.");
         sb.AppendLine("- `call_read_operation` and the write tools return the console's JSON; `*_faq` tools return markdown in steps, and a failed step does not stop the rest.");
         sb.AppendLine("- Tool descriptions start with their category, e.g. `[Firewall]`.");
-        sb.AppendLine($"- The diagnostics tools (system_log and the last five above) read the console's internal API, which its own UI uses. It is limited to {UnifiClient.ConsolePerMinute} calls a minute (bursts of {UnifiClient.ConsoleBurst}) and repeats within {UnifiClient.ConsoleCacheFor.TotalSeconds:0} s are served from cache, because heavy polling can destabilise the console. Do not loop on them.").AppendLine();
+        sb.AppendLine($"- The diagnostics tools (system_log and the last five above) read the console's internal API, which its own UI uses. It is limited to {ConsoleReads.PerMinute} calls a minute (bursts of {ConsoleReads.Burst}) and repeats within {ConsoleReads.CacheFor.TotalSeconds:0} s are served from cache, because heavy polling can destabilise the console. Do not loop on them.").AppendLine();
         sb.AppendLine("## Changes");
         var writes = catalog.Operations.Count(o => o.IsWrite);
         sb.AppendLine(settings.AllowWrites
@@ -52,7 +52,7 @@ public sealed class GuideTools(Settings settings, UnifiClient client, OpenApiCat
         {
             var info = await client.GetJsonAsync("/v1/info", ct);
             sb.AppendLine($"- Console application version: {info.GetProperty("applicationVersion").GetString()}");
-            sb.AppendLine($"- Default site '{settings.Site}': {await client.ResolveSiteAsync(null, ct)}");
+            sb.AppendLine($"- Default site '{settings.Site}': {(await client.FindSiteAsync(null, ct)).Id}");
         }
         catch (Exception e) when (e is UnifiError or UnifiNotConfigured or KeyNotFoundException)
         {

@@ -13,6 +13,10 @@ follow [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - The internal API's throttle and cache, and `system_log`'s time window, read the server's clock instead of their own.
+- On a console with several sites in different time zones, each site's times are shown in its own zone. Before, every
+  site used the zone of the first one asked.
+- `device_diagnostics_faq` no longer spends a call of the internal API's budget on the console's time zone, which it
+  never shows. Every diagnostic asks for the zone only when it prints times.
 
 ### Changed
 
@@ -23,6 +27,11 @@ follow [Semantic Versioning](https://semver.org/).
 - Log reasons for a refused owner say `NotListed` (a Google address not on the list) or `OtherSignIn` (an identity
   from the sign-in method `MCP_SIGNIN` no longer names) instead of `NotAllowed`. A refused refresh no longer says
   "allow-list" in code mode.
+- The console's internal API is read through `ConsoleReads`: one named read per endpoint for a site, so no tool builds
+  an internal-API path. The reads it offers are the only internal requests the server can make, which replaces the
+  allow-list of path patterns. Throttle and cache are unchanged.
+- A site is found the same way everywhere, by its id, name or internal name, with one lookup. A site UUID the console
+  doesn't have now gets "The console has no site" and the list of sites, instead of the console's 404.
 
 ## 0.6.1
 

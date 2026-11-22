@@ -81,27 +81,54 @@ public class ClientTests
         Assert.Contains(Path.Combine(_dir, "pin"), ex.Message);
     }
 
-    [Fact]
-    public async Task A_site_uuid_passes_through_without_a_lookup()
+    [Theory]
+    [InlineData(Harness.SiteId)]
+    [InlineData("Default")]
+    [InlineData("DEFAULT")] // the internal name, any case
+    [InlineData(null)]      // the configured site: "default"
+    public async Task A_site_is_found_by_its_id_name_or_internal_name(string? hint)
     {
-        Assert.Equal(Harness.SiteId, await Client().ResolveSiteAsync(Harness.SiteId, default));
-        Assert.Empty(_fake.Requests);
+        _fake.WithSite();
+        Assert.Equal(new Site(Harness.SiteId, "default", "Default"), await Client().FindSiteAsync(hint, default));
     }
 
     [Fact]
-    public async Task A_site_name_or_reference_resolves_to_its_id()
+    public async Task A_site_id_wins_over_another_site_named_after_it()
+    {
+        const string Other = "22222222-2222-2222-2222-222222222222";
+        // The odd site comes first, and its name and internal name are the other site's id.
+        _fake.Route("GET", "/v1/sites", FakeUnifi.Page(
+            $$"""{"id":"{{Harness.SiteId}}","internalReference":"{{Other}}","name":"{{Other}}"}""",
+            $$"""{"id":"{{Other}}","internalReference":"cabin","name":"Cabin"}"""));
+        Assert.Equal(Other, (await Client().FindSiteAsync(Other, default)).Id);
+    }
+
+    [Fact]
+    public async Task A_site_uuid_the_console_does_not_have_lists_the_ones_that_exist()
     {
         _fake.WithSite();
-        Assert.Equal(Harness.SiteId, await Client().ResolveSiteAsync("Default", default));
-        Assert.Equal(Harness.SiteId, await Client().ResolveSiteAsync(null, default)); // configured default: "default"
+        var ex = await Assert.ThrowsAsync<UnifiError>(() => Client().FindSiteAsync("22222222-2222-2222-2222-222222222222", default));
+        Assert.Contains("no site '22222222-2222-2222-2222-222222222222'", ex.Message);
+        Assert.Contains("Default", ex.Message);
     }
 
     [Fact]
     public async Task An_unknown_site_lists_the_ones_that_exist()
     {
         _fake.WithSite();
-        var ex = await Assert.ThrowsAsync<UnifiError>(() => Client().ResolveSiteAsync("branch", default));
+        var ex = await Assert.ThrowsAsync<UnifiError>(() => Client().FindSiteAsync("branch", default));
         Assert.Contains("Default", ex.Message);
+    }
+
+    [Fact]
+    public async Task A_site_is_looked_up_once_however_it_is_named_again()
+    {
+        _fake.WithSite();
+        var client = Client();
+        await client.FindSiteAsync("Default", default);
+        await client.FindSiteAsync("Default", default);
+        await client.FindSiteAsync(null, default);
+        Assert.Single(_fake.Requests, r => r.Path.StartsWith("/v1/sites", StringComparison.Ordinal));
     }
 
     [Fact]
