@@ -78,6 +78,18 @@ public sealed class ConsoleReadsTests : IDisposable
     }
 
     [Fact]
+    public void No_caller_can_choose_the_path_or_method_of_an_internal_read()
+    {
+        // The named reads are the allow-list: the only string a caller passes is the site hint, which is looked up.
+        static IEnumerable<System.Reflection.ParameterInfo> Parameters(Type t) =>
+            t.GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.DeclaredOnly)
+             .Where(m => !m.IsSpecialName).SelectMany(m => m.GetParameters().Select(p => p));
+        Assert.Equal(["hint"], Parameters(typeof(ConsoleReads)).Where(p => p.ParameterType == typeof(string)).Select(p => p.Name));
+        Assert.DoesNotContain(Parameters(typeof(ConsoleSite)), p => p.ParameterType == typeof(string) || p.ParameterType == typeof(HttpMethod));
+        Assert.DoesNotContain(Parameters(typeof(ConsoleReads)), p => p.ParameterType == typeof(HttpMethod));
+    }
+
+    [Fact]
     public async Task A_site_whose_internal_name_the_internal_api_cannot_take_is_refused_before_any_read()
     {
         _fake.Route("GET", "/v1/sites", FakeUnifi.Page($$"""{"id":"{{Harness.SiteId}}","internalReference":"../cmd","name":"Odd"}"""));

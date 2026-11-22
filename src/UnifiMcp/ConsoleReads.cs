@@ -54,21 +54,12 @@ public sealed partial class ConsoleReads(UnifiClient client, TimeProvider time)
     private static partial Regex SafeReference();
 
     /// <summary>
-    /// The read-only internal endpoints the diagnostics tools use, relative to /proxy/network. POST is allowed only where
-    /// the console takes a query in the body (the system log); everything else is a GET. Anything off this list is refused
-    /// before a request exists, whatever UNIFI_ALLOW_WRITES says, so no tool can reach the console's command endpoints.
+    /// Every read ends here: cached, one at a time, and charged against the budget. Private, so the reads
+    /// <see cref="ConsoleSite"/> offers are the only requests that can exist, and their paths are fixed but for the
+    /// site's checked internal name and numbers.
     /// </summary>
-    private static readonly (string Method, Regex Path)[] Allowed =
-    [
-        ("GET", new(@"^/api/s/[A-Za-z0-9_-]+/(stat/(health|sysinfo|device|sta|rogueap)|rest/portforward)(\?[A-Za-z0-9=&_.-]*)?$")),
-        ("GET", new(@"^/v2/api/site/[A-Za-z0-9_-]+/(aggregated-dashboard|clients/(active|history)|wan/load-balancing/status)(\?[A-Za-z0-9=&_.-]*)?$")),
-        ("POST", new(@"^/v2/api/site/[A-Za-z0-9_-]+/system-log/(all|count)$")),
-    ];
-
-    public async Task<UnifiResponse> ConsoleAsync(HttpMethod method, string path, string? body, CancellationToken ct)
+    private async Task<UnifiResponse> SendAsync(HttpMethod method, string path, string? body, CancellationToken ct)
     {
-        if (!Allowed.Any(r => r.Method == method.Method && r.Path.IsMatch(path)))
-            throw new UnifiError($"{method} {path.Split('?')[0]} is not one of the console reads this server allows, so nothing was sent.");
         if (client.Settings.Missing().Count > 0) return await client.SendInternalAsync(method, path, body, ct); // throws "not configured"
 
         var cacheKey = $"{method} {path}\n{body}";
@@ -102,7 +93,7 @@ public sealed partial class ConsoleReads(UnifiClient client, TimeProvider time)
     /// <summary>An answer as JSON; non-2xx and a <c>meta.rc</c> other than ok become a <see cref="UnifiError"/>.</summary>
     internal async Task<JsonElement> JsonAsync(HttpMethod method, string path, object? body, CancellationToken ct)
     {
-        var r = await ConsoleAsync(method, path, body is null ? null : JsonSerializer.Serialize(body, Json), ct);
+        var r = await SendAsync(method, path, body is null ? null : JsonSerializer.Serialize(body, Json), ct);
         var name = $"{method} {path.Split('?')[0]}";
         if (!r.Ok) throw new UnifiError($"The console answered {r.Status} to {name}: {Short(r.Body)}");
         JsonElement json;

@@ -504,27 +504,4 @@ public class DiagnosticTests
             Assert.Equal(now - 6 * 3_600_000L, body.GetProperty("timestampFrom").GetInt64());
         }
     }
-
-    [Theory]
-    [InlineData("GET", "/api/s/default/cmd/devmgr")]
-    [InlineData("POST", "/api/s/default/stat/device")]
-    [InlineData("GET", "/api/s/default/rest/setting")]
-    [InlineData("GET", "/api/s/default/rest/wlanconf")]
-    [InlineData("GET", "/api/s/default/stat/../cmd/devmgr")]
-    [InlineData("GET", "/v2/api/site/default/system-log/all")]
-    [InlineData("POST", "/v2/api/site/default/clients/history")]
-    [InlineData("PUT", "/api/s/default/rest/portforward")]
-    [InlineData("DELETE", "/api/s/default/rest/portforward/p1")]
-    public async Task The_client_refuses_anything_off_its_read_only_list(string method, string path)
-    {
-        var fake = new FakeUnifi();
-        var dir = Directory.CreateTempSubdirectory("unifi-mcp-test").FullName;
-        try
-        {
-            var reads = new ConsoleReads(new UnifiClient(Harness.NewSettings(dir, writes: true), fake, new PinState()), TimeProvider.System);
-            await Assert.ThrowsAsync<UnifiError>(() => reads.ConsoleAsync(new HttpMethod(method), path, method == "GET" ? null : "{}", default));
-            Assert.Empty(fake.Requests);
-        }
-        finally { Directory.Delete(dir, true); }
-    }
 }
