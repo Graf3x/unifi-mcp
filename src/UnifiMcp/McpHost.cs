@@ -42,7 +42,8 @@ public static class McpHost
         var handler = unifi ?? CertPin.CreateHandler(settings.CertPins, settings.Trust, pin);
         var catalog = OpenApiCatalog.Load();
         builder.Services.AddSingleton(settings);
-        builder.Services.AddSingleton(sp => new UnifiClient(settings, handler, pin, sp.GetRequiredService<TimeProvider>()));
+        builder.Services.AddSingleton(new UnifiClient(settings, handler, pin));
+        builder.Services.AddSingleton(sp => new ConsoleReads(sp.GetRequiredService<UnifiClient>(), sp.GetRequiredService<TimeProvider>()));
         builder.Services.AddSingleton(catalog);
         // Reads share one tool; each write is its own destructive tool, listed only when writes are on. Registered as
         // services (which the MCP server collects) so they get the host's client.

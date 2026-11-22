@@ -12,11 +12,11 @@ namespace UnifiMcp;
 /// <summary>
 /// Diagnostics from the console's internal API (the one its own UI uses), which the official API does not cover:
 /// the system log, WAN quality, Wi-Fi radio health, a client's signal and switch port, device ports and temperatures,
-/// port forwards. Reads only, through <see cref="UnifiClient.ConsoleAsync"/>'s allow-list and throttle. Answers are built
+/// port forwards. Reads only, through <see cref="ConsoleReads"/>, which caches and throttles them. Answers are built
 /// from named fields; raw objects are never passed through, because they carry secrets (device keys, a maps API key).
 /// </summary>
 [McpServerToolType]
-public sealed partial class DiagnosticTools(UnifiClient console, TimeProvider time)
+public sealed partial class DiagnosticTools(ConsoleReads reads, TimeProvider time)
 {
     private const int MaxHours = 720;
 
@@ -35,12 +35,12 @@ public sealed partial class DiagnosticTools(UnifiClient console, TimeProvider ti
         [Description("Site UUID or name. Omit for the configured site.")] string? siteId = null,
         CancellationToken ct = default) => Strict(async () =>
     {
-        var siteRef = await console.ResolveSiteReferenceAsync(siteId, ct);
-        var zone = await console.ConsoleTimeZoneAsync(siteRef, ct);
+        var site = await reads.SiteAsync(siteId, ct);
+        var zone = await site.TimeZoneAsync(ct);
         var window = Window(hours);
         var query = LogQuery(window, limit, page, List(category), List(@event), List(severity), search);
-        var result = await console.ConsoleJsonAsync(HttpMethod.Post, $"/v2/api/site/{siteRef}/system-log/all", query, ct);
-        var events = Array(result, "data").Take(query.pageSize).ToList();
+        var result = await site.SystemLogAsync(query, ct);
+        var events = Array(result, "data").Take(query.PageSize).ToList();
         var total = Long(result, "total_element_count") ?? events.Count;
         var pages = Long(result, "total_page_count") ?? 1;
 
@@ -48,7 +48,7 @@ public sealed partial class DiagnosticTools(UnifiClient console, TimeProvider ti
         var sb = new StringBuilder($"# System log: {total} event(s) in the last {window.Hours} h");
         sb.AppendLine(filters.Count == 0 ? "" : " matching " + string.Join(", ", filters.Select(f => $"{f.Item1} '{f.Item2}'")));
         sb.AppendLine($"Showing {events.Count} (page {page} of {Math.Max(pages, 1)}, newest first). Times are console local time ({zone.Name}).");
-        if ((page + 1L) * query.pageSize < total)
+        if ((page + 1L) * query.PageSize < total)
             sb.AppendLine($"More: call again with page={page + 1}, or narrow with category, event, severity or search.");
         sb.AppendLine().AppendLine(LogTable(events, zone.Zone));
 
@@ -56,8 +56,7 @@ public sealed partial class DiagnosticTools(UnifiClient console, TimeProvider ti
         {
             try
             {
-                var counts = await console.ConsoleJsonAsync(HttpMethod.Post, $"/v2/api/site/{siteRef}/system-log/count",
-                    new { timestampFrom = window.From, timestampTo = window.To }, ct);
+                var counts = await site.SystemLogCountAsync(window.From, window.To, ct);
                 sb.AppendLine("## Counts in this window");
                 sb.AppendLine("Categories: " + Counts(counts, "categories"));
                 sb.AppendLine("Events: " + Counts(counts, "events"));
@@ -77,11 +76,12 @@ public sealed partial class DiagnosticTools(UnifiClient console, TimeProvider ti
     public Task<string> InternetHealth(
         [Description("History window in hours (1 to 168). Default 24.")] int hours = 24,
         [Description("Site UUID or name. Omit for the configured site.")] string? siteId = null,
-        CancellationToken ct = default) => Run(siteId, ct, async (siteRef, zone, sb) =>
+        CancellationToken ct = default) => Run(siteId, ct, async (site, sb) =>
     {
         hours = Math.Clamp(hours, 1, 168);
-        var dash = await StepJson(sb, "Dashboard", () => console.ConsoleJsonAsync(HttpMethod.Get, $"/v2/api/site/{siteRef}/aggregated-dashboard?historySeconds={hours * 3600}", null, ct));
-        var lb = await StepJson(sb, "WAN status", () => console.ConsoleJsonAsync(HttpMethod.Get, $"/v2/api/site/{siteRef}/wan/load-balancing/status", null, ct));
+        var zone = await site.TimeZoneAsync(ct);
+        var dash = await StepJson(sb, "Dashboard", () => site.DashboardAsync(hours, ct));
+        var lb = await StepJson(sb, "WAN status", () => site.WanStatusAsync(ct));
 
         sb.AppendLine("## WAN links");
         var details = dash is { } d && d.TryGetProperty("wan", out var wan) ? Array(wan, "wan_details") : [];
@@ -99,7 +99,7 @@ public sealed partial class DiagnosticTools(UnifiClient console, TimeProvider ti
             return new[] { First(V(s, "name"), V(x, "network_name")), g, V(s, "state"), isp is { } i ? V(i, "name") : "", status is { } t ? V(t, "interface_name") : "", status is { } u ? V(u, "state") : "", plan, latencies };
         })));
 
-        var health = await Step(sb, "Gateway monitors", () => console.ConsoleDataAsync($"/api/s/{siteRef}/stat/health", ct));
+        var health = await Step(sb, "Gateway monitors", () => site.HealthAsync(ct));
         if (health is not null)
         {
             var wanHealth = health.FirstOrDefault(h => V(h, "subsystem") == "wan");
@@ -157,7 +157,7 @@ public sealed partial class DiagnosticTools(UnifiClient console, TimeProvider ti
                 new[] { Millis(Long(x, "time"), zone.Zone), V(x, "wan_networkgroup"), V(x, "download_mbps"), V(x, "upload_mbps"), V(x, "latency_ms") })));
         }
 
-        var events = await StepJson(sb, "WAN events", () => console.ConsoleJsonAsync(HttpMethod.Post, $"/v2/api/site/{siteRef}/system-log/all",
+        var events = await StepJson(sb, "WAN events", () => site.SystemLogAsync(
             LogQuery(Window(hours), 15, 0, ["INTERNET_AND_WAN"], [], [], null), ct));
         if (events is { } ev)
             sb.AppendLine($"## WAN events ({Long(ev, "total_element_count") ?? 0} in the last {hours} h, newest first)").AppendLine(LogTable(Array(ev, "data").Take(15).ToList(), zone.Zone));
@@ -169,12 +169,12 @@ public sealed partial class DiagnosticTools(UnifiClient console, TimeProvider ti
                  + "Problems are flagged (busy channel, interference, high retries). Use for 'why is Wi-Fi slow' or 'which channel should this AP use'.")]
     public Task<string> WifiHealth(
         [Description("Site UUID or name. Omit for the configured site.")] string? siteId = null,
-        CancellationToken ct = default) => Run(siteId, ct, async (siteRef, zone, sb) =>
+        CancellationToken ct = default) => Run(siteId, ct, async (site, sb) =>
     {
-        var devices = await Step(sb, "Access points", () => console.ConsoleDataAsync($"/api/s/{siteRef}/stat/device", ct));
+        var devices = await Step(sb, "Access points", () => site.DevicesAsync(ct));
         if (devices is null) return;
         var aps = devices.Where(d => V(d, "type") == "uap").ToList();
-        var neighbours = await Step(sb, "Neighbouring networks", () => console.ConsoleDataAsync($"/api/s/{siteRef}/stat/rogueap?within=24", ct)) ?? [];
+        var neighbours = await Step(sb, "Neighbouring networks", () => site.RogueApsAsync(ct)) ?? [];
 
         var online = aps.Where(a => V(a, "state") == "1").ToList();
         sb.AppendLine($"## Radios: {online.Count} access point(s) online");
@@ -194,7 +194,8 @@ public sealed partial class DiagnosticTools(UnifiClient console, TimeProvider ti
         if (offline.Count > 0)
             sb.AppendLine($"**Not online ({offline.Count}):** " + string.Join(", ", offline.Select(a => $"{V(a, "name")} ({V(a, "model")}, {DeviceState(V(a, "state"))})"))).AppendLine();
 
-        var events = await StepJson(sb, "Radio events", () => console.ConsoleJsonAsync(HttpMethod.Post, $"/v2/api/site/{siteRef}/system-log/all",
+        var zone = await site.TimeZoneAsync(ct);
+        var events = await StepJson(sb, "Radio events", () => site.SystemLogAsync(
             LogQuery(Window(24), 15, 0, [], ["AP_CHANGED_CHANNELS", "AP_DETECTED_RADAR"], [], null), ct));
         if (events is { } ev)
             sb.AppendLine($"## Channel changes and radar, last 24 h ({Long(ev, "total_element_count") ?? 0})").AppendLine(LogTable(Array(ev, "data").Take(15).ToList(), zone.Zone));
@@ -208,18 +209,18 @@ public sealed partial class DiagnosticTools(UnifiClient console, TimeProvider ti
         [Description("Client name or hostname (partial match), IP address or MAC address.")] string client,
         [Description("How far back to read its events, in hours (1 to 720). Default 24.")] int hours = 24,
         [Description("Site UUID or name. Omit for the configured site.")] string? siteId = null,
-        CancellationToken ct = default) => Run(siteId, ct, async (siteRef, zone, sb) =>
+        CancellationToken ct = default) => Run(siteId, ct, async (site, sb) =>
     {
         var q = (client ?? "").Trim();
         bool Matches(JsonElement x, params string[] names) =>
             string.Equals(V(x, "mac"), q, StringComparison.OrdinalIgnoreCase) || V(x, "ip") == q || V(x, "last_ip") == q
             || names.Any(n => V(x, n).Contains(q, StringComparison.OrdinalIgnoreCase) && q.Length > 0);
 
-        var stations = await console.ConsoleDataAsync($"/api/s/{siteRef}/stat/sta", ct);
+        var stations = await site.StationsAsync(ct);
         var found = stations.Where(x => Matches(x, "name", "hostname")).ToList();
         var online = found.Count > 0;
         if (!online)
-            found = (await console.ConsoleDataAsync($"/v2/api/site/{siteRef}/clients/history?onlyNonBlocked=true&withinHours={MaxHours}", ct))
+            found = (await site.ClientHistoryAsync(ct))
                 .Where(x => Matches(x, "name", "display_name", "hostname")).ToList();
         if (found.Count == 0)
         {
@@ -233,6 +234,7 @@ public sealed partial class DiagnosticTools(UnifiClient console, TimeProvider ti
             return;
         }
 
+        var zone = await site.TimeZoneAsync(ct);
         var c = found[0];
         sb.AppendLine($"## {Name(c)} ({(online ? "online" : "offline")})");
         sb.AppendLine($"- MAC {V(c, "mac")}, vendor {First(V(c, "oui"), "unknown")}, hostname {First(V(c, "hostname"), "none")}.");
@@ -261,7 +263,7 @@ public sealed partial class DiagnosticTools(UnifiClient console, TimeProvider ti
             sb.AppendLine();
         }
 
-        var events = await StepJson(sb, "Events", () => console.ConsoleJsonAsync(HttpMethod.Post, $"/v2/api/site/{siteRef}/system-log/all",
+        var events = await StepJson(sb, "Events", () => site.SystemLogAsync(
             LogQuery(Window(hours), 15, 0, [], [], [], V(c, "mac")), ct));
         if (events is { } ev)
             sb.AppendLine($"## Its events, last {Window(hours).Hours} h ({Long(ev, "total_element_count") ?? 0}, newest first)").AppendLine(LogTable(Array(ev, "data").Take(15).ToList(), zone.Zone));
@@ -275,9 +277,10 @@ public sealed partial class DiagnosticTools(UnifiClient console, TimeProvider ti
     public async Task<CallToolResult> DeviceDiagnostics(
         [Description("Device name (partial match), IP address or MAC address. Omit for a summary of every device.")] string? device = null,
         [Description("Site UUID or name. Omit for the configured site.")] string? siteId = null,
-        CancellationToken ct = default) => WithProbe(await Run(siteId, ct, async (siteRef, zone, sb) =>
+        CancellationToken ct = default) => WithProbe(await Run(siteId, ct, async (site, sb) =>
+
     {
-        var devices = await console.ConsoleDataAsync($"/api/s/{siteRef}/stat/device", ct);
+        var devices = await site.DevicesAsync(ct);
         if (string.IsNullOrWhiteSpace(device))
         {
             var down = devices.Count(d => V(d, "state") != "1");
@@ -359,8 +362,7 @@ public sealed partial class DiagnosticTools(UnifiClient console, TimeProvider ti
         [Description("Site UUID or name. Omit for the configured site.")] string? siteId = null,
         CancellationToken ct = default) => Strict(async () =>
     {
-        var siteRef = await console.ResolveSiteReferenceAsync(siteId, ct);
-        var rules = await console.ConsoleDataAsync($"/api/s/{siteRef}/rest/portforward", ct);
+        var rules = await (await reads.SiteAsync(siteId, ct)).PortForwardsAsync(ct);
         if (rules.Count == 0) return "No port forwards are configured.";
         return $"## Port forwards: {rules.Count}\n" + FaqTools.Table(["Name", "State", "Protocol", "WAN port", "Forward to", "Allowed from", "WAN", "Logged"], rules.Select(r => new[]
         {
@@ -372,13 +374,12 @@ public sealed partial class DiagnosticTools(UnifiClient console, TimeProvider ti
     // --- running ----------------------------------------------------------------------------------------------------
 
     /// <summary>Composite tools: markdown in steps, so a failure is reported and the rest still runs.</summary>
-    private async Task<string> Run(string? site, CancellationToken ct, Func<string, (TimeZoneInfo Zone, string Name), StringBuilder, Task> steps)
+    private async Task<string> Run(string? site, CancellationToken ct, Func<ConsoleSite, StringBuilder, Task> steps)
     {
         var sb = new StringBuilder();
         try
         {
-            var siteRef = await console.ResolveSiteReferenceAsync(site, ct);
-            await steps(siteRef, await console.ConsoleTimeZoneAsync(siteRef, ct), sb);
+            await steps(await reads.SiteAsync(site, ct), sb);
         }
         catch (Exception e) when (e is UnifiError or UnifiNotConfigured)
         {
@@ -418,12 +419,6 @@ public sealed partial class DiagnosticTools(UnifiClient console, TimeProvider ti
 
     private sealed record LogWindow(int Hours, long From, long To);
 
-    private sealed record LogBody(long timestampFrom, long timestampTo, int pageSize, int pageNumber,
-        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] string[]? categories,
-        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] string[]? events,
-        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] string[]? severities,
-        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] string? searchText);
-
     /// <summary>The last <paramref name="hours"/> up to now by the host's clock.</summary>
     private LogWindow Window(int hours)
     {
@@ -432,7 +427,7 @@ public sealed partial class DiagnosticTools(UnifiClient console, TimeProvider ti
         return new LogWindow(h, to - h * 3_600_000L, to);
     }
 
-    private static LogBody LogQuery(LogWindow w, int limit, int page, string[] categories, string[] events, string[] severities, string? search) =>
+    private static SystemLogQuery LogQuery(LogWindow w, int limit, int page, string[] categories, string[] events, string[] severities, string? search) =>
         new(w.From, w.To, Math.Clamp(limit, 1, 200), Math.Max(page, 0),
             categories.Length == 0 ? null : categories, events.Length == 0 ? null : events, severities.Length == 0 ? null : severities,
             string.IsNullOrWhiteSpace(search) ? null : search.Trim());

@@ -2,6 +2,19 @@
 
 An MCP server that lets Claude read, and with the owner's leave change, one home UniFi Network console. The public side acts as an OAuth authorization server so Claude can connect as a custom connector.
 
+## Console
+
+**Site**:
+One network managed by the console. It can be named by its id, its name, or its internal name.
+_Avoid_: network (a site holds many networks), location
+
+**Integration API**:
+The console's official, documented API. Everything the server changes goes through it.
+
+**Internal API**:
+The undocumented API behind the console's own web interface. The server only reads from it, slowly and with short-lived caching, because it answers what the Integration API cannot.
+_Avoid_: private API, legacy API
+
 ## Access
 
 **Owner**:
