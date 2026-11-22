@@ -61,6 +61,6 @@ public class ViewTests
         Assert.IsType<TextContentBlock>(Assert.Single(r.Content));
         // Hosts hand the model structuredContent in place of the text when there is one, so the view's data is in _meta.
         Assert.Null(r.StructuredContent);
-        Assert.Equal("probe", r.Meta!["unifi-network/view"]!["view"]!.GetValue<string>());
+        Assert.Contains(r.Meta!["unifi-network/view"]!["view"]!.GetValue<string>(), new[] { "devices", "device", "message" });
     }
 }

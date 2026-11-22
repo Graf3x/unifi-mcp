@@ -34,7 +34,7 @@ public class DiagnosticTests
     private const string Switch = """
         {"_id":"d3","mac":"aa:00:00:00:00:03","type":"usw","model":"US24","name":"Core Switch","state":1,"ip":"192.168.1.2","version":"7.4.1",
          "uptime":172800,"system-stats":{"cpu":"3.0","mem":"55.0","uptime":"172800"},"general_temperature":61,"overheating":false,"has_fan":true,"fan_level":0,
-         "total_max_power":95,"total_used_power":21.5,"upgradable":true,"upgrade_to_firmware":"7.4.12",
+         "total_max_power":95,"total_used_power":21.5,"upgradable":true,"upgrade_to_firmware":"7.4.12","x_authkey":"authkey-must-not-leak",
          "uplink":{"type":"wire","uplink_device_name":"Gateway","uplink_remote_port":9,"speed":10000,"full_duplex":true,"rx_errors":0,"tx_errors":0},
          "port_table":[
            {"port_idx":1,"name":"Port 1","up":true,"enable":true,"speed":1000,"full_duplex":true,"poe_enable":true,"poe_power":"6.65","rx_errors":0,"tx_errors":0,"rx_dropped":0,"tx_dropped":0,"link_down_count":0,"stp_state":"forwarding","last_connection":{"mac":"aa:00:00:00:00:01"}},
@@ -144,7 +144,7 @@ public class DiagnosticTests
 
     private static void NoSecrets(string text)
     {
-        foreach (var s in new[] { MapsKey, VwireKey, "syslog-must-not-leak", "sso-must-not-leak", Harness.ApiKey })
+        foreach (var s in new[] { MapsKey, VwireKey, "syslog-must-not-leak", "sso-must-not-leak", "authkey-must-not-leak", Harness.ApiKey })
             Assert.DoesNotContain(s, text);
     }
 
@@ -394,6 +394,90 @@ public class DiagnosticTests
         Assert.Contains("CPU", text);
         Assert.Contains("45", text);
         Assert.Contains("53.2", text);
+    }
+
+    // --- device_diagnostics_faq: the view's data, carried in the result's _meta ---------------------------------------
+
+    private static async Task<JsonElement> ViewAsync(Harness h, Dictionary<string, object?>? args = null)
+    {
+        var r = await h.CallRawAsync("device_diagnostics_faq", args);
+        Assert.NotEqual(true, r.IsError);
+        Assert.Null(r.StructuredContent);
+        var raw = r.Meta!["unifi-network/view"]!.ToJsonString();
+        NoSecrets(raw);
+        return JsonDocument.Parse(raw).RootElement;
+    }
+
+    [Fact]
+    public async Task Device_view_without_a_device_lists_tiles_offline_first()
+    {
+        await using var h = await StartAsync();
+        var v = await ViewAsync(h);
+        Assert.Equal("devices", v.GetProperty("view").GetString());
+        Assert.False(v.TryGetProperty("siteId", out _));
+        Assert.True(DateTimeOffset.TryParse(v.GetProperty("builtAt").GetString(), out _));
+        var tiles = v.GetProperty("devices").EnumerateArray().ToList();
+        Assert.Equal(["Garage AP", "Core Switch", "Gateway", "Hall AP"], tiles.Select(t => t.GetProperty("name").GetString()));
+        Assert.Equal("offline", tiles[0].GetProperty("state").GetString());
+        var sw = tiles[1];
+        Assert.Equal("aa:00:00:00:00:03", sw.GetProperty("mac").GetString());
+        Assert.Equal(172800, sw.GetProperty("uptimeSeconds").GetInt64());
+        Assert.Equal(3.0, sw.GetProperty("cpuPct").GetDouble());
+        Assert.Equal(55.0, sw.GetProperty("memoryPct").GetDouble());
+        Assert.Equal(61, sw.GetProperty("temperatureC").GetDouble());
+        Assert.Equal("7.4.12", sw.GetProperty("updateTo").GetString());
+        Assert.StartsWith("port(s) 2", sw.GetProperty("issues")[0].GetString());
+        Assert.Equal(45, tiles[2].GetProperty("temperatureC").GetDouble());
+        Assert.False(tiles[3].TryGetProperty("updateTo", out _));
+    }
+
+    [Fact]
+    public async Task Device_view_keeps_the_site_argument_as_given()
+    {
+        await using var h = await StartAsync();
+        Assert.Equal("Default", (await ViewAsync(h, new() { ["siteId"] = "Default" })).GetProperty("siteId").GetString());
+    }
+
+    [Fact]
+    public async Task Device_view_for_no_match_or_several_is_a_message()
+    {
+        await using var h = await StartAsync();
+        var none = await ViewAsync(h, new() { ["device"] = "toaster" });
+        Assert.Equal("message", none.GetProperty("view").GetString());
+        Assert.Contains("No device matches 'toaster'", none.GetProperty("message").GetString());
+        Assert.False(none.TryGetProperty("candidates", out _));
+        var two = await ViewAsync(h, new() { ["device"] = "AP" });
+        Assert.Equal("message", two.GetProperty("view").GetString());
+        Assert.DoesNotContain("|", two.GetProperty("message").GetString()); // the sentence alone, not the table
+        var c = two.GetProperty("candidates").EnumerateArray().Single(x => x.GetProperty("name").GetString() == "Hall AP");
+        Assert.Equal("192.168.1.20", c.GetProperty("ip").GetString());
+        Assert.Equal("aa:00:00:00:00:01", c.GetProperty("mac").GetString());
+    }
+
+    [Fact]
+    public async Task Device_view_for_a_console_error_is_a_message()
+    {
+        await using var h = await StartAsync();
+        h.Unifi.Route("GET", $"{Classic}/stat/device", "{}", status: 500);
+        var v = await ViewAsync(h);
+        Assert.Equal("message", v.GetProperty("view").GetString());
+        Assert.Contains("500", v.GetProperty("message").GetString());
+    }
+
+    [Fact]
+    public async Task Device_view_for_one_device_has_its_header_facts()
+    {
+        await using var h = await StartAsync();
+        var d = (await ViewAsync(h, new() { ["device"] = "core" })).GetProperty("device");
+        Assert.Equal("Core Switch", d.GetProperty("name").GetString());
+        Assert.Equal("192.168.1.2", d.GetProperty("ip").GetString());
+        Assert.Equal(21.5, d.GetProperty("poeUsedW").GetDouble());
+        Assert.Equal(95, d.GetProperty("poeBudgetW").GetDouble());
+        Assert.False(d.GetProperty("overheating").GetBoolean());
+        var up = d.GetProperty("uplink");
+        Assert.Equal("Gateway", up.GetProperty("deviceName").GetString());
+        Assert.Equal("9", up.GetProperty("remotePort").GetString());
+        Assert.Equal(10000, up.GetProperty("speedMbps").GetInt64());
     }
 
     // --- list_port_forwards -----------------------------------------------------------------------------------------
