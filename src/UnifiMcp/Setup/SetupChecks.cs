@@ -32,7 +32,7 @@ public interface ICertificateProbe
 
 /// <summary>
 /// A TLS handshake and nothing more: the certificate is accepted only to be looked at, and the connection is closed
-/// before a byte of HTTP (or the API key) is sent. The real calls go through <see cref="CertPin"/>, which checks it.
+/// before a byte of HTTP (or the API key) is sent. The real calls go through <see cref="ConsoleTransport"/>, which checks it.
 /// </summary>
 public sealed class TlsCertificateProbe : ICertificateProbe
 {
@@ -62,7 +62,7 @@ public sealed class TlsCertificateProbe : ICertificateProbe
             }, cts.Token);
             watch.Stop();
             if (seen is null) throw new ProbeFailed("The console finished the TLS handshake without a certificate.");
-            using (seen) return new(CertPin.Fingerprint(seen), CertPin.KeyFingerprint(seen), errors, watch.ElapsedMilliseconds);
+            using (seen) return new(ConsoleTransport.CertificateSha256(seen), ConsoleTransport.KeySha256(seen), errors, watch.ElapsedMilliseconds);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
@@ -155,9 +155,10 @@ public sealed class SetupChecks(Settings settings, UnifiClient client, Connector
         catch (ProbeFailed) { return new("certificate", CheckStatus.Blocked, "Waiting for the console to answer."); }
 
         CopyValue[] both = [new("Public key SHA-256", seen.Key), new("Certificate SHA-256", seen.Certificate)];
+        var verdict = ConsoleTransport.Judge(settings, seen.Certificate, seen.Key, seen.Errors);
         if (settings.Trust == CertTrust.Ca)
         {
-            return seen.Errors == SslPolicyErrors.None
+            return verdict == CertificateVerdict.Ca
                 ? new("certificate", CheckStatus.Ok, $"Trusted: a valid chain to a CA this server trusts, issued for {settings.BaseUrl.Host}.",
                     "UNIFI_CERT_TRUST=ca, so renewals need nothing from you.")
                 : new("certificate", CheckStatus.Fail, $"Not trusted ({seen.Errors}).",
@@ -165,8 +166,8 @@ public sealed class SetupChecks(Settings settings, UnifiClient client, Connector
                     BeforeYouStart, both);
         }
 
-        var pins = settings.CertPins();
-        if (pins is null)
+        // No pin and a mistyped one are both refused; the page says which.
+        if (settings.CertPins() is null)
         {
             return settings.CertPinGiven()
                 ? new("certificate", CheckStatus.Fail, "UNIFI_CERT_SHA256 is set, but one of its entries isn't a fingerprint.",
@@ -176,15 +177,16 @@ public sealed class SetupChecks(Settings settings, UnifiClient client, Connector
                     "Below is what the console presents to this server. Before you pin it, confirm it on the console itself (over SSH, as the guide shows), so you are not pinning something in the middle. Then set UNIFI_CERT_SHA256 to the public key's fingerprint and restart the server.",
                     BeforeYouStart, both);
         }
-        if (pins.Contains(seen.Key, StringComparer.OrdinalIgnoreCase))
-            return new("certificate", CheckStatus.Ok, "Matches your pin of the console's public key.");
-        if (pins.Contains(seen.Certificate, StringComparer.OrdinalIgnoreCase))
-            return new("certificate", CheckStatus.Ok, "Matches your pin of the console's certificate.",
+        return verdict switch
+        {
+            CertificateVerdict.KeyPin => new("certificate", CheckStatus.Ok, "Matches your pin of the console's public key."),
+            CertificateVerdict.CertificatePin => new("certificate", CheckStatus.Ok, "Matches your pin of the console's certificate.",
                 "Pinning the public key instead keeps working when the console re-issues its certificate with the same key. Both can be listed, comma separated.",
-                BeforeYouStart, [both[0]]);
-        return new("certificate", CheckStatus.Fail, "Doesn't match your pin.",
-            "The console now presents the fingerprints below. A firmware update or restart can give it a new certificate. Confirm one on the console, then add it to UNIFI_CERT_SHA256 (the old and new can sit side by side, comma separated) and restart the server.",
-            BeforeYouStart, both);
+                BeforeYouStart, [both[0]]),
+            _ => new("certificate", CheckStatus.Fail, "Doesn't match your pin.",
+                "The console now presents the fingerprints below. A firmware update or restart can give it a new certificate. Confirm one on the console, then add it to UNIFI_CERT_SHA256 (the old and new can sit side by side, comma separated) and restart the server.",
+                BeforeYouStart, both),
+        };
     }
 
     private async Task<CheckResult> ApiKeyAsync(CancellationToken ct)

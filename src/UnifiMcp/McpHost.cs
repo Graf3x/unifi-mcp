@@ -38,11 +38,9 @@ public static class McpHost
         // window and the connector's expiry checks all read it.
         builder.Services.TryAddSingleton(TimeProvider.System);
 
-        var pin = new PinState();
-        var handler = unifi ?? CertPin.CreateHandler(settings.CertPins, settings.Trust, pin);
         var catalog = OpenApiCatalog.Load();
         builder.Services.AddSingleton(settings);
-        builder.Services.AddSingleton(new UnifiClient(settings, handler, pin));
+        builder.Services.AddSingleton(new UnifiClient(settings, new ConsoleTransport(settings, unifi)));
         builder.Services.AddSingleton(sp => new ConsoleReads(sp.GetRequiredService<UnifiClient>(), sp.GetRequiredService<TimeProvider>()));
         builder.Services.AddSingleton(catalog);
         // Reads share one tool; each write is its own destructive tool, listed only when writes are on. Registered as

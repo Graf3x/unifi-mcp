@@ -22,6 +22,9 @@ follow [Semantic Versioning](https://semver.org/).
   site used the zone of the first one asked.
 - `device_diagnostics_faq` no longer spends a call of the internal API's budget on the console's time zone, which it
   never shows. Every diagnostic asks for the zone only when it prints times.
+- When several requests are refused at once because the console's certificate doesn't match the pin (or isn't trusted
+  in CA mode), each says which certificate the console presented and where to change the pin. Before, most got a bare
+  "Could not reach the console". A console that hangs up mid-handshake is no longer blamed on its certificate.
 
 ### Changed
 
@@ -40,6 +43,8 @@ follow [Semantic Versioning](https://semver.org/).
   allow-list of path patterns. Throttle and cache are unchanged.
 - A site is found the same way everywhere, by its id, name or internal name, with one lookup. A site UUID the console
   doesn't have now gets "The console has no site" and the list of sites, instead of the console's 404.
+- How a request reaches the console (the key, the timeout, certificate trust and the refusal message) lives in one
+  module, `ConsoleTransport`. The handshake and the setup page's certificate check use the same trust rule.
 
 ## 0.6.1
 
