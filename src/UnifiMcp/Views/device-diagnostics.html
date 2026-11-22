@@ -5,50 +5,297 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Device diagnostics</title>
 <style>
-  body { margin: 0; padding: 12px; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  /* Dark is the default; the script sets data-theme from the host, else from the system. The page paints its own
+     ground, so its text is readable whatever the host puts behind the frame. */
+  :root {
+    --ground: #0F1318; --surface: #171C23; --border: #2A3340; --text: #E6EAF0; --muted: #9AA6B5;
+    --blue: #5AA9FF; --orange: #FFA24A; --red: #FF7A88;
+    color-scheme: dark;
+  }
+  :root[data-theme="light"] {
+    --ground: #F6F8FA; --surface: #FFFFFF; --border: #D5DCE5; --text: #1B2430; --muted: #5B6877;
+    --blue: #1F6FD6; --orange: #B25E00; --red: #C8324A;
+    color-scheme: light;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--ground); }
+  body { padding: 12px; color: var(--text); font: 14px/1.45 var(--font-sans, system-ui, -apple-system, "Segoe UI", sans-serif); }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  button:disabled { cursor: default; opacity: .55; }
+  :focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+  h1 { font-size: 15px; font-weight: 600; margin: 0; overflow-wrap: anywhere; }
   p { margin: 0; }
+  pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 12.5px/1.5 var(--font-mono, ui-monospace, Consolas, monospace); }
+  .muted { color: var(--muted); }
+  .bad { color: var(--red); }
+  .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-bottom: 10px; }
+  .bar .grow { flex: 1 1 200px; min-width: 0; }
+  .action { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; }
+  .action:hover:not(:disabled) { border-color: var(--blue); }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+  .tile { display: flex; flex-direction: column; align-items: flex-start; justify-content: flex-start; width: 100%; text-align: left; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+  .tile:hover:not(:disabled) { border-color: var(--blue); }
+  .tile .name { display: block; font-weight: 600; overflow-wrap: anywhere; }
+  .tile .line { display: block; color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+  .chip { font-size: 11.5px; border: 1px solid currentColor; border-radius: 999px; padding: 0 7px; }
+  .chip.update { color: var(--blue); }
+  .chip.issue { color: var(--red); }
+  .sentence { margin-bottom: 10px; overflow-wrap: anywhere; }
+  #status { margin-top: 10px; color: var(--orange); overflow-wrap: anywhere; }
 </style>
 </head>
 <body>
-<p id="rendered">unifi-mcp view probe: waiting for the host</p>
-<p id="blocks"></p>
-<p id="view"></p>
+<main id="app"><p class="muted">Waiting for the answer…</p></main>
+<p id="status" role="status" hidden></p>
 <script>
-/* Probe: proves a host renders a view from this server and hands it the tool result. Replaced by the real view. */
-(function () {
+/* mcp-app client: reusable, start */
+/* The view's side of MCP Apps (io.modelcontextprotocol/ui, 2026-01-26): JSON-RPC over postMessage with the host that
+   frames this page. It knows nothing about what the view shows. */
+function createApp(info) {
   "use strict";
-  var INITIALIZE = 1;
+  var nextId = 1, pending = {}, context = null, lastSize = "";
+  var handlers = { result: [], input: [], context: [] };
 
   function post(message) { window.parent.postMessage(message, "*"); }
-  function line(id, text) { document.getElementById(id).textContent = text; }
+  function notify(method, params) { post({ jsonrpc: "2.0", method: method, params: params }); }
+  function request(method, params) {
+    return new Promise(function (resolve, reject) {
+      var id = nextId++;
+      pending[id] = { resolve: resolve, reject: reject };
+      post({ jsonrpc: "2.0", id: id, method: method, params: params });
+    });
+  }
+  function emit(kind, value) { handlers[kind].forEach(function (fn) { fn(value); }); }
+  function merge(over) {
+    var merged = {};
+    [context, over].forEach(function (part) { Object.keys(part || {}).forEach(function (key) { merged[key] = part[key]; }); });
+    context = merged;
+    emit("context", context);
+  }
   function reportSize() {
-    post({ jsonrpc: "2.0", method: "ui/notifications/size-changed",
-           params: { width: document.body.scrollWidth, height: document.body.scrollHeight } });
+    var width = document.body.offsetWidth, height = document.body.offsetHeight;
+    if (width + "x" + height === lastSize) return;
+    lastSize = width + "x" + height;
+    notify("ui/notifications/size-changed", { width: width, height: height });
   }
 
   window.addEventListener("message", function (event) {
     if (event.source !== window.parent) return;
     var message = event.data;
     if (!message || message.jsonrpc !== "2.0") return;
-    if (message.id === INITIALIZE && !message.method) {
-      post({ jsonrpc: "2.0", method: "ui/notifications/initialized" });
-      line("rendered", "unifi-mcp view probe: rendered, waiting for the tool result");
-      reportSize();
-      return;
+    if (message.method === undefined) {
+      var waiting = pending[message.id];
+      if (!waiting) return;
+      delete pending[message.id];
+      if (message.error) waiting.reject(new Error(typeof message.error.message === "string" ? message.error.message : "The host refused."));
+      else waiting.resolve(message.result);
     }
-    if (message.method === "ui/notifications/tool-result") {
-      var result = message.params || {};
-      var blocks = Array.isArray(result.content) ? result.content.filter(function (b) { return b && b.type === "text"; }) : [];
-      var model = result._meta && result._meta["unifi-network/view"];
-      line("rendered", "unifi-mcp view probe: rendered");
-      line("blocks", "text blocks: " + blocks.length);
-      line("view", "_meta view: " + (model && typeof model.view === "string" ? model.view : "missing"));
-      reportSize();
-    }
+    else if (message.method === "ui/notifications/tool-result") emit("result", message.params || {});
+    else if (message.method === "ui/notifications/tool-input") emit("input", (message.params && message.params.arguments) || {});
+    else if (message.method === "ui/notifications/host-context-changed") merge(message.params);
+    else if (message.id !== undefined) post({ jsonrpc: "2.0", id: message.id, result: {} }); // a request from the host, such as a ping
   });
 
-  post({ jsonrpc: "2.0", id: INITIALIZE, method: "ui/initialize",
-         params: { protocolVersion: "2026-01-26", appInfo: { name: "unifi-device-diagnostics", version: "0" }, appCapabilities: {} } });
+  var ready = request("ui/initialize", { protocolVersion: "2026-01-26", appInfo: info, appCapabilities: {} }).then(function (result) {
+    notify("ui/notifications/initialized");
+    merge(result && result.hostContext);
+    if (window.ResizeObserver) new ResizeObserver(reportSize).observe(document.body);
+    reportSize();
+    return result;
+  });
+  ready.catch(function () {}); // a host that refuses the handshake leaves the page as it is
+
+  return {
+    ready: ready,
+    onResult: function (fn) { handlers.result.push(fn); },
+    onInput: function (fn) { handlers.input.push(fn); },
+    onContext: function (fn) { handlers.context.push(fn); if (context) fn(context); },
+    callTool: function (name, args) { return request("tools/call", { name: name, arguments: args }); },
+    sendMessage: function (text) { return request("ui/message", { role: "user", content: { type: "text", text: text } }); },
+    updateContext: function (text) { return request("ui/update-model-context", { content: [{ type: "text", text: text }] }).catch(function () {}); },
+  };
+}
+/* mcp-app client: reusable, end */
+
+/* The device diagnostics view. Every value from a result is written as text, never as markup. */
+(function () {
+  "use strict";
+  var TOOL = "device_diagnostics_faq", META_KEY = "unifi-network/view";
+  var app = createApp({ name: "unifi-device-diagnostics", version: "1" });
+  var root = document.getElementById("app"), statusLine = document.getElementById("status");
+  var state = { model: null, devicesModel: null, selectedPort: null, status: "" };
+
+  function el(tag, className, text) {
+    var node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined && text !== null) node.textContent = String(text);
+    return node;
+  }
+  function known(value) { return typeof value === "number" && isFinite(value); }
+  function list(value) { return Array.isArray(value) ? value : []; }
+  function duration(seconds) {
+    if (!known(seconds) || seconds < 0) return "?";
+    var days = Math.floor(seconds / 86400), hours = Math.floor(seconds % 86400 / 3600), minutes = Math.floor(seconds % 3600 / 60);
+    return days >= 1 ? days + " d " + hours + " h" : hours >= 1 ? hours + " h " + minutes + " min" : minutes + " min";
+  }
+
+  /* The view's data rides in the result's _meta, where the model does not see it. */
+  function modelOf(result) {
+    var model = result && result._meta && result._meta[META_KEY];
+    return model && (model.view === "devices" || model.view === "device" || model.view === "message") ? model : null;
+  }
+  function textOf(result) {
+    return list(result && result.content).filter(function (block) { return block && block.type === "text" && typeof block.text === "string"; })
+      .map(function (block) { return block.text; }).join("\n\n");
+  }
+  function setStatus(text) {
+    state.status = text ? String(text).slice(0, 400) : "";
+    statusLine.textContent = state.status;
+    statusLine.hidden = !state.status;
+  }
+  function replace(nodes) {
+    root.textContent = "";
+    nodes.forEach(function (node) { root.appendChild(node); });
+  }
+
+  /* --- theme ------------------------------------------------------------------------------------------------- */
+
+  var hostContext = null;
+  var systemLight = window.matchMedia ? window.matchMedia("(prefers-color-scheme: light)") : null;
+  function applyTheme() {
+    var asked = hostContext && hostContext.theme;
+    var theme = asked === "light" || asked === "dark" ? asked : systemLight && systemLight.matches ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", theme);
+    var variables = (hostContext && hostContext.styles && hostContext.styles.variables) || {};
+    ["--font-sans", "--font-mono"].forEach(function (name) {
+      var value = variables[name];
+      if (typeof value === "string" && value && value.indexOf("(") < 0) document.documentElement.style.setProperty(name, value); // names only, nothing that loads
+    });
+  }
+  if (systemLight && systemLight.addEventListener) systemLight.addEventListener("change", applyTheme);
+  applyTheme();
+  app.onContext(function (context) { hostContext = context; applyTheme(); });
+
+  /* --- calls the view makes itself ----------------------------------------------------------------------------- */
+
+  /* Opens or refreshes one device. Only a device answer replaces the screen; a message or a refusal leaves the
+     screen as it is and says why underneath. */
+  function open(mac, button) {
+    var args = { device: mac };
+    if (state.model && state.model.siteId) args.siteId = state.model.siteId;
+    if (button) button.disabled = true;
+    setStatus("");
+    return app.callTool(TOOL, args).then(function (result) {
+      var model = modelOf(result);
+      if (model && model.view === "device" && model.device) {
+        if (state.model && state.model.view !== "device") state.devicesModel = state.model;
+        show(model);
+      }
+      else setStatus((model && model.message) || textOf(result) || "The answer had nothing to show.");
+    }, function (error) {
+      setStatus("Could not refresh: " + (error && error.message ? error.message.replace(/[.\s]+$/, "") : "the host refused the call") + ".");
+    }).then(function () { if (button && button.isConnected) button.disabled = false; });
+  }
+
+  /* --- screens ------------------------------------------------------------------------------------------------- */
+
+  function tile(name, lines, chips, mac) {
+    var button = el("button", "tile");
+    button.type = "button";
+    button.appendChild(el("span", "name", name || "(unnamed)"));
+    lines.forEach(function (line) { button.appendChild(line); });
+    if (chips.length > 0) {
+      var row = el("span", "chips");
+      chips.forEach(function (chip) { row.appendChild(chip); });
+      button.appendChild(row);
+    }
+    button.addEventListener("click", function () { open(mac, button); });
+    return button;
+  }
+
+  function deviceTile(d) {
+    var first = el("span", "line");
+    first.appendChild(document.createTextNode((d.model || "?") + " · "));
+    first.appendChild(el("span", d.state === "online" ? "" : "bad", d.state));
+    var facts = [];
+    if (known(d.uptimeSeconds)) facts.push("up " + duration(d.uptimeSeconds));
+    if (known(d.cpuPct)) facts.push("CPU " + d.cpuPct + " %");
+    if (known(d.memoryPct)) facts.push("memory " + d.memoryPct + " %");
+    if (known(d.temperatureC)) facts.push(d.temperatureC + " °C");
+    var lines = [first];
+    if (facts.length > 0) lines.push(el("span", "line", facts.join(" · ")));
+    var chips = [];
+    if (d.updateTo) chips.push(el("span", "chip update", "update available"));
+    list(d.issues).forEach(function (issue) { chips.push(el("span", "chip issue", issue)); });
+    return tile(d.name, lines, chips, d.mac);
+  }
+
+  function renderDevices(model) {
+    var grid = el("div", "tiles");
+    list(model.devices).forEach(function (d) { grid.appendChild(deviceTile(d)); });
+    replace([grid]);
+  }
+
+  function renderMessage(model) {
+    var nodes = [el("p", "sentence", model.message || "")];
+    var candidates = list(model.candidates);
+    if (candidates.length > 0) {
+      var grid = el("div", "tiles");
+      candidates.forEach(function (c) { grid.appendChild(tile(c.name, [el("span", "line", c.ip || ""), el("span", "line", c.mac || "")], [], c.mac)); });
+      nodes.push(grid);
+    }
+    replace(nodes);
+  }
+
+  function deviceHeader(d) {
+    var bar = el("div", "bar");
+    if (state.devicesModel) {
+      var back = el("button", "action", "Back");
+      back.type = "button";
+      back.addEventListener("click", function () { var earlier = state.devicesModel; state.devicesModel = null; state.selectedPort = null; show(earlier); });
+      bar.appendChild(back);
+    }
+    var title = el("div", "grow");
+    title.appendChild(el("h1", "", d.name || "(unnamed)"));
+    var facts = el("p", "muted");
+    facts.appendChild(document.createTextNode((d.model || "?") + " · "));
+    facts.appendChild(el("span", d.state === "online" ? "" : "bad", d.state));
+    var more = [];
+    if (known(d.poeBudgetW)) more.push("PoE " + (known(d.poeUsedW) ? d.poeUsedW : "?") + " of " + d.poeBudgetW + " W");
+    if (known(d.uptimeSeconds)) more.push("up " + duration(d.uptimeSeconds));
+    if (more.length > 0) facts.appendChild(document.createTextNode(" · " + more.join(" · ")));
+    title.appendChild(facts);
+    bar.appendChild(title);
+    return bar;
+  }
+
+  function renderDevice(model) {
+    replace([deviceHeader(model.device)]);
+  }
+
+  function show(model) {
+    state.model = model;
+    setStatus("");
+    if (model.view === "devices") renderDevices(model);
+    else if (model.view === "device" && model.device) renderDevice(model);
+    else renderMessage(model);
+  }
+
+  function showText(text) {
+    state.model = null;
+    setStatus("");
+    replace([el("pre", "", text || "The answer had no text.")]);
+  }
+
+  /* A result the host hands over starts afresh: nothing to go back to, nothing selected. */
+  app.onResult(function (result) {
+    state.devicesModel = null;
+    state.selectedPort = null;
+    var model = modelOf(result);
+    if (model) show(model);
+    else showText(textOf(result));
+  });
 })();
 </script>
 </body>
