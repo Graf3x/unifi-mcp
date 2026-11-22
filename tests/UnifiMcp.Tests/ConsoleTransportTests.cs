@@ -60,11 +60,39 @@ public sealed class ConsoleTransportTests : IDisposable
     }
 
     [Fact]
+    public async Task Every_one_of_many_refused_requests_at_once_names_the_certificate()
+    {
+        using var presented = LoopbackConsole.NewCertificate();
+        using var pinned = LoopbackConsole.NewCertificate();
+        await using var console = await LoopbackConsole.StartAsync(presented);
+        var transport = new ConsoleTransport(For(console, LoopbackConsole.CertificateSha256(pinned)));
+
+        var errors = await Task.WhenAll(Enumerable.Range(0, 16).Select(_ => Assert.ThrowsAsync<UnifiError>(() => Get(transport))));
+        Assert.All(errors, e => Assert.Contains(LoopbackConsole.CertificateSha256(presented), e.Message));
+    }
+
+    [Fact]
+    public async Task A_console_that_hangs_up_after_a_refusal_is_not_blamed_on_the_certificate()
+    {
+        using var presented = LoopbackConsole.NewCertificate();
+        using var pinned = LoopbackConsole.NewCertificate();
+        await using var console = await LoopbackConsole.StartAsync(presented);
+        var transport = new ConsoleTransport(For(console, LoopbackConsole.CertificateSha256(pinned)));
+        await Assert.ThrowsAsync<UnifiError>(() => Get(transport));
+
+        console.HangUp = true;
+        var ex = await Assert.ThrowsAsync<UnifiError>(() => Get(transport));
+        Assert.Contains("Could not reach the console", ex.Message);
+        Assert.DoesNotContain(LoopbackConsole.CertificateSha256(presented), ex.Message);
+    }
+
+    [Fact]
     public async Task Ca_mode_refuses_a_self_signed_certificate_and_says_why()
     {
         using var cert = LoopbackConsole.NewCertificate();
         await using var console = await LoopbackConsole.StartAsync(cert);
-        var ex = await Assert.ThrowsAsync<UnifiError>(() => Get(new ConsoleTransport(For(console, pin: null, CertTrust.Ca))));
+        // A pin that matches changes nothing: CA mode does not read pins.
+        var ex = await Assert.ThrowsAsync<UnifiError>(() => Get(new ConsoleTransport(For(console, LoopbackConsole.CertificateSha256(cert), CertTrust.Ca))));
         Assert.Contains("not trusted (", ex.Message);
         Assert.Contains("RemoteCertificateChainErrors", ex.Message);
         Assert.Contains("UNIFI_CERT_TRUST=ca", ex.Message);

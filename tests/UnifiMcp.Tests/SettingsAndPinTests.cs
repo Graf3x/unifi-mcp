@@ -302,45 +302,4 @@ public class CertPinTests
         using var current = NewCert();
         Assert.True(CertPin.Matches(current, [CertPin.Fingerprint(old), CertPin.Fingerprint(current)]));
     }
-
-    [Fact]
-    public void Ca_mode_accepts_only_a_certificate_with_no_policy_errors_and_ignores_pins()
-    {
-        using var cert = NewCert();
-        var state = new PinState();
-        using var handler = CertPin.CreateHandler(() => [CertPin.Fingerprint(cert)], CertTrust.Ca, state);
-        var check = handler.SslOptions.RemoteCertificateValidationCallback!;
-        Assert.True(check(this, cert, null, System.Net.Security.SslPolicyErrors.None));
-        Assert.False(check(this, cert, null, System.Net.Security.SslPolicyErrors.RemoteCertificateNameMismatch));
-        Assert.Equal(System.Net.Security.SslPolicyErrors.RemoteCertificateNameMismatch, state.Rejected!.Errors);
-        Assert.False(check(this, null, null, System.Net.Security.SslPolicyErrors.None));
-    }
-
-    [Fact]
-    public void Handler_refuses_a_certificate_off_the_pin_and_remembers_what_it_saw()
-    {
-        using var presented = NewCert();
-        using var pinned = NewCert();
-        var state = new PinState();
-        using var handler = CertPin.CreateHandler(() => [CertPin.Fingerprint(pinned)], CertTrust.Pin, state);
-        var ok = handler.SslOptions.RemoteCertificateValidationCallback!(this, presented, null, System.Net.Security.SslPolicyErrors.RemoteCertificateChainErrors);
-        Assert.False(ok);
-        Assert.Equal(new RejectedCertificate(CertPin.Fingerprint(presented), CertPin.KeyFingerprint(presented), System.Net.Security.SslPolicyErrors.RemoteCertificateChainErrors), state.Rejected);
-    }
-
-    [Fact]
-    public void Handler_accepts_the_pinned_self_signed_certificate_despite_chain_errors()
-    {
-        using var cert = NewCert();
-        using var handler = CertPin.CreateHandler(() => [CertPin.Fingerprint(cert)], CertTrust.Pin, new PinState());
-        Assert.True(handler.SslOptions.RemoteCertificateValidationCallback!(this, cert, null, System.Net.Security.SslPolicyErrors.RemoteCertificateChainErrors));
-    }
-
-    [Fact]
-    public void Handler_never_follows_redirects_or_uses_a_proxy()
-    {
-        using var handler = CertPin.CreateHandler(() => null, CertTrust.Pin, new PinState());
-        Assert.False(handler.AllowAutoRedirect);
-        Assert.False(handler.UseProxy);
-    }
 }

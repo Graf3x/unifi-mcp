@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Net.Security;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
@@ -20,22 +19,7 @@ public sealed record UnifiResponse(int Status, string Body)
 /// <summary>A site on the console: its id (the Integration API's name for it), its internal name (the Internal API's) and its display name.</summary>
 public sealed record Site(string Id, string? Reference, string Name);
 
-/// <summary>A certificate the console presented and the server refused: its fingerprints and, in CA mode, why.</summary>
-public sealed record RejectedCertificate(string Certificate, string Key, SslPolicyErrors Errors = SslPolicyErrors.None);
-
-/// <summary>The last certificate refused, for a useful error.</summary>
-public sealed class PinState
-{
-    public RejectedCertificate? Rejected { get; set; }
-}
-
-/// <summary>
-/// TLS to the console. Its certificate is usually self-signed, so by default it is pinned: a pin is the SHA-256 of the
-/// certificate's DER or of its public key (SubjectPublicKeyInfo, which survives a re-issued certificate that keeps its
-/// key), and several may be listed. With no pin nothing matches, so verification cannot be off. With
-/// UNIFI_CERT_TRUST=ca the usual chain and host-name checks apply instead. Redirects are never followed, so the key
-/// cannot be sent elsewhere.
-/// </summary>
+/// <summary>A certificate's pins: the SHA-256 of its DER and of its public key. <see cref="ConsoleTransport"/> checks them.</summary>
 public static class CertPin
 {
     public static string Fingerprint(X509Certificate cert) => Convert.ToHexString(SHA256.HashData(cert.GetRawCertData()));
@@ -54,21 +38,6 @@ public static class CertPin
         var keyPin = KeyFingerprint(cert);
         return pins.Any(p => string.Equals(p, certPin, StringComparison.OrdinalIgnoreCase) || string.Equals(p, keyPin, StringComparison.OrdinalIgnoreCase));
     }
-
-    public static SocketsHttpHandler CreateHandler(Func<IReadOnlyCollection<string>?> pins, CertTrust trust, PinState state) => new()
-    {
-        AllowAutoRedirect = false,
-        UseProxy = false,
-        SslOptions =
-        {
-            RemoteCertificateValidationCallback = (_, cert, _, errors) =>
-            {
-                var ok = trust == CertTrust.Ca ? cert is not null && errors == SslPolicyErrors.None : Matches(cert, pins());
-                if (!ok && cert is not null) state.Rejected = new(Fingerprint(cert), KeyFingerprint(cert), errors);
-                return ok;
-            },
-        },
-    };
 }
 
 /// <summary>

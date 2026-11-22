@@ -47,22 +47,40 @@ public sealed class LoopbackConsole : IAsyncDisposable
     /// <summary>The SHA-256 of the certificate's public key (SubjectPublicKeyInfo).</summary>
     public static string KeySha256(X509Certificate2 cert) => Convert.ToHexString(SHA256.HashData(cert.PublicKey.ExportSubjectPublicKeyInfo()));
 
+    /// <summary>While true, each new connection is dropped before the TLS handshake finishes: a failure that is no refusal.</summary>
+    public bool HangUp { get; set; }
+
     public static async Task<LoopbackConsole> StartAsync(X509Certificate2 certificate)
     {
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { Args = [] });
         builder.Logging.ClearProviders();
-        builder.WebHost.UseKestrel(o => o.Listen(IPAddress.Loopback, 0, l => l.UseHttps(certificate)));
+        LoopbackConsole? console = null;
+        builder.WebHost.UseKestrel(o => o.Listen(IPAddress.Loopback, 0, l =>
+        {
+            l.Use(next => connection =>
+            {
+                if (console!.HangUp)
+                {
+                    connection.Abort();
+                    return Task.CompletedTask;
+                }
+                return next(connection);
+            });
+            l.UseHttps(certificate);
+        }));
         var app = builder.Build();
         var keys = new List<string?>();
         app.MapGet(FakeUnifi.Prefix + "/v1/info", (HttpContext c) =>
         {
             lock (keys) keys.Add(c.Request.Headers["X-API-Key"].SingleOrDefault());
+            // No keep-alive, so every request makes its own handshake.
+            c.Response.Headers.Connection = "close";
             return Results.Text("""{"applicationVersion":"11.0.97"}""", "application/json");
         });
         app.MapGet(FakeUnifi.Prefix + "/v1/moved", () => Results.Redirect("https://example.invalid/elsewhere"));
         await app.StartAsync();
         var address = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single();
-        return new LoopbackConsole(app, keys, new Uri(address));
+        return console = new LoopbackConsole(app, keys, new Uri(address));
     }
 
     public async ValueTask DisposeAsync()
