@@ -9,12 +9,12 @@
      ground, so its text is readable whatever the host puts behind the frame. */
   :root {
     --ground: #0F1318; --surface: #171C23; --border: #2A3340; --text: #E6EAF0; --muted: #9AA6B5;
-    --blue: #5AA9FF; --orange: #FFA24A; --red: #FF7A88;
+    --blue: #5AA9FF; --orange: #FFA24A; --red: #FF7A88; --on: #0F1318;
     color-scheme: dark;
   }
   :root[data-theme="light"] {
     --ground: #F6F8FA; --surface: #FFFFFF; --border: #D5DCE5; --text: #1B2430; --muted: #5B6877;
-    --blue: #1F6FD6; --orange: #B25E00; --red: #C8324A;
+    --blue: #1F6FD6; --orange: #B25E00; --red: #C8324A; --on: #FFFFFF;
     color-scheme: light;
   }
   * { box-sizing: border-box; }
@@ -42,6 +42,34 @@
   .chip.update { color: var(--blue); }
   .chip.issue { color: var(--red); }
   .sentence { margin-bottom: 10px; overflow-wrap: anywhere; }
+
+  /* The faceplate. A port's look: up (blue), slow (orange, marked ~), fault (pink-red, marked !), no link (outline),
+     disabled (dimmed). Fault and slow carry a mark so colour is not the only signal. */
+  .face { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px 18px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+  .block { display: grid; grid-auto-flow: column; grid-template-rows: repeat(2, auto); gap: 6px 5px; }
+  .block.row { grid-template-rows: auto; }
+  .block.others { display: flex; flex-wrap: wrap; }
+  .port { position: relative; width: 34px; height: 30px; padding: 0; border: 1px solid var(--muted); border-radius: 5px; background: transparent; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .others .port { width: auto; min-width: 34px; max-width: 120px; padding: 0 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .look-up { background: var(--blue); border-color: var(--blue); color: var(--on); }
+  .look-slow { background: var(--orange); border-color: var(--orange); color: var(--on); }
+  .look-fault { background: var(--red); border-color: var(--red); color: var(--on); }
+  .look-off { border-style: dashed; opacity: .45; }
+  .port[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--text); }
+  .port .mark { position: absolute; top: -1px; right: 3px; font-size: 11px; font-weight: 700; line-height: 1.1; }
+  .port.poe::after { content: ""; position: absolute; left: 6px; right: 6px; bottom: 2px; height: 2px; border-radius: 1px; background: currentColor; }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 8px; color: var(--muted); font-size: 12px; }
+  .legend > span { display: inline-flex; align-items: center; }
+  .swatch { flex: none; width: 12px; height: 12px; margin-right: 5px; border: 1px solid var(--muted); border-radius: 3px; }
+  .swatch.bar { height: 3px; width: 14px; border: 0; border-radius: 1px; background: var(--muted); }
+  .panel { margin-top: 12px; }
+  .panel h2 { font-size: 14px; font-weight: 600; margin: 0 0 6px; overflow-wrap: anywhere; }
+  .facts { display: grid; grid-template-columns: max-content 1fr; gap: 2px 14px; margin: 0; }
+  .facts dt { color: var(--muted); }
+  .facts dd { margin: 0; overflow-wrap: anywhere; }
+  .small { margin-top: 6px; color: var(--muted); font-size: 12.5px; }
+  .note { margin-top: 6px; overflow-wrap: anywhere; }
+  .buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
   #status { margin-top: 10px; color: var(--orange); overflow-wrap: anywhere; }
 </style>
 </head>
@@ -253,7 +281,13 @@ function createApp(info) {
     if (state.devicesModel) {
       var back = el("button", "action", "Back");
       back.type = "button";
-      back.addEventListener("click", function () { var earlier = state.devicesModel; state.devicesModel = null; state.selectedPort = null; show(earlier); });
+      back.addEventListener("click", function () {
+        var earlier = state.devicesModel;
+        state.devicesModel = null;
+        state.selectedPort = null;
+        show(earlier);
+        app.updateContext("The user is looking at the device list in the device diagnostics view.");
+      });
       bar.appendChild(back);
     }
     var title = el("div", "grow");
@@ -267,11 +301,182 @@ function createApp(info) {
     if (more.length > 0) facts.appendChild(document.createTextNode(" · " + more.join(" · ")));
     title.appendChild(facts);
     bar.appendChild(title);
+    var refresh = el("button", "action", "Refresh");
+    refresh.type = "button";
+    refresh.id = "refresh";
+    refresh.disabled = refreshing;
+    refresh.addEventListener("click", function () {
+      // The console keeps an answer for 10 seconds, so a sooner refresh would only show the same one.
+      refreshing = true;
+      refresh.disabled = true;
+      open(d.mac, null).then(function () {
+        setTimeout(function () {
+          refreshing = false;
+          var current = document.getElementById("refresh");
+          if (current) current.disabled = false;
+        }, 10000);
+      });
+    });
+    bar.appendChild(refresh);
     return bar;
   }
 
+  /* --- the faceplate --------------------------------------------------------------------------------------------- */
+
+  var FAULTS = ["errors", "flapping", "half duplex"];
+  var LOOKS = { up: "normal", slow: "slow", fault: "fault", nolink: "no link", off: "disabled" };
+  var refreshing = false;
+
+  function look(port) {
+    var flags = list(port.flags);
+    if (port.state === "disabled") return "off";
+    if (flags.some(function (flag) { return FAULTS.indexOf(flag) >= 0; })) return "fault";
+    if (flags.indexOf("slow link") >= 0) return "slow";
+    return port.state === "up" ? "up" : "nolink";
+  }
+  function stateWord(port) { return port.state === "up" ? "up" : port.state === "disabled" ? "disabled" : "no link"; }
+  function speedLabel(mbps) { return !known(mbps) ? "?" : mbps < 1000 ? mbps + " Mb" : mbps / 1000 + " GbE"; }
+  function count(value) { return (known(value) ? value : 0).toLocaleString(); }
+  /* Names the owner gave (a device, a port) go into chat messages on one line; names a client gave itself never do. */
+  function oneLine(value) { return String(value || "").replace(/[\s"]+/g, " ").trim().slice(0, 60); }
+  function isMac(value) { return typeof value === "string" && /^[0-9a-f]{2}([:-][0-9a-f]{2}){5}$/i.test(value); }
+
+  function tellModel(device, port) {
+    app.updateContext("The user is looking at " + oneLine(device.name) + " (" + device.mac + ") in the device diagnostics view" +
+      (port ? ", port " + port.index + " (\"" + oneLine(port.name) + "\"; " + stateWord(port) +
+              (list(port.flags).length > 0 ? "; " + list(port.flags).join(", ") : "") + ")." : "."));
+  }
+
+  function whyMessage(device, port) {
+    var link = port.state === "up"
+      ? "It is linked at " + (known(port.speedMbps) ? port.speedMbps : "?") + " Mb " + (port.duplex || "?") + " duplex" +
+        (known(port.maxSpeedMbps) ? ", port maximum " + port.maxSpeedMbps + " Mb" : "")
+      : "It has no link at the moment";
+    return "Why is port " + port.index + " (\"" + oneLine(port.name) + "\") on " + oneLine(device.name) + " (" + device.mac + ") flagged " +
+      list(port.flags).join(", ") + "? " + link + ", with " + (port.rxErrors || 0) + " receive errors, " + (port.txErrors || 0) + " send errors, " +
+      (port.drops || 0) + " drops and " + (port.linkDowns || 0) + " link downs since the device restarted. What is the likely cause?";
+  }
+
+  function say(text) {
+    setStatus("");
+    app.sendMessage(text).then(function (result) {
+      if (result && result.isError) setStatus("Claude did not take the message.");
+    }, function () { setStatus("Claude did not take the message."); });
+  }
+
+  function fact(facts, name, value) {
+    facts.appendChild(el("dt", "", name));
+    facts.appendChild(el("dd", "", value));
+  }
+
+  function renderPanel(panel, device, port) {
+    panel.textContent = "";
+    if (!port) {
+      panel.appendChild(el("p", "muted", "Pick a port to see its details."));
+      return;
+    }
+    var named = port.name && port.name !== "Port " + port.index; // the console's default name says nothing new
+    panel.appendChild(el("h2", "", "Port " + port.index + (named ? " · " + port.name : "")));
+    var facts = el("dl", "facts");
+    fact(facts, "Link", port.state === "up"
+      ? speedLabel(port.speedMbps) + ", " + (port.duplex || "?") + " duplex" + (known(port.maxSpeedMbps) ? " (port can do " + speedLabel(port.maxSpeedMbps) + ")" : "")
+      : stateWord(port));
+    var connected = list(port.connected), total = known(port.connectedCount) ? port.connectedCount : connected.length;
+    fact(facts, "Connected", connected.length === 0 ? "nothing seen"
+      : connected.map(function (c) { return c.name; }).join(", ") + (total > connected.length ? " +" + (total - connected.length) + " more" : ""));
+    fact(facts, "PoE", known(port.poeW) ? port.poeW + " W" : "off");
+    fact(facts, "Errors", count(port.rxErrors) + " received, " + count(port.txErrors) + " sent");
+    fact(facts, "Drops", count(port.drops));
+    fact(facts, "Link downs", count(port.linkDowns));
+    panel.appendChild(facts);
+    panel.appendChild(el("p", "small", "Counters run since the device restarted" + (known(device.uptimeSeconds) ? ", " + duration(device.uptimeSeconds) + " ago." : ".")));
+    if (port.note) panel.appendChild(el("p", "note", port.note));
+
+    var buttons = el("div", "buttons");
+    if (list(port.flags).length > 0) {
+      var why = el("button", "action", "Ask Claude why");
+      why.type = "button";
+      why.addEventListener("click", function () { say(whyMessage(device, port)); });
+      buttons.appendChild(why);
+    }
+    if (total === 1 && connected.length === 1 && connected[0].kind === "client" && isMac(connected[0].mac)) {
+      var trace = el("button", "action", "Trace its path");
+      trace.type = "button";
+      trace.addEventListener("click", function () { say("Trace the network path of the client with MAC " + connected[0].mac + "."); });
+      buttons.appendChild(trace);
+    }
+    if (buttons.childNodes.length > 0) panel.appendChild(buttons);
+  }
+
   function renderDevice(model) {
-    replace([deviceHeader(model.device)]);
+    var device = model.device, ports = list(device.ports);
+    var nodes = [deviceHeader(device)];
+    if (ports.length === 0) {
+      state.selectedPort = null;
+      replace(nodes);
+      tellModel(device, null);
+      return;
+    }
+
+    var panel = el("section", "panel");
+    panel.setAttribute("aria-label", "Port details");
+    var buttons = [];
+    function select(port, announce) {
+      state.selectedPort = port ? port.index : null;
+      buttons.forEach(function (entry) { entry.button.setAttribute("aria-pressed", entry.port === port ? "true" : "false"); });
+      renderPanel(panel, device, port);
+      if (announce) tellModel(device, port);
+    }
+    function portButton(port, label) {
+      var kind = look(port), flags = list(port.flags);
+      var button = el("button", "port look-" + kind + (port.poeW > 0 ? " poe" : ""), label);
+      button.type = "button";
+      button.setAttribute("aria-label", "Port " + port.index + ", " + (port.name || "") + ", " + stateWord(port) + (flags.length > 0 ? ", " + flags.join(", ") : ""));
+      if (kind === "fault" || kind === "slow") {
+        var mark = el("span", "mark", kind === "fault" ? "!" : "~");
+        mark.setAttribute("aria-hidden", "true");
+        button.appendChild(mark);
+      }
+      button.addEventListener("click", function () { select(port, true); });
+      buttons.push({ port: port, button: button });
+      return button;
+    }
+
+    /* Copper in blocks of six columns, odd numbers on top; five or fewer in one row; other connectors apart. */
+    var face = el("div", "face");
+    var copper = ports.filter(function (p) { return !p.connector || p.connector === "RJ45"; });
+    var others = ports.filter(function (p) { return p.connector && p.connector !== "RJ45"; });
+    for (var start = 0; start < copper.length; start += 12) {
+      var block = el("div", copper.length <= 5 ? "block row" : "block");
+      copper.slice(start, start + 12).forEach(function (p) { block.appendChild(portButton(p, p.index)); });
+      face.appendChild(block);
+    }
+    if (others.length > 0) {
+      var apart = el("div", "block others");
+      others.forEach(function (p) { apart.appendChild(portButton(p, p.name || p.index)); });
+      face.appendChild(apart);
+    }
+    nodes.push(face);
+
+    var legend = el("p", "legend");
+    Object.keys(LOOKS).forEach(function (kind) {
+      var item = el("span", "");
+      item.appendChild(el("span", "swatch look-" + kind));
+      item.appendChild(document.createTextNode(LOOKS[kind]));
+      legend.appendChild(item);
+    });
+    var poe = el("span", "");
+    poe.appendChild(el("span", "swatch bar"));
+    poe.appendChild(document.createTextNode("delivering PoE"));
+    legend.appendChild(poe);
+    nodes.push(legend);
+    nodes.push(panel);
+    replace(nodes);
+
+    /* Keep the port that was selected; else the first fault; else the first slow port; else none. */
+    function first(kind) { return ports.filter(function (p) { return look(p) === kind; })[0]; }
+    var chosen = ports.filter(function (p) { return p.index === state.selectedPort; })[0] || first("fault") || first("slow") || null;
+    select(chosen, true);
   }
 
   function show(model) {
