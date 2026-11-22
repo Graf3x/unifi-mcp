@@ -22,7 +22,8 @@ public sealed class ConsoleReadsTests : IDisposable
         _fake.WithSite();
         _fake.Route("GET", $"{Classic}/stat/health", """{"meta":{"rc":"ok"},"data":[{"subsystem":"www"}]}""");
         _fake.Route("POST", $"{V2}/system-log/all", """{"data":[],"total_element_count":0,"total_page_count":0}""");
-        _client = new UnifiClient(Harness.NewSettings(_dir), _fake, new PinState());
+        var settings = Harness.NewSettings(_dir);
+        _client = new UnifiClient(settings, new ConsoleTransport(settings, _fake));
         _reads = new ConsoleReads(_client, _time);
     }
 

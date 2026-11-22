@@ -1,3 +1,4 @@
+using System.Net.Security;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 
@@ -239,108 +240,66 @@ public class SettingsTests
     }
 }
 
-public class CertPinTests
+/// <summary><see cref="ConsoleTransport.Judge"/>: the one rule for trusting the console's certificate, at the handshake and on the setup page.</summary>
+public class TrustTests
 {
-    private static X509Certificate2 NewCert()
+    private const string A = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    private const string B = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+    private const string C = "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC";
+
+    /// <summary>Pins from the environment only; the default pin file does not exist where tests run.</summary>
+    private static Settings Pins(string? pins, CertTrust trust = CertTrust.Pin) =>
+        new() { CertSha256 = pins, CertPinFile = Path.Combine(Path.GetTempPath(), "no-such-pin-" + Guid.NewGuid()), Trust = trust };
+
+    private static CertificateVerdict Judge(Settings s, string certificate, string key, SslPolicyErrors errors = SslPolicyErrors.RemoteCertificateChainErrors) =>
+        ConsoleTransport.Judge(s, certificate, key, errors);
+
+    [Fact]
+    public void A_pinned_certificate_is_trusted_despite_the_chain_errors_of_a_self_signed_one() =>
+        Assert.Equal(CertificateVerdict.CertificatePin, Judge(Pins(A), certificate: A, key: B));
+
+    [Fact]
+    public void A_pinned_public_key_is_trusted() =>
+        Assert.Equal(CertificateVerdict.KeyPin, Judge(Pins(B), certificate: A, key: B));
+
+    [Fact]
+    public void With_both_pinned_the_key_pin_is_the_one_reported() =>
+        Assert.Equal(CertificateVerdict.KeyPin, Judge(Pins($"{A},{B}"), certificate: A, key: B));
+
+    [Fact]
+    public void Any_of_several_pins_will_do_in_any_case() =>
+        Assert.Equal(CertificateVerdict.CertificatePin, Judge(Pins($"{C}, {A.ToLowerInvariant()}"), certificate: A, key: B));
+
+    [Theory]
+    [InlineData(C)]          // another certificate's
+    [InlineData(null)]       // no pin: nothing matches, so checking cannot be off
+    [InlineData(A + ",oops")] // a typo drops no pin quietly: the whole list is refused
+    public void Anything_else_is_refused(string? pins) =>
+        Assert.Equal(CertificateVerdict.Refused, Judge(Pins(pins), certificate: A, key: B));
+
+    [Fact]
+    public void Ca_mode_trusts_a_certificate_the_platform_has_no_complaint_about() =>
+        Assert.Equal(CertificateVerdict.Ca, Judge(Pins(null, CertTrust.Ca), A, B, SslPolicyErrors.None));
+
+    [Theory]
+    [InlineData(SslPolicyErrors.RemoteCertificateNameMismatch)]
+    [InlineData(SslPolicyErrors.RemoteCertificateChainErrors)]
+    public void Ca_mode_refuses_any_complaint_and_reads_no_pins(SslPolicyErrors errors) =>
+        Assert.Equal(CertificateVerdict.Refused, Judge(Pins(A, CertTrust.Ca), certificate: A, key: B, errors));
+
+    [Fact]
+    public void The_pins_are_the_sha256_of_the_certificate_and_of_its_subject_public_key_info()
     {
+        // The key pin is what `openssl x509 -pubkey -noout | openssl pkey -pubin -outform der | openssl dgst -sha256` prints.
         using var rsa = RSA.Create(2048);
-        var req = new CertificateRequest("CN=udm", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-        return req.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
-    }
-
-    [Fact]
-    public void The_pinned_certificate_matches()
-    {
-        using var cert = NewCert();
-        Assert.True(CertPin.Matches(cert, [CertPin.Fingerprint(cert)]));
-    }
-
-    [Fact]
-    public void Another_certificate_does_not_match()
-    {
-        using var a = NewCert();
-        using var b = NewCert();
-        Assert.False(CertPin.Matches(a, [CertPin.Fingerprint(b), CertPin.KeyFingerprint(b)]));
-    }
-
-    [Fact]
-    public void No_pin_matches_nothing()
-    {
-        using var cert = NewCert();
-        Assert.False(CertPin.Matches(cert, null));
-        Assert.False(CertPin.Matches(cert, []));
-        Assert.False(CertPin.Matches(cert, [""]));
-    }
-
-    [Fact]
-    public void A_key_pin_survives_a_reissued_certificate_with_the_same_key()
-    {
-        using var rsa = RSA.Create(2048);
-        X509Certificate2 Issue(string cn) => new CertificateRequest(cn, rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1)
+        using var cert = new CertificateRequest("CN=udm", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1)
             .CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
-        using var before = Issue("CN=udm");
-        using var after = Issue("CN=udm-renewed");
-        Assert.NotEqual(CertPin.Fingerprint(before), CertPin.Fingerprint(after));
-        Assert.False(CertPin.Matches(after, [CertPin.Fingerprint(before)]));
-        Assert.True(CertPin.Matches(after, [CertPin.KeyFingerprint(before)]));
-    }
-
-    [Fact]
-    public void The_key_pin_is_the_sha256_of_the_subject_public_key_info()
-    {
-        // The same value `openssl x509 -pubkey -noout | openssl pkey -pubin -outform der | openssl dgst -sha256` prints.
-        using var cert = NewCert();
-        Assert.Equal(Convert.ToHexString(SHA256.HashData(cert.PublicKey.ExportSubjectPublicKeyInfo())), CertPin.KeyFingerprint(cert));
+        Assert.Equal(Convert.ToHexString(SHA256.HashData(cert.RawData)), ConsoleTransport.CertificateSha256(cert));
+        Assert.Equal(Convert.ToHexString(SHA256.HashData(cert.PublicKey.ExportSubjectPublicKeyInfo())), ConsoleTransport.KeySha256(cert));
+        // The handshake may hand over a plain X509Certificate, which takes the other path to the key.
+#pragma warning disable SYSLIB0057 // the obsolete constructor is the way to get a plain X509Certificate
         using var plain = new X509Certificate(cert.RawData);
-        Assert.Equal(CertPin.KeyFingerprint(cert), CertPin.KeyFingerprint(plain));
-    }
-
-    [Fact]
-    public void Any_of_several_pins_matches()
-    {
-        using var old = NewCert();
-        using var current = NewCert();
-        Assert.True(CertPin.Matches(current, [CertPin.Fingerprint(old), CertPin.Fingerprint(current)]));
-    }
-
-    [Fact]
-    public void Ca_mode_accepts_only_a_certificate_with_no_policy_errors_and_ignores_pins()
-    {
-        using var cert = NewCert();
-        var state = new PinState();
-        using var handler = CertPin.CreateHandler(() => [CertPin.Fingerprint(cert)], CertTrust.Ca, state);
-        var check = handler.SslOptions.RemoteCertificateValidationCallback!;
-        Assert.True(check(this, cert, null, System.Net.Security.SslPolicyErrors.None));
-        Assert.False(check(this, cert, null, System.Net.Security.SslPolicyErrors.RemoteCertificateNameMismatch));
-        Assert.Equal(System.Net.Security.SslPolicyErrors.RemoteCertificateNameMismatch, state.Rejected!.Errors);
-        Assert.False(check(this, null, null, System.Net.Security.SslPolicyErrors.None));
-    }
-
-    [Fact]
-    public void Handler_refuses_a_certificate_off_the_pin_and_remembers_what_it_saw()
-    {
-        using var presented = NewCert();
-        using var pinned = NewCert();
-        var state = new PinState();
-        using var handler = CertPin.CreateHandler(() => [CertPin.Fingerprint(pinned)], CertTrust.Pin, state);
-        var ok = handler.SslOptions.RemoteCertificateValidationCallback!(this, presented, null, System.Net.Security.SslPolicyErrors.RemoteCertificateChainErrors);
-        Assert.False(ok);
-        Assert.Equal(new RejectedCertificate(CertPin.Fingerprint(presented), CertPin.KeyFingerprint(presented), System.Net.Security.SslPolicyErrors.RemoteCertificateChainErrors), state.Rejected);
-    }
-
-    [Fact]
-    public void Handler_accepts_the_pinned_self_signed_certificate_despite_chain_errors()
-    {
-        using var cert = NewCert();
-        using var handler = CertPin.CreateHandler(() => [CertPin.Fingerprint(cert)], CertTrust.Pin, new PinState());
-        Assert.True(handler.SslOptions.RemoteCertificateValidationCallback!(this, cert, null, System.Net.Security.SslPolicyErrors.RemoteCertificateChainErrors));
-    }
-
-    [Fact]
-    public void Handler_never_follows_redirects_or_uses_a_proxy()
-    {
-        using var handler = CertPin.CreateHandler(() => null, CertTrust.Pin, new PinState());
-        Assert.False(handler.AllowAutoRedirect);
-        Assert.False(handler.UseProxy);
+#pragma warning restore SYSLIB0057
+        Assert.Equal(ConsoleTransport.KeySha256(cert), ConsoleTransport.KeySha256(plain));
     }
 }

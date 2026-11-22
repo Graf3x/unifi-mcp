@@ -1,8 +1,4 @@
 using System.Collections.Concurrent;
-using System.Net.Security;
-using System.Security.Cryptography;
-using System.Security.Cryptography.X509Certificates;
-using System.Text;
 using System.Text.Json;
 
 namespace UnifiMcp;
@@ -21,69 +17,17 @@ public sealed record UnifiResponse(int Status, string Body)
 /// <summary>A site on the console: its id (the Integration API's name for it), its internal name (the Internal API's) and its display name.</summary>
 public sealed record Site(string Id, string? Reference, string Name);
 
-/// <summary>A certificate the console presented and the server refused: its fingerprints and, in CA mode, why.</summary>
-public sealed record RejectedCertificate(string Certificate, string Key, SslPolicyErrors Errors = SslPolicyErrors.None);
-
-/// <summary>The last certificate refused, for a useful error.</summary>
-public sealed class PinState
-{
-    public RejectedCertificate? Rejected { get; set; }
-}
-
 /// <summary>
-/// TLS to the console. Its certificate is usually self-signed, so by default it is pinned: a pin is the SHA-256 of the
-/// certificate's DER or of its public key (SubjectPublicKeyInfo, which survives a re-issued certificate that keeps its
-/// key), and several may be listed. With no pin nothing matches, so verification cannot be off. With
-/// UNIFI_CERT_TRUST=ca the usual chain and host-name checks apply instead. Redirects are never followed, so the key
-/// cannot be sent elsewhere.
+/// The console's two APIs over one <see cref="ConsoleTransport"/>. Non-GET requests are refused here as well as by tool
+/// registration while writes are off. The console's internal API (the one its own UI uses) is read only through
+/// <see cref="ConsoleReads"/>.
 /// </summary>
-public static class CertPin
-{
-    public static string Fingerprint(X509Certificate cert) => Convert.ToHexString(SHA256.HashData(cert.GetRawCertData()));
-
-    public static string KeyFingerprint(X509Certificate cert)
-    {
-        if (cert is X509Certificate2 c2) return Convert.ToHexString(SHA256.HashData(c2.PublicKey.ExportSubjectPublicKeyInfo()));
-        using var copy = X509CertificateLoader.LoadCertificate(cert.GetRawCertData());
-        return Convert.ToHexString(SHA256.HashData(copy.PublicKey.ExportSubjectPublicKeyInfo()));
-    }
-
-    public static bool Matches(X509Certificate? cert, IReadOnlyCollection<string>? pins)
-    {
-        if (cert is null || pins is not { Count: > 0 }) return false;
-        var certPin = Fingerprint(cert);
-        var keyPin = KeyFingerprint(cert);
-        return pins.Any(p => string.Equals(p, certPin, StringComparison.OrdinalIgnoreCase) || string.Equals(p, keyPin, StringComparison.OrdinalIgnoreCase));
-    }
-
-    public static SocketsHttpHandler CreateHandler(Func<IReadOnlyCollection<string>?> pins, CertTrust trust, PinState state) => new()
-    {
-        AllowAutoRedirect = false,
-        UseProxy = false,
-        SslOptions =
-        {
-            RemoteCertificateValidationCallback = (_, cert, _, errors) =>
-            {
-                var ok = trust == CertTrust.Ca ? cert is not null && errors == SslPolicyErrors.None : Matches(cert, pins());
-                if (!ok && cert is not null) state.Rejected = new(Fingerprint(cert), KeyFingerprint(cert), errors);
-                return ok;
-            },
-        },
-    };
-}
-
-/// <summary>
-/// The only code that talks to the console. Nothing is sent until the key and pin exist; non-GET requests are refused
-/// here as well as by tool registration while writes are off; the key is scrubbed from everything returned.
-/// The console's internal API (the one its own UI uses) is read only through <see cref="ConsoleReads"/>.
-/// </summary>
-public sealed class UnifiClient(Settings settings, HttpMessageHandler handler, PinState pin)
+public sealed class UnifiClient(Settings settings, ConsoleTransport transport)
 {
     private const string ApiRoot = "/proxy/network/integration";
     private const string ConsoleRoot = "/proxy/network";
     private const int PageSize = 200;
 
-    private readonly HttpClient _http = new(handler, disposeHandler: false) { Timeout = TimeSpan.FromSeconds(30) };
     private readonly ConcurrentDictionary<string, Site> _sites = new(StringComparer.OrdinalIgnoreCase);
 
     public Settings Settings => settings;
@@ -92,44 +36,12 @@ public sealed class UnifiClient(Settings settings, HttpMessageHandler handler, P
     {
         if (method != HttpMethod.Get && !settings.AllowWrites)
             throw new UnifiError("Writes are disabled (UNIFI_ALLOW_WRITES is not true), so nothing was sent.");
-        return SendCoreAsync(method, ApiRoot + path, body, ct);
+        return transport.SendAsync(method, ApiRoot + path, body, ct);
     }
 
     /// <summary>A request to the internal API, relative to /proxy/network. Only <see cref="ConsoleReads"/> sends these.</summary>
     internal Task<UnifiResponse> SendInternalAsync(HttpMethod method, string path, string? body, CancellationToken ct) =>
-        SendCoreAsync(method, ConsoleRoot + path, body, ct);
-
-    private async Task<UnifiResponse> SendCoreAsync(HttpMethod method, string rootedPath, string? body, CancellationToken ct)
-    {
-        var missing = settings.Missing();
-        if (missing.Count > 0)
-            throw new UnifiNotConfigured("UniFi MCP is not configured, so nothing was sent. Still needed: " + string.Join("; ", missing) + ".");
-
-        var key = settings.ApiKey()!;
-        using var req = new HttpRequestMessage(method, settings.BaseUrl.GetLeftPart(UriPartial.Authority) + rootedPath);
-        req.Headers.Add("X-API-Key", key);
-        req.Headers.Accept.ParseAdd("application/json");
-        if (body is not null) req.Content = new StringContent(body, Encoding.UTF8, "application/json");
-
-        try
-        {
-            using var resp = await _http.SendAsync(req, ct);
-            return new UnifiResponse((int)resp.StatusCode, Scrub(await resp.Content.ReadAsStringAsync(ct), key));
-        }
-        catch (HttpRequestException ex)
-        {
-            var seen = pin.Rejected;
-            pin.Rejected = null;
-            throw new UnifiError(seen is null ? Scrub($"Could not reach the console: {ex.Message}", key)
-                : settings.Trust == CertTrust.Ca
-                ? $"The console's certificate is not trusted ({seen.Errors}), so nothing was sent. With UNIFI_CERT_TRUST=ca it needs a certificate from a CA this server trusts, issued for {settings.BaseUrl.Host} (the host in UNIFI_URL). It presented certificate SHA-256 {seen.Certificate}."
-                : $"The console's certificate does not match the pin, so nothing was sent. It presented certificate SHA-256 {seen.Certificate} with public key SHA-256 {seen.Key}; compare one with the console, then set UNIFI_CERT_SHA256 to it and restart the server (for example in .env, or with fleet-key), or put it in {settings.CertPinFile} if that variable is unset. Several pins can be listed, separated by commas.");
-        }
-        catch (TaskCanceledException) when (!ct.IsCancellationRequested)
-        {
-            throw new UnifiError("The console did not answer in time.");
-        }
-    }
+        transport.SendAsync(method, ConsoleRoot + path, body, ct);
 
     public async Task<JsonElement> GetJsonAsync(string path, CancellationToken ct)
     {
@@ -180,8 +92,6 @@ public sealed class UnifiClient(Settings settings, HttpMessageHandler handler, P
 
     private static string? Str(JsonElement e, string name) =>
         e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
-
-    private static string Scrub(string text, string key) => text.Replace(key, "[redacted]", StringComparison.Ordinal);
 
     private static string Short(string text) => text.Length <= 500 ? text : text[..500] + "...";
 }
