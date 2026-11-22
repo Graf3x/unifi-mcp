@@ -88,6 +88,7 @@ public sealed partial class DiagnosticTools
         {
             // Two more reads, each a step that may fail without losing the rest: who is on each port, and what each port can do.
             var connected = ConnectedDevices(devices, dev);
+            if (Upstream(devices, dev, ports) is { } upstream) Add(connected, upstream.Port, upstream.Device);
             var stations = await Step(sb, "Connected clients", () => site.StationsAsync(ct)) ?? [];
             foreach (var c in stations.Where(c => Bool(c, "is_wired") && SameMac(V(c, "sw_mac"), V(dev, "mac")) && V(c, "sw_port").Length > 0).OrderBy(Name))
                 Add(connected, V(c, "sw_port"), new Connected("client", Name(c), V(c, "mac")));
@@ -140,6 +141,23 @@ public sealed partial class DiagnosticTools
             if (isChild) Add(byPort, port, new Connected("device", V(d, "name"), V(d, "mac")));
         }
         return byPort;
+    }
+
+    /// <summary>
+    /// The device upstream of this one and the local port it is on, so the uplink port does not read as empty. The far
+    /// end comes from the device's own uplink; the local port from the uplink too, else from the one port the console
+    /// marks as the uplink. Nothing when either is unknown.
+    /// </summary>
+    private static (string Port, Connected Device)? Upstream(List<JsonElement> devices, JsonElement dev, List<JsonElement> ports)
+    {
+        if (Obj(dev, "uplink") is not { } up) return null;
+        string name = V(up, "uplink_device_name"), mac = V(up, "uplink_mac");
+        var parent = devices.FirstOrDefault(d => mac.Length > 0 ? SameMac(V(d, "mac"), mac) : name.Length > 0 && V(d, "name") == name);
+        name = First(name, V(parent, "name"));
+        if (name.Length == 0) return null;
+        var marked = ports.Where(p => Bool(p, "is_uplink")).Select(p => V(p, "port_idx")).ToList();
+        var port = First(V(up, "port_idx"), marked.Count == 1 ? marked[0] : "");
+        return port.Length == 0 ? null : (port, new Connected("device", name, First(mac, V(parent, "mac"))));
     }
 
     private static void Add(Dictionary<string, List<Connected>> byPort, string port, Connected item)

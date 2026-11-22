@@ -36,7 +36,7 @@ public class DiagnosticTests
         {"_id":"d3","mac":"aa:00:00:00:00:03","type":"usw","model":"US24","name":"Core Switch","state":1,"ip":"192.168.1.2","version":"7.4.1",
          "uptime":172800,"system-stats":{"cpu":"3.0","mem":"55.0","uptime":"172800"},"general_temperature":61,"overheating":false,"has_fan":true,"fan_level":0,
          "total_max_power":95,"total_used_power":21.5,"upgradable":true,"upgrade_to_firmware":"7.4.12","x_authkey":"authkey-must-not-leak",
-         "uplink":{"type":"wire","uplink_device_name":"Gateway","uplink_remote_port":9,"speed":10000,"full_duplex":true,"rx_errors":0,"tx_errors":0},
+         "uplink":{"type":"wire","port_idx":5,"uplink_device_name":"Gateway","uplink_remote_port":9,"speed":10000,"full_duplex":true,"rx_errors":0,"tx_errors":0},
          "port_table":[
            {"port_idx":1,"name":"Port 1","up":true,"enable":true,"speed":1000,"full_duplex":true,"poe_enable":true,"poe_power":"6.65","rx_errors":0,"tx_errors":0,"rx_dropped":0,"tx_dropped":0,"link_down_count":0,"stp_state":"forwarding","last_connection":{"mac":"aa:00:00:00:00:01"}},
            {"port_idx":2,"name":"NAS","up":true,"enable":true,"speed":100,"full_duplex":false,"poe_enable":false,"poe_power":"0.00","rx_errors":1532,"tx_errors":0,"rx_dropped":12,"tx_dropped":0,"link_down_count":14,"stp_state":"forwarding"},
@@ -628,6 +628,39 @@ public class DiagnosticTests
         h.Unifi.Route("GET", $"{Classic}/stat/sta", Ok("""{"mac":"cc:00:00:00:02:01","name":"<img src=x onerror=alert(1)>|x","is_wired":true,"sw_mac":"aa:00:00:00:00:03","sw_port":4}"""));
         var (text, _) = await h.CallAsync("device_diagnostics_faq", new() { ["device"] = "core" });
         Assert.Contains(@"<img src=x onerror=alert(1)>\|x", text);
+    }
+
+    [Fact]
+    public async Task The_uplink_port_names_the_device_upstream()
+    {
+        await using var h = await StartAsync();
+        var sfp = (await PortsAsync(h))[4];
+        var upstream = sfp.GetProperty("connected")[0];
+        Assert.Equal("device", upstream.GetProperty("kind").GetString());
+        Assert.Equal("Gateway", upstream.GetProperty("name").GetString());
+        Assert.Equal("aa:00:00:00:00:04", upstream.GetProperty("mac").GetString()); // found by name: this uplink carries no MAC
+        Assert.Equal(1, sfp.GetProperty("connectedCount").GetInt32());
+        var (text, _) = await h.CallAsync("device_diagnostics_faq", new() { ["device"] = "core" });
+        Assert.Contains("| 5 | SFP 1 | Gateway | up |", text);
+    }
+
+    [Fact]
+    public async Task The_uplink_port_is_found_by_the_console_mark_when_the_uplink_gives_no_port()
+    {
+        await using var h = await StartAsync();
+        var marked = Switch.Replace("\"type\":\"wire\",\"port_idx\":5,", "\"type\":\"wire\",").Replace("{\"port_idx\":5,\"name\":\"SFP 1\",", "{\"port_idx\":5,\"is_uplink\":true,\"name\":\"SFP 1\",");
+        Assert.Contains("\"is_uplink\":true", marked);
+        h.Unifi.Route("GET", $"{Classic}/stat/device", Ok(Ap, OfflineAp, marked, Gateway));
+        Assert.Equal("Gateway", (await PortsAsync(h))[4].GetProperty("connected")[0].GetProperty("name").GetString());
+    }
+
+    [Fact]
+    public async Task A_port_name_with_a_pipe_does_not_break_the_table()
+    {
+        await using var h = await StartAsync();
+        h.Unifi.Route("GET", $"{Classic}/stat/device", Ok(Ap, OfflineAp, Switch.Replace("\"name\":\"NAS\"", "\"name\":\"a|b\""), Gateway));
+        var (text, _) = await h.CallAsync("device_diagnostics_faq", new() { ["device"] = "core" });
+        Assert.Contains(@"| 2 | a\|b | nas | up |", text);
     }
 
     [Fact]

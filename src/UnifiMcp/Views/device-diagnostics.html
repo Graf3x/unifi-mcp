@@ -82,7 +82,7 @@
    frames this page. It knows nothing about what the view shows. */
 function createApp(info) {
   "use strict";
-  var nextId = 1, pending = {}, context = null, lastSize = "";
+  var nextId = 1, pending = {}, context = null, lastHeight = -1;
   var handlers = { result: [], input: [], context: [] };
 
   function post(message) { window.parent.postMessage(message, "*"); }
@@ -101,11 +101,13 @@ function createApp(info) {
     context = merged;
     emit("context", context);
   }
+  /* Height only. The page fills whatever width it is given, and a host applies a width it is told: one measured
+     while a scrollbar is showing would narrow the frame a little more each time the page grows. */
   function reportSize() {
-    var width = document.body.offsetWidth, height = document.body.offsetHeight;
-    if (width + "x" + height === lastSize) return;
-    lastSize = width + "x" + height;
-    notify("ui/notifications/size-changed", { width: width, height: height });
+    var height = document.body.offsetHeight;
+    if (height === lastHeight) return;
+    lastHeight = height;
+    notify("ui/notifications/size-changed", { height: height });
   }
 
   window.addEventListener("message", function (event) {
@@ -140,7 +142,7 @@ function createApp(info) {
     onInput: function (fn) { handlers.input.push(fn); },
     onContext: function (fn) { handlers.context.push(fn); if (context) fn(context); },
     callTool: function (name, args) { return request("tools/call", { name: name, arguments: args }); },
-    sendMessage: function (text) { return request("ui/message", { role: "user", content: { type: "text", text: text } }); },
+    sendMessage: function (text) { return request("ui/message", { role: "user", content: [{ type: "text", text: text }] }); },
     updateContext: function (text) { return request("ui/update-model-context", { content: [{ type: "text", text: text }] }).catch(function () {}); },
   };
 }
@@ -300,6 +302,12 @@ function createApp(info) {
     if (known(d.uptimeSeconds)) more.push("up " + duration(d.uptimeSeconds));
     if (more.length > 0) facts.appendChild(document.createTextNode(" · " + more.join(" · ")));
     title.appendChild(facts);
+    if (d.overheating || d.updateTo) { // the tile says these; the device's own screen must not hide them
+      var marks = el("p", "chips");
+      if (d.overheating) marks.appendChild(el("span", "chip issue", "overheating"));
+      if (d.updateTo) marks.appendChild(el("span", "chip update", "update available"));
+      title.appendChild(marks);
+    }
     bar.appendChild(title);
     var refresh = el("button", "action", "Refresh");
     refresh.type = "button";

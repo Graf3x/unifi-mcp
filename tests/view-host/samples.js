@@ -58,7 +58,7 @@
 
   var core = device({ name: "Core Switch", mac: "aa:00:00:00:00:03", updateTo: "7.4.12", poeUsedW: 23.75, poeBudgetW: 95,
     uplink: { type: "wire", deviceName: "Gateway", remotePort: "9", speedMbps: 10000 } }, corePorts);
-  var big = device({ name: "Rack Switch", mac: "aa:00:00:00:00:05", model: "US48PRO", ip: "192.168.1.3", poeUsedW: 31, poeBudgetW: 600 }, bigPorts);
+  var big = device({ name: "Rack Switch", mac: "aa:00:00:00:00:05", model: "US48PRO", ip: "192.168.1.3", poeUsedW: 31, poeBudgetW: 600, overheating: true }, bigPorts);
   var flex = device({ name: "Desk Switch", mac: "aa:00:00:00:00:06", model: "USWED35", ip: "192.168.1.4", temperatureC: undefined }, flexPorts);
   var gateway = device({ name: "Gateway", mac: "aa:00:00:00:00:04", model: "UDMPRO", type: "udm", ip: "192.168.1.1", firmware: "6.0.15",
     uptimeSeconds: 90000, cpuPct: 53.2, memoryPct: 72.3, temperatureC: 45 }, []);

@@ -80,13 +80,18 @@
       send({ jsonrpc: "2.0", method: "ui/notifications/tool-input", params: { arguments: args } });
       send({ jsonrpc: "2.0", method: "ui/notifications/tool-result", params: result(model) });
     } else if (m.method === "ui/notifications/size-changed") {
-      frame.style.height = Math.max(40, m.params.height) + "px";
+      // As the reference host does: apply whatever the view reports, a width included.
+      if (m.params.width != null) frame.style.width = m.params.width + "px";
+      if (m.params.height != null) frame.style.height = Math.max(40, m.params.height) + "px";
     } else if (m.method === "tools/call") {
       if (flags.refuse.checked) return send({ jsonrpc: "2.0", id: m.id, error: { code: -32000, message: "The user declined the tool call." } });
       var device = m.params && m.params.arguments && m.params.arguments.device;
       var answer = flags.down.checked ? SAMPLES.down : SAMPLES.byMac[device] ||
         { view: "message", builtAt: SAMPLES.down.builtAt, message: "No device matches '" + device + "'." };
       send({ jsonrpc: "2.0", id: m.id, result: result(answer) });
+    } else if (m.method === "ui/message" && !(m.params && m.params.role === "user" && Array.isArray(m.params.content))) {
+      // Hosts built on the SDK check the shape: content is a list of blocks.
+      send({ jsonrpc: "2.0", id: m.id, error: { code: -32602, message: "Invalid params: content must be a list of content blocks." } });
     } else if (m.method === "ui/message" && flags.nomessage.checked) {
       send({ jsonrpc: "2.0", id: m.id, error: { code: -32000, message: "The user declined the message." } });
     } else if (m.id !== undefined && m.method) {

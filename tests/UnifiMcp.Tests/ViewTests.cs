@@ -44,6 +44,13 @@ public class ViewTests
     public void The_view_loads_nothing_and_writes_no_markup(string banned) =>
         Assert.DoesNotContain(banned, ViewResources.Html("views/device-diagnostics.html"), StringComparison.OrdinalIgnoreCase);
 
+    // The view has no script test runner, so the two protocol shapes a host checks are pinned here as text.
+    [Theory]
+    [InlineData("request(\"ui/message\", { role: \"user\", content: [{ type: \"text\", text: text }] })")] // a list of blocks, as the SDK's types say
+    [InlineData("notify(\"ui/notifications/size-changed\", { height: height })")] // height only: a host applies a width it is given
+    public void The_view_speaks_the_protocol_the_way_hosts_check_it(string expected) =>
+        Assert.Contains(expected, ViewResources.Html("views/device-diagnostics.html"));
+
     [Fact]
     public async Task The_tool_description_does_not_mention_the_view()
     {
