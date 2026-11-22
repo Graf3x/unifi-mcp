@@ -11,7 +11,7 @@ namespace UnifiMcp;
 /// protected so one failure is reported and the rest still run. They state plainly what this API version cannot show.
 /// </summary>
 [McpServerToolType]
-public sealed class FaqTools(UnifiClient console)
+public sealed class FaqTools(UnifiClient console, ConsoleReads reads)
 {
     private sealed record Net(string Name, int Vlan, IPAddress? Host, int Prefix, JsonElement Details);
 
@@ -202,8 +202,7 @@ public sealed class FaqTools(UnifiClient console)
         if (string.IsNullOrEmpty(mac)) return null;
         try
         {
-            var siteRef = await console.ResolveSiteReferenceAsync(site, ct);
-            foreach (var s in await console.ConsoleDataAsync($"/api/s/{siteRef}/stat/sta", ct))
+            foreach (var s in await (await reads.SiteAsync(site, ct)).StationsAsync(ct))
                 if (string.Equals(DiagnosticTools.V(s, "mac"), mac, StringComparison.OrdinalIgnoreCase)) return s;
         }
         catch (UnifiError)

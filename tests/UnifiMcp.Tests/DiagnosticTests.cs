@@ -420,54 +420,6 @@ public class DiagnosticTests
         Assert.Empty(h.Unifi.Requests);
     }
 
-    // --- the internal API is throttled: it was not built for polling, and heavy polling has destabilised consoles -----
-
-    private static (UnifiClient Client, FakeUnifi Fake, FakeTimeProvider Time, string Dir) BareClient()
-    {
-        var fake = new FakeUnifi();
-        fake.Route("GET", $"{Classic}/stat/health", Ok("""{"subsystem":"www"}"""));
-        fake.Route("POST", $"{V2}/system-log/all", LogPage(0));
-        var dir = Directory.CreateTempSubdirectory("unifi-mcp-test").FullName;
-        var time = new FakeTimeProvider();
-        return (new UnifiClient(Harness.NewSettings(dir), fake, new PinState(), time), fake, time, dir);
-    }
-
-    [Fact]
-    public async Task The_same_internal_read_within_a_few_seconds_is_answered_from_cache()
-    {
-        var (client, fake, time, dir) = BareClient();
-        try
-        {
-            await client.ConsoleAsync(HttpMethod.Get, "/api/s/default/stat/health", null, default);
-            await client.ConsoleAsync(HttpMethod.Get, "/api/s/default/stat/health", null, default);
-            Assert.Single(fake.Requests);
-            time.Advance(UnifiClient.ConsoleCacheFor + TimeSpan.FromSeconds(1));
-            await client.ConsoleAsync(HttpMethod.Get, "/api/s/default/stat/health", null, default);
-            Assert.Equal(2, fake.Requests.Count);
-        }
-        finally { Directory.Delete(dir, true); }
-    }
-
-    [Fact]
-    public async Task Internal_calls_beyond_the_burst_are_refused_until_the_budget_refills()
-    {
-        var (client, fake, time, dir) = BareClient();
-        try
-        {
-            // Different bodies, so the cache does not absorb them.
-            for (var i = 0; i < UnifiClient.ConsoleBurst; i++)
-                await client.ConsoleAsync(HttpMethod.Post, "/v2/api/site/default/system-log/all", $$"""{"pageNumber":{{i}}}""", default);
-            var e = await Assert.ThrowsAsync<UnifiError>(() => client.ConsoleAsync(HttpMethod.Post, "/v2/api/site/default/system-log/all", """{"pageNumber":99}""", default));
-            Assert.Contains("try again in", e.Message);
-            Assert.Equal(UnifiClient.ConsoleBurst, fake.Requests.Count);
-
-            time.Advance(TimeSpan.FromSeconds(60.0 / UnifiClient.ConsolePerMinute + 0.1));
-            await client.ConsoleAsync(HttpMethod.Post, "/v2/api/site/default/system-log/all", """{"pageNumber":99}""", default);
-            Assert.Equal(UnifiClient.ConsoleBurst + 1, fake.Requests.Count);
-        }
-        finally { Directory.Delete(dir, true); }
-    }
-
     // --- the audit log: who ran which tool, never with what -----------------------------------------------------------
 
     [Fact]
@@ -514,7 +466,7 @@ public class DiagnosticTests
         await h.CallAsync("device_diagnostics_faq");
         Assert.Equal(1, DeviceReads());
 
-        time.Advance(UnifiClient.ConsoleCacheFor + TimeSpan.FromSeconds(1));
+        time.Advance(ConsoleReads.CacheFor + TimeSpan.FromSeconds(1));
         await h.CallAsync("device_diagnostics_faq");
         Assert.Equal(2, DeviceReads());
     }
@@ -526,7 +478,7 @@ public class DiagnosticTests
         await using var _ = h;
         // A different page each time, so the cache does not absorb the calls and no counts are fetched.
         string? refused = null;
-        for (var page = 1; page <= UnifiClient.ConsoleBurst + 1 && refused is null; page++)
+        for (var page = 1; page <= ConsoleReads.Burst + 1 && refused is null; page++)
         {
             var (text, isError) = await h.CallAsync("system_log", new() { ["page"] = page });
             if (isError) refused = text;
@@ -534,7 +486,7 @@ public class DiagnosticTests
         Assert.NotNull(refused);
         Assert.Contains("Slow down", refused);
 
-        time.Advance(TimeSpan.FromSeconds(60.0 / UnifiClient.ConsolePerMinute + 0.1));
+        time.Advance(TimeSpan.FromSeconds(60.0 / ConsoleReads.PerMinute + 0.1));
         var (after, afterError) = await h.CallAsync("system_log", new() { ["page"] = 99 });
         Assert.False(afterError, after);
     }
@@ -553,19 +505,6 @@ public class DiagnosticTests
         }
     }
 
-    [Fact]
-    public async Task The_official_api_is_not_throttled()
-    {
-        var (client, fake, _, dir) = BareClient();
-        fake.WithSite();
-        try
-        {
-            for (var i = 0; i < UnifiClient.ConsoleBurst + 5; i++) await client.SendAsync(HttpMethod.Get, "/v1/sites", null, default);
-            Assert.Equal(UnifiClient.ConsoleBurst + 5, fake.Requests.Count);
-        }
-        finally { Directory.Delete(dir, true); }
-    }
-
     [Theory]
     [InlineData("GET", "/api/s/default/cmd/devmgr")]
     [InlineData("POST", "/api/s/default/stat/device")]
@@ -582,8 +521,8 @@ public class DiagnosticTests
         var dir = Directory.CreateTempSubdirectory("unifi-mcp-test").FullName;
         try
         {
-            var client = new UnifiClient(Harness.NewSettings(dir, writes: true), fake, new PinState());
-            await Assert.ThrowsAsync<UnifiError>(() => client.ConsoleAsync(new HttpMethod(method), path, method == "GET" ? null : "{}", default));
+            var reads = new ConsoleReads(new UnifiClient(Harness.NewSettings(dir, writes: true), fake, new PinState()), TimeProvider.System);
+            await Assert.ThrowsAsync<UnifiError>(() => reads.ConsoleAsync(new HttpMethod(method), path, method == "GET" ? null : "{}", default));
             Assert.Empty(fake.Requests);
         }
         finally { Directory.Delete(dir, true); }
