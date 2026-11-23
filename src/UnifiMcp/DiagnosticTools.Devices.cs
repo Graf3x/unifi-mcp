@@ -19,8 +19,9 @@ public sealed partial class DiagnosticTools
     public Task<CallToolResult> DeviceDiagnostics(
         [Description("Device name (partial match), IP address or MAC address. Omit for a summary of every device.")] string? device = null,
         [Description("Site UUID or name. Omit for the configured site.")] string? siteId = null,
-        CancellationToken ct = default) => RunView(siteId, ct, async (site, a) =>
+        CancellationToken ct = default) => Answer.RunAsync(async a =>
     {
+        var site = await reads.SiteAsync(siteId, ct);
         var devices = await site.DevicesAsync(ct);
         if (string.IsNullOrWhiteSpace(device))
         {
@@ -36,7 +37,8 @@ public sealed partial class DiagnosticTools
                     string.Join(", ", Issues(d)),
                 })));
             a.Line("Call again with device set to one name for its ports, PoE and uplink.");
-            return NewView("devices", siteId) with { Devices = ordered.Select(Tile).ToList() };
+            a.View = NewView("devices", siteId) with { Devices = ordered.Select(Tile).ToList() };
+            return;
         }
 
         var q = device.Trim();
@@ -46,17 +48,19 @@ public sealed partial class DiagnosticTools
         {
             var none = $"No device matches '{device}'. Devices: {string.Join(", ", devices.Select(d => V(d, "name")))}.";
             a.Line(none);
-            return NewView("message", siteId) with { Message = none };
+            a.View = NewView("message", siteId) with { Message = none };
+            return;
         }
         if (found.Count > 1)
         {
             var several = $"'{device}' matches {found.Count} devices; use the IP or MAC";
             a.Line($"{several}:\n" + Answer.Table(["Name", "IP", "MAC"], found.Select(d => new[] { V(d, "name"), V(d, "ip"), V(d, "mac") })));
-            return NewView("message", siteId) with
+            a.View = NewView("message", siteId) with
             {
                 Message = several + ".",
                 Candidates = found.Select(d => new Candidate(V(d, "name"), V(d, "ip"), V(d, "mac"))).ToList(),
             };
+            return;
         }
 
         var dev = found[0];
@@ -119,8 +123,8 @@ public sealed partial class DiagnosticTools
             if (idle.Count > 0) a.Line($"Down with nothing to report: {string.Join(", ", idle)}.");
         }
 
-        return NewView("device", siteId) with { Device = Detail(dev, portViews) };
-    });
+        a.View = NewView("device", siteId) with { Device = Detail(dev, portViews) };
+    }, onFatal: message => NewView("message", siteId) with { Message = message });
 
     // --- ports ------------------------------------------------------------------------------------------------------
 
@@ -228,26 +232,6 @@ public sealed partial class DiagnosticTools
             : "the device or its cable may only support this speed";
         var s = string.Join("; ", parts);
         return char.ToUpperInvariant(s[0]) + s[1..] + ": " + cause + ".";
-    }
-
-    /// <summary>
-    /// Like <see cref="Answer.RunAsync"/>, and the steps also return the view's data. A console failure is the answer, not a tool
-    /// error: the text is its reason and the view shows the same sentence.
-    /// </summary>
-    private async Task<CallToolResult> RunView(string? siteId, CancellationToken ct, Func<ConsoleSite, Answer, Task<DiagnosticsView>> steps)
-    {
-        var answer = Answer.Start();
-        DiagnosticsView view;
-        try
-        {
-            view = await steps(await reads.SiteAsync(siteId, ct), answer);
-        }
-        catch (Exception e) when (e is UnifiError or UnifiNotConfigured)
-        {
-            answer.Line(e.Message);
-            view = NewView("message", siteId) with { Message = e.Message };
-        }
-        return ViewResult.Create(answer.ToString(), view);
     }
 
     private DiagnosticsView NewView(string kind, string? siteId) =>

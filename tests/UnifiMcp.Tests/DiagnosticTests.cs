@@ -415,10 +415,10 @@ public class DiagnosticTests
 
     // --- device_diagnostics_faq: the view's data, carried in the result's _meta ---------------------------------------
 
-    private static async Task<JsonElement> ViewAsync(Harness h, Dictionary<string, object?>? args = null)
+    private static async Task<JsonElement> ViewAsync(Harness h, Dictionary<string, object?>? args = null, bool isError = false)
     {
         var r = await h.CallRawAsync("device_diagnostics_faq", args);
-        Assert.NotEqual(true, r.IsError);
+        Assert.Equal(isError, r.IsError == true);
         Assert.Null(r.StructuredContent);
         var raw = r.Meta!["unifi-network/view"]!.ToJsonString();
         NoSecrets(raw);
@@ -472,11 +472,11 @@ public class DiagnosticTests
     }
 
     [Fact]
-    public async Task Device_view_for_a_console_error_is_a_message()
+    public async Task Device_view_for_a_console_error_is_a_message_and_a_tool_error()
     {
         await using var h = await StartAsync();
         h.Unifi.Route("GET", $"{Classic}/stat/device", "{}", status: 500);
-        var v = await ViewAsync(h);
+        var v = await ViewAsync(h, isError: true);
         Assert.Equal("message", v.GetProperty("view").GetString());
         Assert.Contains("500", v.GetProperty("message").GetString());
     }

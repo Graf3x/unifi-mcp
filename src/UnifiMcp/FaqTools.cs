@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
 namespace UnifiMcp;
@@ -17,7 +18,7 @@ public sealed class FaqTools(UnifiClient console, ConsoleReads reads)
 
     [McpServerTool(Name = "who_is_on_network_faq", Title = "Who is on this network", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
     [Description("[Composite] Who is on a network: connected clients grouped by network (matched by IPv4 subnet) with IP, MAC, type and the device they connect through. Omit network for all of them.")]
-    public Task<string> WhoIsOnNetwork(
+    public Task<CallToolResult> WhoIsOnNetwork(
         [Description("Network name (partial match) or VLAN number. Omit for every network.")] string? network = null,
         [Description("Site UUID or name. Omit for the configured site.")] string? siteId = null,
         CancellationToken ct = default) => Answer.RunAsync(async a =>
@@ -44,7 +45,7 @@ public sealed class FaqTools(UnifiClient console, ConsoleReads reads)
 
     [McpServerTool(Name = "client_path_faq", Title = "Client network path", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
     [Description("[Composite] What path a client takes: finds the client by name, IP or MAC and walks its uplinks device by device to the gateway, then names the switch and port it is plugged into (or its AP, on Wi-Fi).")]
-    public Task<string> ClientPath(
+    public Task<CallToolResult> ClientPath(
         [Description("Client name (partial match), IP address or MAC address.")] string client,
         [Description("Site UUID or name. Omit for the configured site.")] string? siteId = null,
         CancellationToken ct = default) => Answer.RunAsync(async a =>
@@ -90,7 +91,7 @@ public sealed class FaqTools(UnifiClient console, ConsoleReads reads)
 
     [McpServerTool(Name = "dhcp_reservation_faq", Title = "Is a DHCP reservation honoured", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
     [Description("[Composite] Is a DHCP reservation honoured: compares a client's current IP with the address you expected and shows whether it sits inside the network's DHCP pool, and reads the client's fixed-IP reservation from the console. Without expected_ip it checks the address against the reservation.")]
-    public Task<string> DhcpReservation(
+    public Task<CallToolResult> DhcpReservation(
         [Description("Client name (partial match), IP address or MAC address.")] string client,
         [Description("The address the reservation should give it.")] string? expected_ip = null,
         [Description("Site UUID or name. Omit for the configured site.")] string? siteId = null,
@@ -126,7 +127,7 @@ public sealed class FaqTools(UnifiClient console, ConsoleReads reads)
 
     [McpServerTool(Name = "network_health_faq", Title = "Network health summary", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
     [Description("[Composite] Network health at a glance: console version, every device's state with offline devices and pending firmware called out, and connected client counts by type.")]
-    public Task<string> NetworkHealth(
+    public Task<CallToolResult> NetworkHealth(
         [Description("Site UUID or name. Omit for the configured site.")] string? siteId = null,
         CancellationToken ct = default) => Answer.RunAsync(async a =>
     {

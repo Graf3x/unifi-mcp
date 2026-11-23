@@ -1,37 +1,58 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
+using ModelContextProtocol.Protocol;
 
 namespace UnifiMcp;
 
 /// <summary>
 /// The answer of a composite tool: markdown written in steps. A step that fails is reported in the answer and the rest
 /// still run; a failure outside a step (not configured, an unknown site, a read the tool cannot do without) ends the
-/// answer after what was already written. Exceptions other than the console's are not answers and are not caught.
+/// answer after what was already written, and is a tool error. Exceptions other than the console's are not answers and
+/// are not caught.
 /// </summary>
-/// <remarks>The answer does not look up a site: a tool finds its own, as the first read outside a step.</remarks>
+/// <remarks>
+/// The answer does not look up a site: a tool finds its own, as the first read outside a step. A tool with a view sets
+/// <see cref="View"/>; it travels in <c>_meta</c>, not structuredContent, because hosts hand the model structuredContent
+/// in place of the text when there is one.
+/// </remarks>
 internal sealed class Answer
 {
+    private static readonly JsonSerializerOptions ViewJson = new(JsonSerializerDefaults.Web) { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull };
+
     private readonly StringBuilder _text = new();
 
     private Answer() { }
 
-    /// <summary>Runs <paramref name="body"/> and returns its text, capped at <see cref="ToolText.Limit"/>.</summary>
-    public static async Task<string> RunAsync(Func<Answer, Task> body)
+    /// <summary>The view's data, serialised with camelCase names and without nulls. Null for no view.</summary>
+    public object? View { get; set; }
+
+    /// <summary>
+    /// Runs <paramref name="body"/>: one text block, capped at <see cref="ToolText.Limit"/>, and the view if one was set.
+    /// When the answer ends early the view is <paramref name="onFatal"/>'s, given the reason.
+    /// </summary>
+    public static async Task<CallToolResult> RunAsync(Func<Answer, Task> body, Func<string, object>? onFatal = null)
     {
         var answer = new Answer();
+        var fatal = false;
         try
         {
             await body(answer);
         }
         catch (Exception e) when (e is UnifiError or UnifiNotConfigured)
         {
+            fatal = true;
             answer.Line(e.Message);
+            answer.View = onFatal?.Invoke(e.Message);
         }
-        return ToolText.Cap(answer._text.ToString());
+        return new CallToolResult
+        {
+            IsError = fatal,
+            Content = [new TextContentBlock { Text = ToolText.Cap(answer._text.ToString()) }],
+            Meta = answer.View is { } view ? new JsonObject { [ViewResources.ViewMetaKey] = JsonSerializer.SerializeToNode(view, view.GetType(), ViewJson) } : null,
+        };
     }
-
-    /// <summary>Tests and the view's runner only: an answer to write into directly.</summary>
-    internal static Answer Start() => new();
 
     public Answer Write(string text)
     {

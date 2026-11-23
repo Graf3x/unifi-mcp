@@ -33,7 +33,7 @@ public sealed partial class DiagnosticTools(UnifiClient console, ConsoleReads re
         [Description("Events per page (1 to 200). Default 50.")] int limit = 50,
         [Description("Page number, starting at 0.")] int page = 0,
         [Description("Site UUID or name. Omit for the configured site.")] string? siteId = null,
-        CancellationToken ct = default) => Strict(async () =>
+        CancellationToken ct = default) => Answer.RunAsync(async a =>
     {
         var site = await reads.SiteAsync(siteId, ct);
         var zone = await site.TimeZoneAsync(ct);
@@ -45,35 +45,34 @@ public sealed partial class DiagnosticTools(UnifiClient console, ConsoleReads re
         var pages = Long(result, "total_page_count") ?? 1;
 
         var filters = new[] { ("category", category), ("event", @event), ("severity", severity), ("search", search) }.Where(f => !string.IsNullOrWhiteSpace(f.Item2)).ToList();
-        var sb = new StringBuilder($"# System log: {total} event(s) in the last {window.Hours} h");
-        sb.AppendLine(filters.Count == 0 ? "" : " matching " + string.Join(", ", filters.Select(f => $"{f.Item1} '{f.Item2}'")));
-        sb.AppendLine($"Showing {events.Count} (page {page} of {Math.Max(pages, 1)}, newest first). Times are console local time ({zone.Name}).");
+        a.Write($"# System log: {total} event(s) in the last {window.Hours} h");
+        a.Line(filters.Count == 0 ? "" : " matching " + string.Join(", ", filters.Select(f => $"{f.Item1} '{f.Item2}'")));
+        a.Line($"Showing {events.Count} (page {page} of {Math.Max(pages, 1)}, newest first). Times are console local time ({zone.Name}).");
         if ((page + 1L) * query.PageSize < total)
-            sb.AppendLine($"More: call again with page={page + 1}, or narrow with category, event, severity or search.");
-        sb.AppendLine().AppendLine(LogTable(events, zone.Zone));
+            a.Line($"More: call again with page={page + 1}, or narrow with category, event, severity or search.");
+        a.Line().Line(LogTable(events, zone.Zone));
 
         if (filters.Count == 0 && page == 0)
         {
             try
             {
                 var counts = await site.SystemLogCountAsync(window.From, window.To, ct);
-                sb.AppendLine("## Counts in this window");
-                sb.AppendLine("Categories: " + Counts(counts, "categories"));
-                sb.AppendLine("Events: " + Counts(counts, "events"));
+                a.Line("## Counts in this window");
+                a.Line("Categories: " + Counts(counts, "categories"));
+                a.Line("Events: " + Counts(counts, "events"));
             }
             catch (UnifiError e)
             {
-                sb.AppendLine($"(Counts unavailable: {e.Message})");
+                a.Line($"(Counts unavailable: {e.Message})");
             }
         }
-        return sb.ToString();
     });
 
     [McpServerTool(Name = "internet_health_faq", Title = "Internet and WAN health", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
     [Description("[Composite] Is the internet connection healthy: each WAN link and whether it is active or backup, the ISP and plan, the gateway's availability and latency monitors, "
                  + "5-minute latency and packet-loss history with the worst intervals, outages, the last speed tests, and recent WAN events from the system log. "
                  + "Use for 'is the internet slow or dropping'. Markdown in steps; a failed step does not stop the rest.")]
-    public Task<string> InternetHealth(
+    public Task<CallToolResult> InternetHealth(
         [Description("History window in hours (1 to 168). Default 24.")] int hours = 24,
         [Description("Site UUID or name. Omit for the configured site.")] string? siteId = null,
         CancellationToken ct = default) => Answer.RunAsync(async a =>
@@ -168,7 +167,7 @@ public sealed partial class DiagnosticTools(UnifiClient console, ConsoleReads re
     [Description("[Composite] Wi-Fi health per access point and radio: channel, width, transmit power, clients, channel utilisation and interference, retry rate and satisfaction, "
                  + "how many neighbouring networks are strong on the same channel, which APs are offline, and recent channel changes and radar events. "
                  + "Problems are flagged (busy channel, interference, high retries). Use for 'why is Wi-Fi slow' or 'which channel should this AP use'.")]
-    public Task<string> WifiHealth(
+    public Task<CallToolResult> WifiHealth(
         [Description("Site UUID or name. Omit for the configured site.")] string? siteId = null,
         CancellationToken ct = default) => Answer.RunAsync(async a =>
     {
@@ -207,7 +206,7 @@ public sealed partial class DiagnosticTools(UnifiClient console, ConsoleReads re
     [Description("[Composite] Everything about one client: identity and vendor, its IP and any fixed-IP reservation, how it connects (switch and exact port with link speed, "
                  + "or the AP, SSID, band, channel, signal, noise, rates and retries), its quality score, and its recent system-log events (connects, disconnects, roams). "
                  + "Finds clients that are offline too (seen in the last 30 days). Use for 'why does this device keep dropping' or 'where is this device plugged in'.")]
-    public Task<string> ClientDiagnostics(
+    public Task<CallToolResult> ClientDiagnostics(
         [Description("Client name or hostname (partial match), IP address or MAC address.")] string client,
         [Description("How far back to read its events, in hours (1 to 720). Default 24.")] int hours = 24,
         [Description("Site UUID or name. Omit for the configured site.")] string? siteId = null,
@@ -277,25 +276,20 @@ public sealed partial class DiagnosticTools(UnifiClient console, ConsoleReads re
                  + "which sources may use it and on which WAN. Use for 'why can't I reach my server from outside'.")]
     public Task<CallToolResult> PortForwards(
         [Description("Site UUID or name. Omit for the configured site.")] string? siteId = null,
-        CancellationToken ct = default) => Strict(async () =>
+        CancellationToken ct = default) => Answer.RunAsync(async a =>
     {
         var rules = await (await reads.SiteAsync(siteId, ct)).PortForwardsAsync(ct);
-        if (rules.Count == 0) return "No port forwards are configured.";
-        return $"## Port forwards: {rules.Count}\n" + Answer.Table(["Name", "State", "Protocol", "WAN port", "Forward to", "Allowed from", "WAN", "Logged"], rules.Select(r => new[]
+        if (rules.Count == 0)
+        {
+            a.Write("No port forwards are configured.");
+            return;
+        }
+        a.Write($"## Port forwards: {rules.Count}\n" + Answer.Table(["Name", "State", "Protocol", "WAN port", "Forward to", "Allowed from", "WAN", "Logged"], rules.Select(r => new[]
         {
             V(r, "name"), Bool(r, "enabled") ? "enabled" : "disabled", V(r, "proto") == "tcp_udp" ? "TCP/UDP" : V(r, "proto").ToUpperInvariant(),
             V(r, "dst_port"), $"{V(r, "fwd")}:{V(r, "fwd_port")}", First(V(r, "src"), "any"), First(V(r, "pfwd_interface"), "wan"), Bool(r, "log") ? "yes" : "no",
-        }));
+        })));
     });
-
-    // --- running ----------------------------------------------------------------------------------------------------
-
-    /// <summary>Single-purpose tools: a failure is a tool error (isError) with the console's reason.</summary>
-    private static async Task<CallToolResult> Strict(Func<Task<string>> run)
-    {
-        try { return ToolText.Ok(await run()); }
-        catch (Exception e) when (e is UnifiError or UnifiNotConfigured) { return ToolText.Error(e.Message); }
-    }
 
     // --- the system log ---------------------------------------------------------------------------------------------
 

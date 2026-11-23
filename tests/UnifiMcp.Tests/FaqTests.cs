@@ -158,11 +158,23 @@ public class FaqTests
     }
 
     [Fact]
-    public async Task Faq_while_not_configured_says_so()
+    public async Task Faq_while_not_configured_says_so_as_a_tool_error()
     {
         await using var h = await Harness.StartAsync(key: false);
-        var (text, _) = await h.CallAsync("network_health_faq");
+        var (text, isError) = await h.CallAsync("network_health_faq");
+        Assert.True(isError);
         Assert.Contains("not configured", text);
         Assert.Empty(h.Unifi.Requests);
+    }
+
+    [Fact]
+    public async Task A_faq_that_cannot_start_is_a_tool_error_and_audited_as_one()
+    {
+        await using var h = await Harness.StartAsync();
+        Seed(h.Unifi);
+        var (text, isError) = await h.CallAsync("network_health_faq", new() { ["siteId"] = "nowhere" });
+        Assert.True(isError);
+        Assert.Contains("The console has no site 'nowhere'", text);
+        Assert.EndsWith("-> error", Assert.Single(h.Logs.Lines, l => l.StartsWith($"{Harness.Login} network_health_faq ", StringComparison.Ordinal)));
     }
 }
