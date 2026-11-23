@@ -177,6 +177,8 @@ public class GoogleSignInTests
     [InlineData("GET", "/connections/abc", true)]
     [InlineData("HEAD", "/oauth/authorize", true)]
     [InlineData("GET", "/oauth/authorize", true)]
+    [InlineData("GET", "/oauth/authorize/", true)]
+    [InlineData("GET", "/connectionsX", false)]
     [InlineData("POST", "/connections", false)]
     [InlineData("POST", "/oauth/authorize", false)]
     [InlineData("GET", "/oauth/token", false)]

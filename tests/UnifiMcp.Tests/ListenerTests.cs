@@ -87,6 +87,41 @@ public class ListenerTests
             Assert.NotEqual(HttpStatusCode.NotFound, (await internet.SendAsync(request)).StatusCode);
     }
 
+    /// <summary>
+    /// The tailnet serves the MCP endpoint, the health check and the icons, and nothing else of the public side's: not the
+    /// resource metadata (tailnet callers are identified by Tailscale, not OAuth) and not the sign-in handler's paths.
+    /// </summary>
+    [Theory]
+    [InlineData("/.well-known/oauth-protected-resource")]
+    [InlineData("/.well-known/oauth-protected-resource/mcp")]
+    [InlineData("/signout-oidc")]
+    [InlineData("/signout-callback-oidc")]
+    [InlineData("/connectionsX")]
+    [InlineData("/setup")]
+    [InlineData("/admin")]
+    public async Task Tailnet_serves_nothing_else_of_the_public_side(string path)
+    {
+        await using var h = await PublicHarness.StartAsync(listenerOf: TailnetIfMarked);
+        using var tailnet = h.NewClient();
+        tailnet.DefaultRequestHeaders.Add("X-Test-Tailnet", "1");
+        tailnet.DefaultRequestHeaders.Add(CallerPolicy.LoginHeader, Harness.Login);
+        Assert.Equal(HttpStatusCode.NotFound, (await tailnet.GetAsync(path)).StatusCode);
+    }
+
+    [Theory]
+    [InlineData("/healthz")]
+    [InlineData("/healthz/")]
+    [InlineData("/mcp/icon-512.png")]
+    [InlineData("/mcp/icon-180.png")]
+    [InlineData("/mcp/icon-32.png")]
+    public async Task Tailnet_serves_its_health_check_and_the_icons(string path)
+    {
+        await using var h = await PublicHarness.StartAsync(listenerOf: TailnetIfMarked);
+        using var tailnet = h.NewClient();
+        tailnet.DefaultRequestHeaders.Add("X-Test-Tailnet", "1");
+        Assert.Equal(HttpStatusCode.OK, (await tailnet.GetAsync(path)).StatusCode);
+    }
+
     [Fact]
     public async Task Tailnet_tools_work_beside_a_ready_connector()
     {
@@ -204,10 +239,75 @@ public class ListenerTests
         Assert.Equal(HttpStatusCode.Forbidden, (await h.Http.SendAsync(request)).StatusCode);
     }
 
+    /// <summary>
+    /// The connector's own origin is welcome on the public browser pages and refused on /mcp and its icons, which no
+    /// page of the server's calls.
+    /// </summary>
+    [Theory]
+    [InlineData("/healthz", HttpStatusCode.OK)]
+    [InlineData("/.well-known/oauth-authorization-server", HttpStatusCode.OK)]
+    [InlineData("/oauth/jwks", HttpStatusCode.OK)]
+    [InlineData("/mcp/icon-32.png", HttpStatusCode.Forbidden)]
+    [InlineData("/mcp/", HttpStatusCode.Forbidden)]
+    public async Task Public_browser_pages_accept_the_connector_s_own_origin(string path, HttpStatusCode status)
+    {
+        await using var h = await PublicHarness.StartAsync();
+        using var request = new HttpRequestMessage(HttpMethod.Get, path);
+        request.Headers.Add("Origin", "https://" + PublicHarness.Host);
+        Assert.Equal(status, (await h.Http.SendAsync(request)).StatusCode);
+    }
+
     [Fact]
     public async Task Public_serves_only_its_own_paths()
     {
         await using var h = await PublicHarness.StartAsync();
         Assert.Equal(HttpStatusCode.NotFound, (await h.Http.GetAsync("/admin")).StatusCode);
+    }
+
+    [Fact]
+    public async Task Public_forgives_a_trailing_slash_as_the_other_listeners_do()
+    {
+        await using var h = await PublicHarness.StartAsync();
+        Assert.Equal("ok", await h.Http.GetStringAsync("/healthz/"));
+        var response = await h.Http.PostAsync("/mcp/", new StringContent(Initialize, Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    /// <summary>
+    /// A path that only starts like a route is refused at the door, before the origin check would answer 403: the gate
+    /// knows which paths exist, so it is not routing's 404.
+    /// </summary>
+    [Theory]
+    [InlineData("/connectionsX")]
+    [InlineData("/mcp/icon-evil.png")]
+    [InlineData("/.well-known/security.txt")]
+    [InlineData("/oauth/other")]
+    public async Task Public_refuses_a_look_alike_path_at_the_door(string path)
+    {
+        await using var h = await PublicHarness.StartAsync();
+        using var request = new HttpRequestMessage(HttpMethod.Post, path) { Content = new StringContent("{}", Encoding.UTF8, "application/json") };
+        request.Headers.Add("Origin", "https://evil.example");
+        Assert.Equal(HttpStatusCode.NotFound, (await h.Http.SendAsync(request)).StatusCode);
+    }
+
+    /// <summary>
+    /// What an MCP client's discovery asks for, and what it gets: the four documents that exist, and the forms that do
+    /// not (path-suffixed authorization-server metadata, other well-known documents) a 404, so clients fall back as before.
+    /// </summary>
+    [Theory]
+    [InlineData("/.well-known/oauth-protected-resource", HttpStatusCode.OK)]
+    [InlineData("/.well-known/oauth-protected-resource/mcp", HttpStatusCode.OK)]
+    [InlineData("/.well-known/oauth-authorization-server", HttpStatusCode.OK)]
+    [InlineData("/.well-known/openid-configuration", HttpStatusCode.OK)]
+    [InlineData("/.well-known/oauth-authorization-server/mcp", HttpStatusCode.NotFound)]
+    [InlineData("/.well-known/openid-configuration/mcp", HttpStatusCode.NotFound)]
+    [InlineData("/mcp/.well-known/openid-configuration", HttpStatusCode.NotFound)]
+    [InlineData("/.well-known/mcp", HttpStatusCode.NotFound)]
+    [InlineData("/.well-known/mcp.json", HttpStatusCode.NotFound)]
+    public async Task Public_discovery_paths_answer_as_clients_expect(string path, HttpStatusCode status)
+    {
+        await using var h = await PublicHarness.StartAsync();
+        using var client = h.NewClient();
+        Assert.Equal(status, (await client.GetAsync(path)).StatusCode);
     }
 }

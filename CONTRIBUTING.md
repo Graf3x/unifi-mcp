@@ -31,6 +31,7 @@ follow [guide 1](README.md#guide-1-quick-local-setup) in the README.
 | `src/UnifiMcp/ConsoleTransport.cs` | The only code that talks to the console: the key, certificate trust (pin or CA), scrubbing |
 | `src/UnifiMcp/UnifiClient.cs` | The console's two APIs over that transport: the write gate, paging, finding a site |
 | `src/UnifiMcp/ConsoleReads.cs` | The console's internal API: one named read per endpoint, cached and throttled |
+| `src/UnifiMcp/Listeners.cs`, `RouteTable.cs`, `Connector/PublicGate.cs` | Which listener a request came in on, which paths each listener serves, and the gate that refuses the rest |
 | `src/UnifiMcp/Connector/` | The Claude connector: OAuth, sign-in pages, token issuing |
 | `src/UnifiMcp/Setup/` | The setup page: its checks, its markup, script and styles, and the README guide it renders |
 | `tests/UnifiMcp.Tests/` | xUnit tests; `ToolContractTests` checks every tool against Claude's tool rules |
@@ -45,6 +46,9 @@ follow [guide 1](README.md#guide-1-quick-local-setup) in the README.
   `UNIFI_ALLOW_WRITES` and the per-call `confirm`.
 - **Composite tools:** write the answer through `Answer`: put every read the answer can do without in `a.Step`, so its
   failure is reported and the rest still runs, and read the console's JSON through `ConsoleJson`.
+- **Routes:** give every new route an entry in `RouteTable`, with the listeners that serve it. A path with no entry
+  is a 404 on every listener before authentication, and `RouteTableTests` fails on a mapped route with no entry, or an
+  entry with no route.
 - **The console's internal API:** add a read as a named method on `ConsoleSite` in `ConsoleReads.cs`, never a way to
   send a path of the caller's choosing, and return chosen fields, never the raw JSON (it carries secrets).
 - **Docs:** if you change setup steps or settings, update the README and `.env.example` together. The setup page renders

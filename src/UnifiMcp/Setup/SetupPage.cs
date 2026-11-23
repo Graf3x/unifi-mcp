@@ -89,7 +89,8 @@ public static class SetupPage
         var settings = app.Services.GetRequiredService<Settings>();
         if (!settings.SetupPage) return;
         var setup = app.MapGroup(Path).AllowAnonymous().ExcludeFromDescription()
-            // PublicGate already keeps other listeners off /setup; this holds even if that ever changes.
+            // RouteTable gives /setup to the setup listener alone, so PublicGate keeps the others off it; this holds even if
+            // that ever changes.
             .AddEndpointFilter(async (ctx, next) => ctx.HttpContext.ListenerOf() == Listener.Setup ? await next(ctx) : Results.NotFound());
 
         setup.MapGet("", Page); // also matches /setup/

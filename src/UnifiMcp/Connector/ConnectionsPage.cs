@@ -20,11 +20,16 @@ public static class ConnectionsPage
         (32, Convert.FromBase64String(IconData.Icon32)),
     ];
 
+    /// <summary>Where the icons are served, e.g. <c>/mcp/icon-512.png</c>.</summary>
+    internal static IEnumerable<string> IconPaths => Icons.Select(i => IconPath(i.Size));
+
+    private static string IconPath(int size) => $"/mcp/icon-{size}.png";
+
     public static void Map(WebApplication app)
     {
         // Anonymous, no rate limit (the policies are opt-in per endpoint), and the same on either listener: it is public artwork.
         foreach (var (size, png) in Icons)
-            app.MapGet($"/mcp/icon-{size}.png", (HttpContext http) =>
+            app.MapGet(IconPath(size), (HttpContext http) =>
                 {
                     http.Response.Headers.CacheControl = "public, max-age=86400";
                     http.Response.Headers.XContentTypeOptions = "nosniff";

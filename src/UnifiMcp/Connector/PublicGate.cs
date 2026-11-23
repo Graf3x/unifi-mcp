@@ -2,7 +2,8 @@ namespace UnifiMcp;
 
 /// <summary>
 /// Keeps the listeners apart. Runs before authentication: an unknown listener is refused outright, a public
-/// request never carries the Tailscale header on to the tailnet handler, and each side only sees its own routes.
+/// request never carries the Tailscale header on to the tailnet handler, and each listener only reaches the paths
+/// <see cref="RouteTable"/> gives it; anything else is a 404.
 /// </summary>
 public sealed class PublicGate(RequestDelegate next, Settings settings, ConnectorState state)
 {
@@ -38,7 +39,7 @@ public sealed class PublicGate(RequestDelegate next, Settings settings, Connecto
                     await ctx.Response.WriteAsync("The connector isn't set up yet.");
                     return;
                 }
-                if (!PublicPath(ctx.Request.Path))
+                if (!RouteTable.Serves(Listener.Public, ctx.Request.Path))
                 {
                     ctx.Response.StatusCode = StatusCodes.Status404NotFound;
                     return;
@@ -47,7 +48,7 @@ public sealed class PublicGate(RequestDelegate next, Settings settings, Connecto
 
             case Listener.Setup:
                 // The setup listener serves the setup page and nothing else: no MCP, no OAuth, no sign-in pages.
-                if (!ctx.Request.Path.StartsWithSegments(SetupPage.Path, StringComparison.OrdinalIgnoreCase))
+                if (!RouteTable.Serves(Listener.Setup, ctx.Request.Path))
                 {
                     ctx.Response.StatusCode = StatusCodes.Status404NotFound;
                     return;
@@ -63,9 +64,8 @@ public sealed class PublicGate(RequestDelegate next, Settings settings, Connecto
                 break;
 
             case Listener.Lan:
-                // Token-only: the MCP endpoint and the health check, nothing else (a trailing slash is forgiven, as routing
-                // forgives it). The Tailscale header means nothing here.
-                if (!LanPath(ctx.Request.Path, "/mcp") && !LanPath(ctx.Request.Path, "/healthz"))
+                // Token-only: the MCP endpoint and the health check, nothing else. The Tailscale header means nothing here.
+                if (!RouteTable.Serves(Listener.Lan, ctx.Request.Path))
                 {
                     ctx.Response.StatusCode = StatusCodes.Status404NotFound;
                     return;
@@ -74,7 +74,8 @@ public sealed class PublicGate(RequestDelegate next, Settings settings, Connecto
                 break;
 
             case Listener.Tailnet:
-                if (OnlyPublic(ctx.Request.Path) || ctx.Request.Path.StartsWithSegments(SetupPage.Path, StringComparison.OrdinalIgnoreCase))
+                // The MCP endpoint, the health check and the icons: none of the public side's OAuth, metadata or sign-in.
+                if (!RouteTable.Serves(Listener.Tailnet, ctx.Request.Path))
                 {
                     ctx.Response.StatusCode = StatusCodes.Status404NotFound;
                     return;
@@ -84,32 +85,7 @@ public sealed class PublicGate(RequestDelegate next, Settings settings, Connecto
         await next(ctx);
     }
 
-    private static bool LanPath(PathString p, string path) =>
-        p.Equals(path, StringComparison.OrdinalIgnoreCase) || p.Equals(path + "/", StringComparison.OrdinalIgnoreCase);
-
     private static bool HostMatches(HostString host, Uri baseUrl) =>
         string.Equals(host.Host, baseUrl.Host, StringComparison.OrdinalIgnoreCase)
         && (host.Port is null || host.Port == baseUrl.Port);
-
-    private static bool PublicPath(PathString p) =>
-        p.Equals("/mcp", StringComparison.OrdinalIgnoreCase)
-        || (Starts(p, "/mcp/icon-") && p.Value!.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
-        || p.StartsWithSegments("/.well-known", StringComparison.OrdinalIgnoreCase)
-        || p.StartsWithSegments("/oauth", StringComparison.OrdinalIgnoreCase)
-        || p.Equals("/signin-google", StringComparison.OrdinalIgnoreCase)
-        || p.Equals(CodeSignIn.Path, StringComparison.OrdinalIgnoreCase)
-        || Starts(p, "/connections")
-        || p.Equals("/healthz", StringComparison.OrdinalIgnoreCase);
-
-    private static bool Starts(PathString p, string prefix) =>
-        p.Value?.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) == true;
-
-    private static bool OnlyPublic(PathString p) =>
-        p.StartsWithSegments("/oauth", StringComparison.OrdinalIgnoreCase)
-        || p.Equals("/signin-google", StringComparison.OrdinalIgnoreCase)
-        || p.Equals(CodeSignIn.Path, StringComparison.OrdinalIgnoreCase)
-        || Starts(p, "/connections")
-        // Segment matching also covers the RFC 8414 path-suffixed forms (…/oauth-authorization-server/mcp).
-        || p.StartsWithSegments("/.well-known/oauth-authorization-server", StringComparison.OrdinalIgnoreCase)
-        || p.StartsWithSegments("/.well-known/openid-configuration", StringComparison.OrdinalIgnoreCase);
 }
