@@ -2,7 +2,8 @@ namespace UnifiMcp;
 
 /// <summary>
 /// Keeps the listeners apart. Runs before authentication: an unknown listener is refused outright, a public
-/// request never carries the Tailscale header on to the tailnet handler, and each side only sees its own routes.
+/// request never carries the Tailscale header on to the tailnet handler, and each listener only reaches the paths
+/// <see cref="RouteTable"/> gives it; anything else is a 404.
 /// </summary>
 public sealed class PublicGate(RequestDelegate next, Settings settings, ConnectorState state)
 {
@@ -73,7 +74,8 @@ public sealed class PublicGate(RequestDelegate next, Settings settings, Connecto
                 break;
 
             case Listener.Tailnet:
-                if (OnlyPublic(ctx.Request.Path) || ctx.Request.Path.StartsWithSegments(SetupPage.Path, StringComparison.OrdinalIgnoreCase))
+                // The MCP endpoint, the health check and the icons: none of the public side's OAuth, metadata or sign-in.
+                if (!RouteTable.Serves(Listener.Tailnet, ctx.Request.Path))
                 {
                     ctx.Response.StatusCode = StatusCodes.Status404NotFound;
                     return;
@@ -86,16 +88,4 @@ public sealed class PublicGate(RequestDelegate next, Settings settings, Connecto
     private static bool HostMatches(HostString host, Uri baseUrl) =>
         string.Equals(host.Host, baseUrl.Host, StringComparison.OrdinalIgnoreCase)
         && (host.Port is null || host.Port == baseUrl.Port);
-
-    private static bool Starts(PathString p, string prefix) =>
-        p.Value?.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) == true;
-
-    private static bool OnlyPublic(PathString p) =>
-        p.StartsWithSegments("/oauth", StringComparison.OrdinalIgnoreCase)
-        || p.Equals("/signin-google", StringComparison.OrdinalIgnoreCase)
-        || p.Equals(CodeSignIn.Path, StringComparison.OrdinalIgnoreCase)
-        || Starts(p, "/connections")
-        // Segment matching also covers the RFC 8414 path-suffixed forms (…/oauth-authorization-server/mcp).
-        || p.StartsWithSegments("/.well-known/oauth-authorization-server", StringComparison.OrdinalIgnoreCase)
-        || p.StartsWithSegments("/.well-known/openid-configuration", StringComparison.OrdinalIgnoreCase);
 }

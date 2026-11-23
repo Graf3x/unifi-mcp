@@ -87,6 +87,41 @@ public class ListenerTests
             Assert.NotEqual(HttpStatusCode.NotFound, (await internet.SendAsync(request)).StatusCode);
     }
 
+    /// <summary>
+    /// The tailnet serves the MCP endpoint, the health check and the icons, and nothing else of the public side's: not the
+    /// resource metadata (tailnet callers are identified by Tailscale, not OAuth) and not the sign-in handler's paths.
+    /// </summary>
+    [Theory]
+    [InlineData("/.well-known/oauth-protected-resource")]
+    [InlineData("/.well-known/oauth-protected-resource/mcp")]
+    [InlineData("/signout-oidc")]
+    [InlineData("/signout-callback-oidc")]
+    [InlineData("/connectionsX")]
+    [InlineData("/setup")]
+    [InlineData("/admin")]
+    public async Task Tailnet_serves_nothing_else_of_the_public_side(string path)
+    {
+        await using var h = await PublicHarness.StartAsync(listenerOf: TailnetIfMarked);
+        using var tailnet = h.NewClient();
+        tailnet.DefaultRequestHeaders.Add("X-Test-Tailnet", "1");
+        tailnet.DefaultRequestHeaders.Add(CallerPolicy.LoginHeader, Harness.Login);
+        Assert.Equal(HttpStatusCode.NotFound, (await tailnet.GetAsync(path)).StatusCode);
+    }
+
+    [Theory]
+    [InlineData("/healthz")]
+    [InlineData("/healthz/")]
+    [InlineData("/mcp/icon-512.png")]
+    [InlineData("/mcp/icon-180.png")]
+    [InlineData("/mcp/icon-32.png")]
+    public async Task Tailnet_serves_its_health_check_and_the_icons(string path)
+    {
+        await using var h = await PublicHarness.StartAsync(listenerOf: TailnetIfMarked);
+        using var tailnet = h.NewClient();
+        tailnet.DefaultRequestHeaders.Add("X-Test-Tailnet", "1");
+        Assert.Equal(HttpStatusCode.OK, (await tailnet.GetAsync(path)).StatusCode);
+    }
+
     [Fact]
     public async Task Tailnet_tools_work_beside_a_ready_connector()
     {
