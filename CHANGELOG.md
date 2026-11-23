@@ -5,6 +5,8 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 0.7.0
+
 ### Added
 
 - `device_diagnostics_faq` carries an interactive view (MCP Apps) for hosts that render one: a tile per device, and for
