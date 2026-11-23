@@ -5,6 +5,28 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Fixed
+
+- A composite tool (the `*_faq` tools, `system_log`, `list_port_forwards`) that cannot answer at all, because it is not
+  configured, names a site the console doesn't have or loses a read it can't do without, returns the reason as a tool
+  error (`isError`), after whatever it had already written, and the audit line says `-> error`. Before, the faq tools and
+  most diagnostics gave the reason as a successful answer. A failed step is still not a tool error, and
+  `device_diagnostics_faq` still shows the reason in its view.
+- A console answer with a field of a type this server doesn't expect fails only the step that read it ("The console's
+  answer was not what this server expects.") instead of ending the tool with an unhandled error.
+- `client_path_faq` and `dhcp_reservation_faq` say why when the console's own record of a client can't be read
+  (`Console client record step failed`). Before, that read the same as a client the console has no record of.
+- Tables use one line ending, and a `|` or a line break in a name or header no longer breaks them. `search_operations`
+  uses the same table, so a `|` in an operation's summary no longer splits its row.
+
+### Changed
+
+- `system_log` reports counts it can't read as `**Counts step failed:**`, like every other step, instead of
+  `(Counts unavailable: …)`.
+- A composite tool's answer (its steps, failure lines, tables, the length cap and the view) is written by one module,
+  `Answer`, and the console's JSON is read by field name through one, `ConsoleJson`. Apart from the fixes above, answers
+  are unchanged.
+
 ## 0.7.0
 
 ### Added

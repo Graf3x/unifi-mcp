@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using static UnifiMcp.ConsoleJson;
 
 namespace UnifiMcp;
 
@@ -99,8 +100,8 @@ public sealed partial class ConsoleReads(UnifiClient client, TimeProvider time)
         JsonElement json;
         try { json = JsonDocument.Parse(r.Body).RootElement; }
         catch (JsonException) { throw new UnifiError($"The console's answer to {name} was not JSON."); }
-        if (json.ValueKind == JsonValueKind.Object && json.TryGetProperty("meta", out var meta) && Str(meta, "rc") is { } rc && rc != "ok")
-            throw new UnifiError($"The console refused {name}: {Str(meta, "msg") ?? rc}.");
+        if (json.ValueKind == JsonValueKind.Object && json.TryGetProperty("meta", out var meta) && TextOrNull(meta, "rc") is { } rc && rc != "ok")
+            throw new UnifiError($"The console refused {name}: {TextOrNull(meta, "msg") ?? rc}.");
         return json;
     }
 
@@ -123,7 +124,7 @@ public sealed partial class ConsoleReads(UnifiClient client, TimeProvider time)
         try
         {
             var info = await DataAsync($"/api/s/{reference}/stat/sysinfo", ct);
-            if (info.Count > 0 && Str(info[0], "timezone") is { } id && TimeZoneInfo.TryFindSystemTimeZoneById(id, out var zone))
+            if (info.Count > 0 && TextOrNull(info[0], "timezone") is { } id && TimeZoneInfo.TryFindSystemTimeZoneById(id, out var zone))
                 return _zones[reference] = (zone, id);
         }
         catch (UnifiError)
@@ -132,11 +133,6 @@ public sealed partial class ConsoleReads(UnifiClient client, TimeProvider time)
         }
         return (TimeZoneInfo.Utc, "UTC");
     }
-
-    private static string? Str(JsonElement e, string name) =>
-        e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
-
-    private static string Short(string text) => text.Length <= 500 ? text : text[..500] + "...";
 }
 
 /// <summary>One site's reads from the console's internal API. Cheap to make: what lasts lives in <see cref="ConsoleReads"/>.</summary>

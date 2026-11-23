@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using static UnifiMcp.ConsoleJson;
 
 namespace UnifiMcp;
 
@@ -82,16 +83,11 @@ public sealed class UnifiClient(Settings settings, ConsoleTransport transport)
         var wanted = string.IsNullOrWhiteSpace(hint) ? settings.Site : hint.Trim();
         if (_sites.TryGetValue(wanted, out var known)) return known;
 
-        var sites = (await GetAllAsync("/v1/sites", ct)).Where(s => Str(s, "id") is { Length: > 0 }).ToList();
+        var sites = (await GetAllAsync("/v1/sites", ct)).Where(s => TextOrNull(s, "id") is { Length: > 0 }).ToList();
         // An id names one site, so it wins over another site whose name or internal name happens to be that id.
-        bool Is(JsonElement s, string field) => string.Equals(Str(s, field), wanted, StringComparison.OrdinalIgnoreCase);
+        bool Is(JsonElement s, string field) => string.Equals(TextOrNull(s, field), wanted, StringComparison.OrdinalIgnoreCase);
         if (sites.Where(s => Is(s, "id")).Concat(sites.Where(s => Is(s, "name") || Is(s, "internalReference"))).FirstOrDefault() is { ValueKind: JsonValueKind.Object } found)
-            return _sites[wanted] = new Site(Str(found, "id")!, Str(found, "internalReference"), Str(found, "name") ?? Str(found, "id")!);
-        throw new UnifiError($"The console has no site '{wanted}'. Sites: {string.Join(", ", sites.Select(s => Str(s, "name")))}.");
+            return _sites[wanted] = new Site(TextOrNull(found, "id")!, TextOrNull(found, "internalReference"), TextOrNull(found, "name") ?? TextOrNull(found, "id")!);
+        throw new UnifiError($"The console has no site '{wanted}'. Sites: {string.Join(", ", sites.Select(s => TextOrNull(s, "name")))}.");
     }
-
-    private static string? Str(JsonElement e, string name) =>
-        e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
-
-    private static string Short(string text) => text.Length <= 500 ? text : text[..500] + "...";
 }
