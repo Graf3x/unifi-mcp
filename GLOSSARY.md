@@ -23,6 +23,10 @@ _Avoid_: stage, check (a check is the setup page's)
 
 ## Access
 
+**Listener**:
+One way into the server, with its own callers and its own short list of what it serves: the public side (the connector, reached through the tunnel), the tailnet, the LAN, and the setup page. A request that doesn't come in through a known listener is refused.
+_Avoid_: socket, port, side (except "the public side")
+
 **Owner**:
 The one person allowed to use the server: a listed Google address, or whoever holds the sign-in code.
 _Avoid_: user, admin, account

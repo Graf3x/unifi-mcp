@@ -18,6 +18,11 @@ follow [Semantic Versioning](https://semver.org/).
   (`Console client record step failed`). Before, that read the same as a client the console has no record of.
 - Tables use one line ending, and a `|` or a line break in a name or header no longer breaks them. `search_operations`
   uses the same table, so a `|` in an operation's summary no longer splits its row.
+- The tailnet listener serves only `/mcp`, `/healthz` and the connector icons. It used to refuse a list of the public
+  side's paths and let the rest through, so the protected-resource metadata (`/.well-known/oauth-protected-resource`)
+  answered there, and a public route added later would have too.
+- `/mcp/` and `/healthz/` work on the public listener, as they already did on the LAN and the tailnet (the 0.6.0 note
+  said so). `/oauth/authorize/` sends a browser to sign-in like `/oauth/authorize`, instead of a bare 401.
 
 ### Changed
 
@@ -26,6 +31,10 @@ follow [Semantic Versioning](https://semver.org/).
 - A composite tool's answer (its steps, failure lines, tables, the length cap and the view) is written by one module,
   `Answer`, and the console's JSON is read by field name through one, `ConsoleJson`. Apart from the fixes above, answers
   are unchanged.
+- The public listener answers only the paths it serves: `/.well-known` is its three documents, and a path that only
+  starts like a route (`/connectionsX`, `/mcp/icon-x.png`) is a 404 at the door instead of a 403 from the origin check.
+  MCP discovery is unchanged. Which listener serves which path is one table, `RouteTable`, that the gate, the request
+  guard and sign-in all read.
 
 ## 0.7.0
 
