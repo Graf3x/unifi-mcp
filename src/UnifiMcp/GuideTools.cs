@@ -70,13 +70,12 @@ public sealed class GuideTools(Settings settings, UnifiClient client, OpenApiCat
             .Where(o => words.All(w => $"{o.ToolName} {o.Tag} {o.Summary}".Contains(w, StringComparison.OrdinalIgnoreCase)))
             .Take(40).ToList();
         if (hits.Count == 0) return $"No operation matches '{query}'.";
-        var sb = new StringBuilder("| operation | method | category | summary | parameters | run with |\n|---|---|---|---|---|---|\n");
-        foreach (var o in hits)
+        return Answer.Table(["operation", "method", "category", "summary", "parameters", "run with"], hits.Select(o => new string[]
         {
-            var pars = string.Join(", ", o.Params.Where(p => p.Name != "siteId").Select(p => p.Required ? p.Name + "*" : p.Name).Concat(o.HasBody ? ["body*"] : []));
-            sb.AppendLine($"| {o.ToolName} | {o.Method} | {o.Tag} | {o.Summary} | {pars} | {RunWith(o)} |");
-        }
-        return sb.ToString();
+            o.ToolName, $"{o.Method}", o.Tag, o.Summary,
+            string.Join(", ", o.Params.Where(p => p.Name != "siteId").Select(p => p.Required ? p.Name + "*" : p.Name).Concat(o.HasBody ? ["body*"] : [])),
+            RunWith(o),
+        }));
     }
 
     private string RunWith(ApiOperation o) =>

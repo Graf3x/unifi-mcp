@@ -91,11 +91,17 @@ internal sealed class Answer
 
     public override string ToString() => _text.ToString();
 
-    /// <summary>A markdown table. A pipe in a cell is escaped so it cannot end the cell.</summary>
+    /// <summary>
+    /// A markdown table, with <c>\n</c> line endings. A pipe in a header or cell is escaped and a line break becomes a
+    /// space, so no value (a device's name, say) can end a cell or a row.
+    /// </summary>
     public static string Table(string[] headers, IEnumerable<string[]> rows)
     {
-        var sb = new StringBuilder($"| {string.Join(" | ", headers)} |\n|{string.Concat(headers.Select(_ => "---|"))}\n");
-        foreach (var row in rows) sb.AppendLine($"| {string.Join(" | ", row.Select(c => c.Replace("|", "\\|")))} |");
+        static string Row(IEnumerable<string> cells) => $"| {string.Join(" | ", cells.Select(Cell))} |\n";
+        static string Cell(string c) => c.Replace("\r\n", " ").Replace('\n', ' ').Replace('\r', ' ').Replace("|", "\\|");
+
+        var sb = new StringBuilder(Row(headers)).Append('|').Append(string.Concat(headers.Select(_ => "---|"))).Append('\n');
+        foreach (var row in rows) sb.Append(Row(row));
         return sb.ToString();
     }
 

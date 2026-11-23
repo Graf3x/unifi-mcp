@@ -309,5 +309,7 @@ public class GuideToolTests
         var (text, _) = await h.CallAsync("search_operations", new() { ["query"] = "acl rule" });
         Assert.Contains("aclRuleId*", text);   // required parameters are starred
         Assert.Contains("call_read_operation", text);
+        Assert.StartsWith("| operation | method | category | summary | parameters | run with |\n|---|---|---|---|---|---|\n", text);
+        Assert.DoesNotContain("\r", text);     // the shared table: one line ending everywhere
     }
 }

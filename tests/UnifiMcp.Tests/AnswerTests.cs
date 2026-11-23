@@ -183,11 +183,10 @@ public class AnswerTests
     }
 
     [Fact]
-    public void A_table_escapes_pipes_in_cells()
+    public void A_table_has_one_line_ending_and_nothing_in_a_cell_can_break_it()
     {
-        var table = Answer.Table(["Name", "IP"], [["a|b", "192.168.1.5"]]);
+        var table = Answer.Table(["Name|alias", "IP"], [["a|b", "192.168.1.5"], ["first\nsecond", "c\r\nd"]]);
 
-        Assert.StartsWith("| Name | IP |\n|---|---|\n", table);
-        Assert.Contains(@"| a\|b | 192.168.1.5 |", table);
+        Assert.Equal("| Name\\|alias | IP |\n|---|---|\n| a\\|b | 192.168.1.5 |\n| first second | c d |\n", table);
     }
 }
