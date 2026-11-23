@@ -38,7 +38,7 @@ public sealed class PublicGate(RequestDelegate next, Settings settings, Connecto
                     await ctx.Response.WriteAsync("The connector isn't set up yet.");
                     return;
                 }
-                if (!PublicPath(ctx.Request.Path))
+                if (!RouteTable.Serves(Listener.Public, ctx.Request.Path))
                 {
                     ctx.Response.StatusCode = StatusCodes.Status404NotFound;
                     return;
@@ -47,7 +47,7 @@ public sealed class PublicGate(RequestDelegate next, Settings settings, Connecto
 
             case Listener.Setup:
                 // The setup listener serves the setup page and nothing else: no MCP, no OAuth, no sign-in pages.
-                if (!ctx.Request.Path.StartsWithSegments(SetupPage.Path, StringComparison.OrdinalIgnoreCase))
+                if (!RouteTable.Serves(Listener.Setup, ctx.Request.Path))
                 {
                     ctx.Response.StatusCode = StatusCodes.Status404NotFound;
                     return;
@@ -63,9 +63,8 @@ public sealed class PublicGate(RequestDelegate next, Settings settings, Connecto
                 break;
 
             case Listener.Lan:
-                // Token-only: the MCP endpoint and the health check, nothing else (a trailing slash is forgiven, as routing
-                // forgives it). The Tailscale header means nothing here.
-                if (!LanPath(ctx.Request.Path, "/mcp") && !LanPath(ctx.Request.Path, "/healthz"))
+                // Token-only: the MCP endpoint and the health check, nothing else. The Tailscale header means nothing here.
+                if (!RouteTable.Serves(Listener.Lan, ctx.Request.Path))
                 {
                     ctx.Response.StatusCode = StatusCodes.Status404NotFound;
                     return;
@@ -84,22 +83,9 @@ public sealed class PublicGate(RequestDelegate next, Settings settings, Connecto
         await next(ctx);
     }
 
-    private static bool LanPath(PathString p, string path) =>
-        p.Equals(path, StringComparison.OrdinalIgnoreCase) || p.Equals(path + "/", StringComparison.OrdinalIgnoreCase);
-
     private static bool HostMatches(HostString host, Uri baseUrl) =>
         string.Equals(host.Host, baseUrl.Host, StringComparison.OrdinalIgnoreCase)
         && (host.Port is null || host.Port == baseUrl.Port);
-
-    private static bool PublicPath(PathString p) =>
-        p.Equals("/mcp", StringComparison.OrdinalIgnoreCase)
-        || (Starts(p, "/mcp/icon-") && p.Value!.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
-        || p.StartsWithSegments("/.well-known", StringComparison.OrdinalIgnoreCase)
-        || p.StartsWithSegments("/oauth", StringComparison.OrdinalIgnoreCase)
-        || p.Equals("/signin-google", StringComparison.OrdinalIgnoreCase)
-        || p.Equals(CodeSignIn.Path, StringComparison.OrdinalIgnoreCase)
-        || Starts(p, "/connections")
-        || p.Equals("/healthz", StringComparison.OrdinalIgnoreCase);
 
     private static bool Starts(PathString p, string prefix) =>
         p.Value?.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) == true;
