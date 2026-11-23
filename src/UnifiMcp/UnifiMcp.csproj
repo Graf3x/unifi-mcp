@@ -3,7 +3,7 @@
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <AssemblyName>unifi-mcp</AssemblyName>
-    <Version>0.6.1</Version>
+    <Version>0.7.0</Version>
     <RootNamespace>UnifiMcp</RootNamespace>
     <InvariantGlobalization>true</InvariantGlobalization>
     <Nullable>enable</Nullable>
