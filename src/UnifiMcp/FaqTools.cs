@@ -73,7 +73,7 @@ public sealed class FaqTools(UnifiClient console, ConsoleReads reads)
         }
         a.Line(Answer.Table(["Hop", "Device", "Model", "State", "IP"],
             hops.Select((d, i) => new[] { (i + 1).ToString(), Str(d, "name") ?? "?", Str(d, "model") ?? "?", Str(d, "state") ?? "?", Str(d, "ipAddress") ?? "" })));
-        if (await StationAsync(siteId, Str(c, "macAddress"), ct) is { } sta)
+        if (await StationAsync(a, siteId, Str(c, "macAddress"), ct) is { } sta)
         {
             a.Line(DiagnosticTools.V(sta, "is_wired") == "true"
                 ? $"**Which port:** plugged into {DiagnosticTools.V(sta, "last_uplink_name")} port {DiagnosticTools.V(sta, "sw_port")} at {DiagnosticTools.V(sta, "wired_rate_mbps")} Mbps."
@@ -109,7 +109,7 @@ public sealed class FaqTools(UnifiClient console, ConsoleReads reads)
         if (net is null) a.Line("The client's address is in no known subnet.").Line();
         else a.Line(DescribePool(net, ip)).Line();
 
-        var sta = await StationAsync(siteId, Str(matches[0], "macAddress"), ct);
+        var sta = await StationAsync(a, siteId, Str(matches[0], "macAddress"), ct);
         var reserved = sta is { } s && DiagnosticTools.V(s, "use_fixedip") == "true" ? DiagnosticTools.V(s, "fixed_ip") : null;
         a.Line("## Reservation");
         a.Line(sta is null ? "The console did not report this client's reservation, so whether one exists has to be checked in the UniFi app (the client's Settings, Fixed IP)."
@@ -166,19 +166,16 @@ public sealed class FaqTools(UnifiClient console, ConsoleReads reads)
         return matches;
     }
 
-    /// <summary>The console's own record of a connected client (switch port, fixed IP), or null when it cannot say.</summary>
-    private async Task<JsonElement?> StationAsync(string? site, string? mac, CancellationToken ct)
+    /// <summary>
+    /// The console's own record of a connected client (switch port, fixed IP), or null when it has none. The internal API
+    /// is optional here, so reading it is a step: when it fails the answer says why, then what it could not check.
+    /// </summary>
+    private async Task<JsonElement?> StationAsync(Answer a, string? site, string? mac, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(mac)) return null;
-        try
-        {
-            foreach (var s in await (await reads.SiteAsync(site, ct)).StationsAsync(ct))
-                if (string.Equals(DiagnosticTools.V(s, "mac"), mac, StringComparison.OrdinalIgnoreCase)) return s;
-        }
-        catch (UnifiError)
-        {
-            // The internal API is optional here: without it the answer says what it could not check.
-        }
+        var stations = await a.Step("Console client record", async () => await (await reads.SiteAsync(site, ct)).StationsAsync(ct));
+        foreach (var s in stations ?? [])
+            if (string.Equals(DiagnosticTools.V(s, "mac"), mac, StringComparison.OrdinalIgnoreCase)) return s;
         return null;
     }
 

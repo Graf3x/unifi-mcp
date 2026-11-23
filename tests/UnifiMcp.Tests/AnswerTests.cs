@@ -56,6 +56,30 @@ public class AnswerTests
         Assert.Contains("**Dashboard step failed:** no dashboard", text);
     }
 
+    public static TheoryData<Exception> UnexpectedShapes => new()
+    {
+        new InvalidOperationException("The requested operation requires an element of type 'Object', but the target element has type 'Array'."),
+        new KeyNotFoundException("The given key was not present in the dictionary."),
+        new FormatException("One of the identified items was in an invalid format."),
+    };
+
+    [Theory]
+    [MemberData(nameof(UnexpectedShapes))]
+    public async Task A_console_answer_of_an_unexpected_shape_fails_only_its_step(Exception shape)
+    {
+        var text = await TextOf(async a =>
+        {
+            Assert.Null(await a.Step("Devices", () => Fail<List<string>>(shape)));
+            Assert.Null(await a.Step("Dashboard", () => Fail<JsonElement>(shape)));
+            a.Line("after");
+        });
+
+        Assert.Contains("**Devices step failed:** The console's answer was not what this server expects.", text);
+        Assert.Contains("**Dashboard step failed:** The console's answer was not what this server expects.", text);
+        Assert.DoesNotContain(shape.Message, text);
+        Assert.Contains("after", text);
+    }
+
     [Fact]
     public async Task A_failed_step_is_not_a_tool_error()
     {

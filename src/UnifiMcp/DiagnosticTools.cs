@@ -54,16 +54,11 @@ public sealed partial class DiagnosticTools(UnifiClient console, ConsoleReads re
 
         if (filters.Count == 0 && page == 0)
         {
-            try
+            if (await a.Step("Counts", () => site.SystemLogCountAsync(window.From, window.To, ct)) is { } counts)
             {
-                var counts = await site.SystemLogCountAsync(window.From, window.To, ct);
                 a.Line("## Counts in this window");
                 a.Line("Categories: " + Counts(counts, "categories"));
                 a.Line("Events: " + Counts(counts, "events"));
-            }
-            catch (UnifiError e)
-            {
-                a.Line($"(Counts unavailable: {e.Message})");
             }
         }
     });

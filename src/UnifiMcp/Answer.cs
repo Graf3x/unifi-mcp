@@ -66,13 +66,15 @@ internal sealed class Answer
         return this;
     }
 
-    /// <summary>One read; when the console refuses it the answer says so and null comes back.</summary>
+    /// <summary>
+    /// One read; when the console refuses it, or answers in a shape this server does not expect, the answer says so and
+    /// null comes back.
+    /// </summary>
     public async Task<T?> Step<T>(string name, Func<Task<T>> read) where T : class
     {
         try { return await read(); }
-        catch (UnifiError e)
+        catch (Exception e) when (Failed(name, e))
         {
-            Failed(name, e);
             return null;
         }
     }
@@ -81,9 +83,8 @@ internal sealed class Answer
     public async Task<JsonElement?> Step(string name, Func<Task<JsonElement>> read)
     {
         try { return await read(); }
-        catch (UnifiError e)
+        catch (Exception e) when (Failed(name, e))
         {
-            Failed(name, e);
             return null;
         }
     }
@@ -98,5 +99,20 @@ internal sealed class Answer
         return sb.ToString();
     }
 
-    private void Failed(string name, Exception e) => Line($"**{name} step failed:** {e.Message}").Line();
+    /// <summary>
+    /// Writes the failure line for the console's refusal or for an answer of the wrong shape (what reading an
+    /// unexpected JSON value throws) and says the step is over; any other exception is a bug and is left to escape.
+    /// </summary>
+    private bool Failed(string name, Exception e)
+    {
+        var reason = e switch
+        {
+            UnifiError => e.Message,
+            InvalidOperationException or KeyNotFoundException or FormatException => "The console's answer was not what this server expects.",
+            _ => null,
+        };
+        if (reason is null) return false;
+        Line($"**{name} step failed:** {reason}").Line();
+        return true;
+    }
 }

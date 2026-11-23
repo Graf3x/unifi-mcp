@@ -122,6 +122,29 @@ public class FaqTests
     }
 
     [Fact]
+    public async Task Client_path_says_why_the_console_did_not_report_the_port()
+    {
+        await using var h = await Harness.StartAsync();
+        Seed(h.Unifi);
+        h.Unifi.Route("GET", "/proxy/network/api/s/default/stat/sta", "{}", 500);
+        var (text, isError) = await h.CallAsync("client_path_faq", new() { ["client"] = "nas" });
+        Assert.False(isError, text);
+        Assert.Contains("**Console client record step failed:**", text);
+        Assert.Contains("did not report the switch port", text);
+    }
+
+    [Fact]
+    public async Task A_client_the_console_has_no_record_of_is_not_a_failed_step()
+    {
+        await using var h = await Harness.StartAsync();
+        Seed(h.Unifi);
+        h.Unifi.Route("GET", "/proxy/network/api/s/default/stat/sta", """{"meta":{"rc":"ok"},"data":[]}""");
+        var (text, _) = await h.CallAsync("dhcp_reservation_faq", new() { ["client"] = "nas" });
+        Assert.DoesNotContain("step failed", text);
+        Assert.Contains("did not report this client's reservation", text);
+    }
+
+    [Fact]
     public async Task Dhcp_reservation_reads_the_fixed_ip_when_the_console_reports_it()
     {
         await using var h = await Harness.StartAsync();

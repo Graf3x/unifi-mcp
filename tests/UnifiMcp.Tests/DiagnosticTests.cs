@@ -195,6 +195,18 @@ public class DiagnosticTests
     }
 
     [Fact]
+    public async Task System_log_counts_that_fail_are_a_failed_step_after_the_events()
+    {
+        await using var h = await StartAsync();
+        h.Unifi.Route("POST", $"{V2}/system-log/count", "{}", status: 500);
+        var (text, isError) = await h.CallAsync("system_log");
+        Assert.False(isError, text);
+        Assert.Contains("**Counts step failed:**", text);
+        Assert.DoesNotContain("Counts unavailable", text);
+        Assert.Contains("CLIENT_ROAMED", text);
+    }
+
+    [Fact]
     public async Task System_log_sends_the_filters_to_the_console()
     {
         await using var h = await StartAsync();
