@@ -31,11 +31,12 @@ public static class GoogleSignIn
     /// </summary>
     private const string SignedInKey = ".unifi.signed_in";
 
-    /// <summary>A browser navigating to an owner page is sent to Google; anything else (an API call, a POST) gets a bare 401.</summary>
+    /// <summary>
+    /// A browser navigating to an owner page (<see cref="RouteTable.SendsToSignIn"/>) is sent to sign-in: Google, or the
+    /// code page. Anything else (an API call, a POST) gets a bare 401.
+    /// </summary>
     internal static bool SendsToGoogle(string method, PathString path) =>
-        (HttpMethods.IsGet(method) || HttpMethods.IsHead(method))
-        && (path.Equals("/oauth/authorize", StringComparison.OrdinalIgnoreCase)
-            || path.StartsWithSegments("/connections", StringComparison.OrdinalIgnoreCase));
+        (HttpMethods.IsGet(method) || HttpMethods.IsHead(method)) && RouteTable.SendsToSignIn(path);
 
     public static void Add(AuthenticationBuilder b, Settings s, HttpMessageHandler? backchannel)
     {
