@@ -239,6 +239,24 @@ public class ListenerTests
         Assert.Equal(HttpStatusCode.Forbidden, (await h.Http.SendAsync(request)).StatusCode);
     }
 
+    /// <summary>
+    /// The connector's own origin is welcome on the public browser pages and refused on /mcp and its icons, which no
+    /// page of the server's calls.
+    /// </summary>
+    [Theory]
+    [InlineData("/healthz", HttpStatusCode.OK)]
+    [InlineData("/.well-known/oauth-authorization-server", HttpStatusCode.OK)]
+    [InlineData("/oauth/jwks", HttpStatusCode.OK)]
+    [InlineData("/mcp/icon-32.png", HttpStatusCode.Forbidden)]
+    [InlineData("/mcp/", HttpStatusCode.Forbidden)]
+    public async Task Public_browser_pages_accept_the_connector_s_own_origin(string path, HttpStatusCode status)
+    {
+        await using var h = await PublicHarness.StartAsync();
+        using var request = new HttpRequestMessage(HttpMethod.Get, path);
+        request.Headers.Add("Origin", "https://" + PublicHarness.Host);
+        Assert.Equal(status, (await h.Http.SendAsync(request)).StatusCode);
+    }
+
     [Fact]
     public async Task Public_serves_only_its_own_paths()
     {
