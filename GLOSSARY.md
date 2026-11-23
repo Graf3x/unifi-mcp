@@ -15,6 +15,12 @@ The console's official, documented API. Everything the server changes goes throu
 The undocumented API behind the console's own web interface. The server only reads from it, slowly and with short-lived caching, because it answers what the Integration API cannot.
 _Avoid_: private API, legacy API
 
+## Answers
+
+**Step**:
+One part of a composite tool's answer that reads from the console. When a step fails the answer says so and the rest still runs; when a read the tool cannot do without fails, there is no answer, only the reason.
+_Avoid_: stage, check (a check is the setup page's)
+
 ## Access
 
 **Owner**:

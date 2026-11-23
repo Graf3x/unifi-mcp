@@ -26,6 +26,7 @@ follow [guide 1](README.md#guide-1-quick-local-setup) in the README.
 |---|---|
 | `src/UnifiMcp/ApiTool.cs`, `ReadOperationTool.cs`, `OpenApiCatalog.cs` | Tools generated from the OpenAPI document in `openapi/` |
 | `src/UnifiMcp/FaqTools.cs`, `DiagnosticTools.cs`, `DiagnosticTools.Devices.cs` | The task-oriented and diagnostics tools |
+| `src/UnifiMcp/Answer.cs`, `ConsoleJson.cs` | A composite tool's answer (steps, failure lines, tables, the cap, the view) and reading the console's JSON by field name |
 | `src/UnifiMcp/ViewResources.cs`, `Views/`, `DeviceViewModel.cs` | Interactive views (MCP Apps): one embedded HTML file per view, and the data a tool hands it in `_meta` |
 | `src/UnifiMcp/ConsoleTransport.cs` | The only code that talks to the console: the key, certificate trust (pin or CA), scrubbing |
 | `src/UnifiMcp/UnifiClient.cs` | The console's two APIs over that transport: the write gate, paging, finding a site |
@@ -42,6 +43,8 @@ follow [guide 1](README.md#guide-1-quick-local-setup) in the README.
 - **Tools:** snake_case names, a title, read-only or destructive hints, a description that starts with its `[Category]`,
   and a description on every parameter. `ToolContractTests` fails if one is missing. Writes must stay behind
   `UNIFI_ALLOW_WRITES` and the per-call `confirm`.
+- **Composite tools:** write the answer through `Answer`: put every read the answer can do without in `a.Step`, so its
+  failure is reported and the rest still runs, and read the console's JSON through `ConsoleJson`.
 - **The console's internal API:** add a read as a named method on `ConsoleSite` in `ConsoleReads.cs`, never a way to
   send a path of the caller's choosing, and return chosen fields, never the raw JSON (it carries secrets).
 - **Docs:** if you change setup steps or settings, update the README and `.env.example` together. The setup page renders
