@@ -76,18 +76,19 @@ public sealed partial class DiagnosticTools(UnifiClient console, ConsoleReads re
     public Task<string> InternetHealth(
         [Description("History window in hours (1 to 168). Default 24.")] int hours = 24,
         [Description("Site UUID or name. Omit for the configured site.")] string? siteId = null,
-        CancellationToken ct = default) => Run(siteId, ct, async (site, sb) =>
+        CancellationToken ct = default) => Answer.RunAsync(async a =>
     {
+        var site = await reads.SiteAsync(siteId, ct);
         hours = Math.Clamp(hours, 1, 168);
         var zone = await site.TimeZoneAsync(ct);
-        var dash = await StepJson(sb, "Dashboard", () => site.DashboardAsync(hours, ct));
-        var lb = await StepJson(sb, "WAN status", () => site.WanStatusAsync(ct));
+        var dash = await a.Step("Dashboard", () => site.DashboardAsync(hours, ct));
+        var lb = await a.Step("WAN status", () => site.WanStatusAsync(ct));
 
-        sb.AppendLine("## WAN links");
+        a.Line("## WAN links");
         var details = dash is { } d && d.TryGetProperty("wan", out var wan) ? Array(wan, "wan_details") : [];
         var states = lb is { } l ? Array(l, "wan_interfaces") : [];
         var groups = states.Select(s => V(s, "wan_networkgroup")).Concat(details.Select(x => V(x, "network_group"))).Where(g => g.Length > 0).Distinct().ToList();
-        sb.AppendLine(FaqTools.Table(["WAN", "Group", "Failover state", "ISP", "Interface", "Link", "Plan down/up (Mbps)", "Service latency (ms)"], groups.Select(g =>
+        a.Line(Answer.Table(["WAN", "Group", "Failover state", "ISP", "Interface", "Link", "Plan down/up (Mbps)", "Service latency (ms)"], groups.Select(g =>
         {
             var s = states.FirstOrDefault(x => V(x, "wan_networkgroup") == g);
             var x = details.FirstOrDefault(y => V(y, "network_group") == g);
@@ -99,32 +100,32 @@ public sealed partial class DiagnosticTools(UnifiClient console, ConsoleReads re
             return new[] { First(V(s, "name"), V(x, "network_name")), g, V(s, "state"), isp is { } i ? V(i, "name") : "", status is { } t ? V(t, "interface_name") : "", status is { } u ? V(u, "state") : "", plan, latencies };
         })));
 
-        var health = await Step(sb, "Gateway monitors", () => site.HealthAsync(ct));
+        var health = await a.Step("Gateway monitors", () => site.HealthAsync(ct));
         if (health is not null)
         {
             var wanHealth = health.FirstOrDefault(h => V(h, "subsystem") == "wan");
             var www = health.FirstOrDefault(h => V(h, "subsystem") == "www");
-            sb.AppendLine("## Gateway monitors");
+            a.Line("## Gateway monitors");
             if (wanHealth.ValueKind == JsonValueKind.Object)
             {
-                sb.AppendLine($"WAN IP {V(wanHealth, "wan_ip")}, ISP {V(wanHealth, "isp_name")}, status {V(wanHealth, "status")}.");
+                a.Line($"WAN IP {V(wanHealth, "wan_ip")}, ISP {V(wanHealth, "isp_name")}, status {V(wanHealth, "status")}.");
                 if (Obj(wanHealth, "uptime_stats") is { } us)
                     foreach (var link in us.EnumerateObject())
                     {
-                        sb.AppendLine($"{link.Name}: availability {V(link.Value, "availability", 2)} % and average latency {V(link.Value, "latency_average")} ms over the last {Long(link.Value, "time_period") / 3600 ?? 24} h.");
-                        sb.AppendLine(FaqTools.Table(["Target", "Type", "Availability %", "Latency (ms)"], Array(link.Value, "monitors").Select(m =>
+                        a.Line($"{link.Name}: availability {V(link.Value, "availability", 2)} % and average latency {V(link.Value, "latency_average")} ms over the last {Long(link.Value, "time_period") / 3600 ?? 24} h.");
+                        a.Line(Answer.Table(["Target", "Type", "Availability %", "Latency (ms)"], Array(link.Value, "monitors").Select(m =>
                             new[] { V(m, "target"), V(m, "type"), V(m, "availability", 2), V(m, "latency_average") })));
                     }
             }
             if (www.ValueKind == JsonValueKind.Object)
-                sb.AppendLine($"Internet check: latency {V(www, "latency")} ms, {V(www, "drops")} drop(s), last speed test {V(www, "xput_down")} down / {V(www, "xput_up")} up Mbps"
+                a.Line($"Internet check: latency {V(www, "latency")} ms, {V(www, "drops")} drop(s), last speed test {V(www, "xput_down")} down / {V(www, "xput_up")} up Mbps"
                               + (Long(www, "speedtest_lastrun") is { } run ? $" at {Seconds(run, zone.Zone)}." : "."));
-            sb.AppendLine();
+            a.Line();
         }
 
         if (dash is { } board)
         {
-            sb.AppendLine($"## Last {hours} h (5-minute samples, times {zone.Name})");
+            a.Line($"## Last {hours} h (5-minute samples, times {zone.Name})");
             var groupsActivity = Obj(Obj(board, "wan_activity"), "activity_by_network_group");
             if (groupsActivity is { } ga)
                 foreach (var g in ga.EnumerateObject())
@@ -133,34 +134,34 @@ public sealed partial class DiagnosticTools(UnifiClient console, ConsoleReads re
                     if (samples.Count == 0) continue;
                     var loss = samples.Select(x => Dbl(x, "avg_packet_loss_pct") ?? 0).ToList();
                     var latency = samples.Select(x => Dbl(x, "avg_latency_ms")).OfType<double>().ToList();
-                    sb.AppendLine($"**{g.Name}**: {samples.Count} samples. Latency average {Avg(latency)} ms, highest {Max(samples, "max_latency_ms")} ms. "
+                    a.Line($"**{g.Name}**: {samples.Count} samples. Latency average {Avg(latency)} ms, highest {Max(samples, "max_latency_ms")} ms. "
                                   + $"Packet loss average {Avg(loss)} %, {loss.Count(v => v >= 2)} sample(s) at 2 % or more.");
                     var worst = samples.Where(x => (Dbl(x, "avg_packet_loss_pct") ?? 0) > 0 || (Dbl(x, "max_latency_ms") ?? 0) > 2 * Math.Max(1, latency.DefaultIfEmpty(0).Average()))
                         .OrderByDescending(x => Dbl(x, "avg_packet_loss_pct") ?? 0).ThenByDescending(x => Dbl(x, "max_latency_ms") ?? 0).Take(5).ToList();
                     if (worst.Count > 0)
-                        sb.AppendLine(FaqTools.Table(["Worst intervals", "Packet loss %", "Avg latency (ms)", "Max latency (ms)"], worst.Select(x =>
+                        a.Line(Answer.Table(["Worst intervals", "Packet loss %", "Avg latency (ms)", "Max latency (ms)"], worst.Select(x =>
                             new[] { Millis(Long(x, "timestamp"), zone.Zone), V(x, "avg_packet_loss_pct"), V(x, "avg_latency_ms"), V(x, "max_latency_ms") })));
                 }
             var outages = Obj(board, "wan_history") is { } wh ? Array(wh, "wan_history_details").SelectMany(x => Array(x, "downtime_history")).ToList() : [];
-            sb.AppendLine($"{outages.Count} outage(s) recorded in this window.");
+            a.Line($"{outages.Count} outage(s) recorded in this window.");
             foreach (var o in outages.Take(10))
             {
                 var parts = o.ValueKind == JsonValueKind.Object ? o.EnumerateObject().Where(p => p.Value.ValueKind is JsonValueKind.Number or JsonValueKind.String)
                     .Select(p => p.Value.ValueKind == JsonValueKind.Number && p.Value.TryGetInt64(out var ms) && ms > 1_000_000_000_000 ? $"{p.Name} {Millis(ms, zone.Zone)}" : $"{p.Name} {p.Value}") : [];
-                sb.AppendLine("- " + string.Join(", ", parts));
+                a.Line("- " + string.Join(", ", parts));
             }
-            sb.AppendLine();
+            a.Line();
 
             var tests = Obj(board, "speed_test") is { } stt ? Array(stt, "data").Where(x => Long(x, "time") is not null).ToList() : [];
-            sb.AppendLine("## Speed tests");
-            sb.AppendLine(tests.Count == 0 ? "None in this window." : FaqTools.Table(["When", "WAN", "Down (Mbps)", "Up (Mbps)", "Latency (ms)"], tests.Select(x =>
+            a.Line("## Speed tests");
+            a.Line(tests.Count == 0 ? "None in this window." : Answer.Table(["When", "WAN", "Down (Mbps)", "Up (Mbps)", "Latency (ms)"], tests.Select(x =>
                 new[] { Millis(Long(x, "time"), zone.Zone), V(x, "wan_networkgroup"), V(x, "download_mbps"), V(x, "upload_mbps"), V(x, "latency_ms") })));
         }
 
-        var events = await StepJson(sb, "WAN events", () => site.SystemLogAsync(
+        var events = await a.Step("WAN events", () => site.SystemLogAsync(
             LogQuery(Window(hours), 15, 0, ["INTERNET_AND_WAN"], [], [], null), ct));
         if (events is { } ev)
-            sb.AppendLine($"## WAN events ({Long(ev, "total_element_count") ?? 0} in the last {hours} h, newest first)").AppendLine(LogTable(Array(ev, "data").Take(15).ToList(), zone.Zone));
+            a.Line($"## WAN events ({Long(ev, "total_element_count") ?? 0} in the last {hours} h, newest first)").Line(LogTable(Array(ev, "data").Take(15).ToList(), zone.Zone));
     });
 
     [McpServerTool(Name = "wifi_health_faq", Title = "Wi-Fi health", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
@@ -169,16 +170,17 @@ public sealed partial class DiagnosticTools(UnifiClient console, ConsoleReads re
                  + "Problems are flagged (busy channel, interference, high retries). Use for 'why is Wi-Fi slow' or 'which channel should this AP use'.")]
     public Task<string> WifiHealth(
         [Description("Site UUID or name. Omit for the configured site.")] string? siteId = null,
-        CancellationToken ct = default) => Run(siteId, ct, async (site, sb) =>
+        CancellationToken ct = default) => Answer.RunAsync(async a =>
     {
-        var devices = await Step(sb, "Access points", () => site.DevicesAsync(ct));
+        var site = await reads.SiteAsync(siteId, ct);
+        var devices = await a.Step("Access points", () => site.DevicesAsync(ct));
         if (devices is null) return;
         var aps = devices.Where(d => V(d, "type") == "uap").ToList();
-        var neighbours = await Step(sb, "Neighbouring networks", () => site.RogueApsAsync(ct)) ?? [];
+        var neighbours = await a.Step("Neighbouring networks", () => site.RogueApsAsync(ct)) ?? [];
 
         var online = aps.Where(a => V(a, "state") == "1").ToList();
-        sb.AppendLine($"## Radios: {online.Count} access point(s) online");
-        sb.AppendLine(FaqTools.Table(["AP", "Band", "Channel", "Width (MHz)", "Tx power", "Clients", "Channel use %", "Interference %", "Retries %", "Satisfaction", "Neighbours on channel (≥ -80 dBm)", "Flags"],
+        a.Line($"## Radios: {online.Count} access point(s) online");
+        a.Line(Answer.Table(["AP", "Band", "Channel", "Width (MHz)", "Tx power", "Clients", "Channel use %", "Interference %", "Retries %", "Satisfaction", "Neighbours on channel (≥ -80 dBm)", "Flags"],
             online.SelectMany(ap => Array(ap, "radio_table_stats").Select(r =>
             {
                 var strong = neighbours.Where(n => V(n, "ap_mac") == V(ap, "mac") && V(n, "channel") == V(r, "channel") && (Dbl(n, "signal") ?? -100) >= -80).Select(n => V(n, "bssid")).Distinct().Count();
@@ -192,13 +194,13 @@ public sealed partial class DiagnosticTools(UnifiClient console, ConsoleReads re
             }))));
         var offline = aps.Where(a => V(a, "state") != "1").ToList();
         if (offline.Count > 0)
-            sb.AppendLine($"**Not online ({offline.Count}):** " + string.Join(", ", offline.Select(a => $"{V(a, "name")} ({V(a, "model")}, {DeviceState(V(a, "state"))})"))).AppendLine();
+            a.Line($"**Not online ({offline.Count}):** " + string.Join(", ", offline.Select(a => $"{V(a, "name")} ({V(a, "model")}, {DeviceState(V(a, "state"))})"))).Line();
 
         var zone = await site.TimeZoneAsync(ct);
-        var events = await StepJson(sb, "Radio events", () => site.SystemLogAsync(
+        var events = await a.Step("Radio events", () => site.SystemLogAsync(
             LogQuery(Window(24), 15, 0, [], ["AP_CHANGED_CHANNELS", "AP_DETECTED_RADAR"], [], null), ct));
         if (events is { } ev)
-            sb.AppendLine($"## Channel changes and radar, last 24 h ({Long(ev, "total_element_count") ?? 0})").AppendLine(LogTable(Array(ev, "data").Take(15).ToList(), zone.Zone));
+            a.Line($"## Channel changes and radar, last 24 h ({Long(ev, "total_element_count") ?? 0})").Line(LogTable(Array(ev, "data").Take(15).ToList(), zone.Zone));
     });
 
     [McpServerTool(Name = "client_diagnostics_faq", Title = "Client diagnostics", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
@@ -209,8 +211,9 @@ public sealed partial class DiagnosticTools(UnifiClient console, ConsoleReads re
         [Description("Client name or hostname (partial match), IP address or MAC address.")] string client,
         [Description("How far back to read its events, in hours (1 to 720). Default 24.")] int hours = 24,
         [Description("Site UUID or name. Omit for the configured site.")] string? siteId = null,
-        CancellationToken ct = default) => Run(siteId, ct, async (site, sb) =>
+        CancellationToken ct = default) => Answer.RunAsync(async a =>
     {
+        var site = await reads.SiteAsync(siteId, ct);
         var q = (client ?? "").Trim();
         bool Matches(JsonElement x, params string[] names) =>
             string.Equals(V(x, "mac"), q, StringComparison.OrdinalIgnoreCase) || V(x, "ip") == q || V(x, "last_ip") == q
@@ -224,49 +227,49 @@ public sealed partial class DiagnosticTools(UnifiClient console, ConsoleReads re
                 .Where(x => Matches(x, "name", "display_name", "hostname")).ToList();
         if (found.Count == 0)
         {
-            sb.AppendLine($"No client matches '{client}' among connected clients or those seen in the last 30 days.");
+            a.Line($"No client matches '{client}' among connected clients or those seen in the last 30 days.");
             return;
         }
         if (found.Count > 1)
         {
-            sb.AppendLine($"'{client}' matches {found.Count} clients; use the IP or MAC:").AppendLine(FaqTools.Table(["Name", "IP", "MAC", "State"],
+            a.Line($"'{client}' matches {found.Count} clients; use the IP or MAC:").Line(Answer.Table(["Name", "IP", "MAC", "State"],
                 found.Select(x => new[] { Name(x), First(V(x, "ip"), V(x, "last_ip")), V(x, "mac"), online ? "online" : "offline" })));
             return;
         }
 
         var zone = await site.TimeZoneAsync(ct);
         var c = found[0];
-        sb.AppendLine($"## {Name(c)} ({(online ? "online" : "offline")})");
-        sb.AppendLine($"- MAC {V(c, "mac")}, vendor {First(V(c, "oui"), "unknown")}, hostname {First(V(c, "hostname"), "none")}.");
-        sb.AppendLine($"- Network {First(V(c, "network"), V(c, "last_connection_network_name"), V(c, "network_name"))}, IP {First(V(c, "ip"), V(c, "last_ip"), "none")}.");
-        sb.AppendLine(Bool(c, "use_fixedip") ? $"- Fixed IP reservation: {V(c, "fixed_ip")}." : "- Fixed IP reservation: none.");
+        a.Line($"## {Name(c)} ({(online ? "online" : "offline")})");
+        a.Line($"- MAC {V(c, "mac")}, vendor {First(V(c, "oui"), "unknown")}, hostname {First(V(c, "hostname"), "none")}.");
+        a.Line($"- Network {First(V(c, "network"), V(c, "last_connection_network_name"), V(c, "network_name"))}, IP {First(V(c, "ip"), V(c, "last_ip"), "none")}.");
+        a.Line(Bool(c, "use_fixedip") ? $"- Fixed IP reservation: {V(c, "fixed_ip")}." : "- Fixed IP reservation: none.");
         if (online)
-            sb.AppendLine($"- Connected for {Duration(Long(c, "uptime"))}; satisfaction {First(V(c, "satisfaction"), "?")} %.");
+            a.Line($"- Connected for {Duration(Long(c, "uptime"))}; satisfaction {First(V(c, "satisfaction"), "?")} %.");
         else
-            sb.AppendLine($"- Offline. Last seen {Seconds(Long(c, "last_seen"), zone.Zone)} ({zone.Name}) on {First(V(c, "last_uplink_name"), "an unknown device")}.");
-        sb.AppendLine();
+            a.Line($"- Offline. Last seen {Seconds(Long(c, "last_seen"), zone.Zone)} ({zone.Name}) on {First(V(c, "last_uplink_name"), "an unknown device")}.");
+        a.Line();
 
         if (online)
         {
-            sb.AppendLine("## Connection");
+            a.Line("## Connection");
             if (Bool(c, "is_wired"))
-                sb.AppendLine($"Wired to {First(V(c, "last_uplink_name"), "a switch")} port {First(V(c, "sw_port"), "?")} at {First(V(c, "wired_rate_mbps"), "?")} Mbps.");
+                a.Line($"Wired to {First(V(c, "last_uplink_name"), "a switch")} port {First(V(c, "sw_port"), "?")} at {First(V(c, "wired_rate_mbps"), "?")} Mbps.");
             else
             {
                 var signal = Dbl(c, "signal");
                 var retries = Dbl(c, "wifi_tx_retries_percentage");
-                sb.AppendLine($"Wi-Fi '{V(c, "essid")}' on {V(c, "last_uplink_name")}: {Band(V(c, "radio"))}, channel {V(c, "channel")}, {First(V(c, "channel_width"), "?")} MHz.");
-                sb.AppendLine($"Signal {V(c, "signal")} dBm, noise {V(c, "noise")} dBm; rates {Rate(c, "tx_rate")} tx / {Rate(c, "rx_rate")} rx Mbps; retries {First(V(c, "wifi_tx_retries_percentage"), "?")} %.");
-                if (signal < -75) sb.AppendLine("**Weak signal:** below -75 dBm. Move the client or AP closer, or check what is between them.");
-                if (retries >= 15) sb.AppendLine("**High retries:** 15 % or more of transmissions are repeated, which usually means interference or a weak link.");
+                a.Line($"Wi-Fi '{V(c, "essid")}' on {V(c, "last_uplink_name")}: {Band(V(c, "radio"))}, channel {V(c, "channel")}, {First(V(c, "channel_width"), "?")} MHz.");
+                a.Line($"Signal {V(c, "signal")} dBm, noise {V(c, "noise")} dBm; rates {Rate(c, "tx_rate")} tx / {Rate(c, "rx_rate")} rx Mbps; retries {First(V(c, "wifi_tx_retries_percentage"), "?")} %.");
+                if (signal < -75) a.Line("**Weak signal:** below -75 dBm. Move the client or AP closer, or check what is between them.");
+                if (retries >= 15) a.Line("**High retries:** 15 % or more of transmissions are repeated, which usually means interference or a weak link.");
             }
-            sb.AppendLine();
+            a.Line();
         }
 
-        var events = await StepJson(sb, "Events", () => site.SystemLogAsync(
+        var events = await a.Step("Events", () => site.SystemLogAsync(
             LogQuery(Window(hours), 15, 0, [], [], [], V(c, "mac")), ct));
         if (events is { } ev)
-            sb.AppendLine($"## Its events, last {Window(hours).Hours} h ({Long(ev, "total_element_count") ?? 0}, newest first)").AppendLine(LogTable(Array(ev, "data").Take(15).ToList(), zone.Zone));
+            a.Line($"## Its events, last {Window(hours).Hours} h ({Long(ev, "total_element_count") ?? 0}, newest first)").Line(LogTable(Array(ev, "data").Take(15).ToList(), zone.Zone));
     });
 
     [McpServerTool(Name = "list_port_forwards", Title = "List port forwards", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
@@ -278,7 +281,7 @@ public sealed partial class DiagnosticTools(UnifiClient console, ConsoleReads re
     {
         var rules = await (await reads.SiteAsync(siteId, ct)).PortForwardsAsync(ct);
         if (rules.Count == 0) return "No port forwards are configured.";
-        return $"## Port forwards: {rules.Count}\n" + FaqTools.Table(["Name", "State", "Protocol", "WAN port", "Forward to", "Allowed from", "WAN", "Logged"], rules.Select(r => new[]
+        return $"## Port forwards: {rules.Count}\n" + Answer.Table(["Name", "State", "Protocol", "WAN port", "Forward to", "Allowed from", "WAN", "Logged"], rules.Select(r => new[]
         {
             V(r, "name"), Bool(r, "enabled") ? "enabled" : "disabled", V(r, "proto") == "tcp_udp" ? "TCP/UDP" : V(r, "proto").ToUpperInvariant(),
             V(r, "dst_port"), $"{V(r, "fwd")}:{V(r, "fwd_port")}", First(V(r, "src"), "any"), First(V(r, "pfwd_interface"), "wan"), Bool(r, "log") ? "yes" : "no",
@@ -287,46 +290,11 @@ public sealed partial class DiagnosticTools(UnifiClient console, ConsoleReads re
 
     // --- running ----------------------------------------------------------------------------------------------------
 
-    /// <summary>Composite tools: markdown in steps, so a failure is reported and the rest still runs.</summary>
-    private async Task<string> Run(string? site, CancellationToken ct, Func<ConsoleSite, StringBuilder, Task> steps)
-    {
-        var sb = new StringBuilder();
-        try
-        {
-            await steps(await reads.SiteAsync(site, ct), sb);
-        }
-        catch (Exception e) when (e is UnifiError or UnifiNotConfigured)
-        {
-            sb.AppendLine(e.Message);
-        }
-        return ToolText.Cap(sb.ToString());
-    }
-
     /// <summary>Single-purpose tools: a failure is a tool error (isError) with the console's reason.</summary>
     private static async Task<CallToolResult> Strict(Func<Task<string>> run)
     {
         try { return ToolText.Ok(await run()); }
         catch (Exception e) when (e is UnifiError or UnifiNotConfigured) { return ToolText.Error(e.Message); }
-    }
-
-    private static async Task<T?> Step<T>(StringBuilder sb, string name, Func<Task<T>> run) where T : class
-    {
-        try { return await run(); }
-        catch (UnifiError e)
-        {
-            sb.AppendLine($"**{name} step failed:** {e.Message}").AppendLine();
-            return default;
-        }
-    }
-
-    private static async Task<JsonElement?> StepJson(StringBuilder sb, string name, Func<Task<JsonElement>> run)
-    {
-        try { return await run(); }
-        catch (UnifiError e)
-        {
-            sb.AppendLine($"**{name} step failed:** {e.Message}").AppendLine();
-            return null;
-        }
     }
 
     // --- the system log ---------------------------------------------------------------------------------------------
@@ -350,7 +318,7 @@ public sealed partial class DiagnosticTools(UnifiClient console, ConsoleReads re
         (csv ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(s => s.ToUpperInvariant().Replace(' ', '_')).ToArray();
 
     private static string LogTable(List<JsonElement> events, TimeZoneInfo zone) => events.Count == 0 ? "No events.\n" :
-        FaqTools.Table(["Time", "Severity", "Category", "Event", "Message"], events.Select(e => new[]
+        Answer.Table(["Time", "Severity", "Category", "Event", "Message"], events.Select(e => new[]
         {
             Millis(Long(e, "timestamp"), zone), V(e, "severity"), V(e, "category"), First(V(e, "event"), V(e, "key")), Message(e),
         }));

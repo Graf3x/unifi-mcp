@@ -19,15 +19,15 @@ public sealed partial class DiagnosticTools
     public Task<CallToolResult> DeviceDiagnostics(
         [Description("Device name (partial match), IP address or MAC address. Omit for a summary of every device.")] string? device = null,
         [Description("Site UUID or name. Omit for the configured site.")] string? siteId = null,
-        CancellationToken ct = default) => RunView(siteId, ct, async (site, sb) =>
+        CancellationToken ct = default) => RunView(siteId, ct, async (site, a) =>
     {
         var devices = await site.DevicesAsync(ct);
         if (string.IsNullOrWhiteSpace(device))
         {
             var ordered = devices.OrderBy(d => V(d, "state") == "1").ThenBy(d => V(d, "name")).ToList();
             var down = devices.Count(d => V(d, "state") != "1");
-            sb.AppendLine($"## Devices: {devices.Count}, {down} not online");
-            sb.AppendLine(FaqTools.Table(["Device", "Model", "Type", "State", "Uptime", "CPU %", "Memory %", "Temp °C", "Firmware", "Issues"],
+            a.Line($"## Devices: {devices.Count}, {down} not online");
+            a.Line(Answer.Table(["Device", "Model", "Type", "State", "Uptime", "CPU %", "Memory %", "Temp °C", "Firmware", "Issues"],
                 ordered.Select(d => new[]
                 {
                     V(d, "name"), V(d, "model"), V(d, "type"), DeviceState(V(d, "state")), V(d, "state") == "1" ? Duration(Long(d, "uptime")) : "",
@@ -35,7 +35,7 @@ public sealed partial class DiagnosticTools
                     Bool(d, "upgradable") ? $"{V(d, "version")} → {First(V(d, "upgrade_to_firmware"), "update available")}" : V(d, "version"),
                     string.Join(", ", Issues(d)),
                 })));
-            sb.AppendLine("Call again with device set to one name for its ports, PoE and uplink.");
+            a.Line("Call again with device set to one name for its ports, PoE and uplink.");
             return NewView("devices", siteId) with { Devices = ordered.Select(Tile).ToList() };
         }
 
@@ -45,13 +45,13 @@ public sealed partial class DiagnosticTools
         if (found.Count == 0)
         {
             var none = $"No device matches '{device}'. Devices: {string.Join(", ", devices.Select(d => V(d, "name")))}.";
-            sb.AppendLine(none);
+            a.Line(none);
             return NewView("message", siteId) with { Message = none };
         }
         if (found.Count > 1)
         {
             var several = $"'{device}' matches {found.Count} devices; use the IP or MAC";
-            sb.AppendLine($"{several}:\n" + FaqTools.Table(["Name", "IP", "MAC"], found.Select(d => new[] { V(d, "name"), V(d, "ip"), V(d, "mac") })));
+            a.Line($"{several}:\n" + Answer.Table(["Name", "IP", "MAC"], found.Select(d => new[] { V(d, "name"), V(d, "ip"), V(d, "mac") })));
             return NewView("message", siteId) with
             {
                 Message = several + ".",
@@ -60,26 +60,26 @@ public sealed partial class DiagnosticTools
         }
 
         var dev = found[0];
-        sb.AppendLine($"## {V(dev, "name")} ({V(dev, "model")}, {V(dev, "type")})");
-        sb.AppendLine($"- State {DeviceState(V(dev, "state"))}, IP {V(dev, "ip")}, MAC {V(dev, "mac")}, firmware {V(dev, "version")}"
+        a.Line($"## {V(dev, "name")} ({V(dev, "model")}, {V(dev, "type")})");
+        a.Line($"- State {DeviceState(V(dev, "state"))}, IP {V(dev, "ip")}, MAC {V(dev, "mac")}, firmware {V(dev, "version")}"
                       + (Bool(dev, "upgradable") ? $" (update to {First(V(dev, "upgrade_to_firmware"), "a newer version")} available)." : "."));
         if (Obj(dev, "system-stats") is { } stats)
-            sb.AppendLine($"- CPU {V(stats, "cpu")} %, memory {V(stats, "mem")} %, up {Duration(Long(dev, "uptime"))}.");
+            a.Line($"- CPU {V(stats, "cpu")} %, memory {V(stats, "mem")} %, up {Duration(Long(dev, "uptime"))}.");
         var temps = Array(dev, "temperatures");
-        if (temps.Count > 0) sb.AppendLine("- Temperatures: " + string.Join(", ", temps.Select(t => $"{V(t, "name")} {V(t, "value")} °C")) + ".");
-        else if (V(dev, "general_temperature") is { Length: > 0 } general) sb.AppendLine($"- Temperature {general} °C.");
-        if (Bool(dev, "overheating")) sb.AppendLine("- **Overheating.**");
-        if (Bool(dev, "has_fan")) sb.AppendLine($"- Fan level {First(V(dev, "fan_level"), "?")}.");
-        if (V(dev, "total_max_power") is { Length: > 0 } budget && Dbl(dev, "total_max_power") > 0) sb.AppendLine($"- PoE: {First(V(dev, "total_used_power"), "?")} W used of {budget} W.");
+        if (temps.Count > 0) a.Line("- Temperatures: " + string.Join(", ", temps.Select(t => $"{V(t, "name")} {V(t, "value")} °C")) + ".");
+        else if (V(dev, "general_temperature") is { Length: > 0 } general) a.Line($"- Temperature {general} °C.");
+        if (Bool(dev, "overheating")) a.Line("- **Overheating.**");
+        if (Bool(dev, "has_fan")) a.Line($"- Fan level {First(V(dev, "fan_level"), "?")}.");
+        if (V(dev, "total_max_power") is { Length: > 0 } budget && Dbl(dev, "total_max_power") > 0) a.Line($"- PoE: {First(V(dev, "total_used_power"), "?")} W used of {budget} W.");
         if (Obj(dev, "uplink") is { } up && V(up, "type").Length > 0)
-            sb.AppendLine($"- Uplink: {V(up, "type")} " + (V(up, "uplink_device_name") is { Length: > 0 } upName ? $"to {upName} port {First(V(up, "uplink_remote_port"), "?")}" : $"on {First(V(up, "comment"), V(up, "name"), "?")}") + $", {First(V(up, "speed"), "?")} Mbps"
+            a.Line($"- Uplink: {V(up, "type")} " + (V(up, "uplink_device_name") is { Length: > 0 } upName ? $"to {upName} port {First(V(up, "uplink_remote_port"), "?")}" : $"on {First(V(up, "comment"), V(up, "name"), "?")}") + $", {First(V(up, "speed"), "?")} Mbps"
                           + (Bool(up, "full_duplex") ? " full duplex" : "") + $", errors rx {First(V(up, "rx_errors"), "0")} / tx {First(V(up, "tx_errors"), "0")}.");
-        foreach (var s in Array(dev, "storage")) sb.AppendLine($"- Storage {V(s, "name")}: {Pct(Dbl(s, "used"), Dbl(s, "size"))} % used.");
-        sb.AppendLine();
+        foreach (var s in Array(dev, "storage")) a.Line($"- Storage {V(s, "name")}: {Pct(Dbl(s, "used"), Dbl(s, "size"))} % used.");
+        a.Line();
 
         var radios = Array(dev, "radio_table_stats");
         if (radios.Count > 0)
-            sb.AppendLine("## Radios").AppendLine(FaqTools.Table(["Band", "Channel", "Width (MHz)", "Tx power", "Clients", "Channel use %", "Interference %", "Retries %"],
+            a.Line("## Radios").Line(Answer.Table(["Band", "Channel", "Width (MHz)", "Tx power", "Clients", "Channel use %", "Interference %", "Retries %"],
                 radios.Select(r => new[] { Band(V(r, "radio")), V(r, "channel"), V(r, "bw"), V(r, "tx_power"), V(r, "num_sta"), V(r, "cu_total"), V(r, "cu_interf"), V(r, "tx_retries_pct") })));
 
         var ports = Array(dev, "port_table");
@@ -89,10 +89,10 @@ public sealed partial class DiagnosticTools
             // Two more reads, each a step that may fail without losing the rest: who is on each port, and what each port can do.
             var connected = ConnectedDevices(devices, dev);
             if (Upstream(devices, dev, ports) is { } upstream) Add(connected, upstream.Port, upstream.Device);
-            var stations = await Step(sb, "Connected clients", () => site.StationsAsync(ct)) ?? [];
+            var stations = await a.Step("Connected clients", () => site.StationsAsync(ct)) ?? [];
             foreach (var c in stations.Where(c => Bool(c, "is_wired") && SameMac(V(c, "sw_mac"), V(dev, "mac")) && V(c, "sw_port").Length > 0).OrderBy(Name))
                 Add(connected, V(c, "sw_port"), new Connected("client", Name(c), V(c, "mac")));
-            var capabilities = await Step(sb, "Port capabilities", () => PortCapabilitiesAsync(siteId, V(dev, "mac"), ct)) ?? [];
+            var capabilities = await a.Step("Port capabilities", () => PortCapabilitiesAsync(siteId, V(dev, "mac"), ct)) ?? [];
 
             var rows = ports.Select(p =>
             {
@@ -103,8 +103,8 @@ public sealed partial class DiagnosticTools
             portViews = rows.Select(r => r.View).ToList();
 
             var active = rows.Where(r => r.View.State == "up" || r.View.Flags.Count > 0).ToList();
-            sb.AppendLine($"## Ports: {ports.Count(p => Bool(p, "up"))} up of {ports.Count}");
-            sb.AppendLine(FaqTools.Table(["Port", "Name", "Connected", "Link", "Speed (Mbps)", "Max (Mbps)", "Duplex", "PoE W", "Rx errors", "Tx errors", "Drops", "Link downs", "STP", "Flags"], active.Select(r =>
+            a.Line($"## Ports: {ports.Count(p => Bool(p, "up"))} up of {ports.Count}");
+            a.Line(Answer.Table(["Port", "Name", "Connected", "Link", "Speed (Mbps)", "Max (Mbps)", "Duplex", "PoE W", "Rx errors", "Tx errors", "Drops", "Link downs", "STP", "Flags"], active.Select(r =>
             {
                 var (p, v) = r;
                 return new[]
@@ -116,7 +116,7 @@ public sealed partial class DiagnosticTools
                 };
             })));
             var idle = rows.Where(r => r.View.State != "up" && r.View.Flags.Count == 0).Select(r => V(r.Json, "port_idx")).ToList();
-            if (idle.Count > 0) sb.AppendLine($"Down with nothing to report: {string.Join(", ", idle)}.");
+            if (idle.Count > 0) a.Line($"Down with nothing to report: {string.Join(", ", idle)}.");
         }
 
         return NewView("device", siteId) with { Device = Detail(dev, portViews) };
@@ -231,23 +231,23 @@ public sealed partial class DiagnosticTools
     }
 
     /// <summary>
-    /// Like <see cref="Run"/>, and the steps also return the view's data. A console failure is the answer, not a tool
+    /// Like <see cref="Answer.RunAsync"/>, and the steps also return the view's data. A console failure is the answer, not a tool
     /// error: the text is its reason and the view shows the same sentence.
     /// </summary>
-    private async Task<CallToolResult> RunView(string? siteId, CancellationToken ct, Func<ConsoleSite, StringBuilder, Task<DiagnosticsView>> steps)
+    private async Task<CallToolResult> RunView(string? siteId, CancellationToken ct, Func<ConsoleSite, Answer, Task<DiagnosticsView>> steps)
     {
-        var sb = new StringBuilder();
+        var answer = Answer.Start();
         DiagnosticsView view;
         try
         {
-            view = await steps(await reads.SiteAsync(siteId, ct), sb);
+            view = await steps(await reads.SiteAsync(siteId, ct), answer);
         }
         catch (Exception e) when (e is UnifiError or UnifiNotConfigured)
         {
-            sb.AppendLine(e.Message);
+            answer.Line(e.Message);
             view = NewView("message", siteId) with { Message = e.Message };
         }
-        return ViewResult.Create(sb.ToString(), view);
+        return ViewResult.Create(answer.ToString(), view);
     }
 
     private DiagnosticsView NewView(string kind, string? siteId) =>
