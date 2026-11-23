@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
+using static UnifiMcp.ConsoleJson;
 
 namespace UnifiMcp;
 
@@ -54,8 +55,8 @@ public sealed class FaqTools(UnifiClient console, ConsoleReads reads)
         var matches = await FindClientsAsync(id, client, ct, a);
         if (matches.Count != 1) return;
         var c = matches[0];
-        a.Line($"## Client\n{Str(c, "name")} ({Str(c, "type")}), IP {Ip(c) ?? "?"}, MAC {Str(c, "macAddress") ?? "?"}").Line();
-        if (Str(c, "uplinkDeviceId") is not { } device)
+        a.Line($"## Client\n{TextOrNull(c, "name")} ({TextOrNull(c, "type")}), IP {Ip(c) ?? "?"}, MAC {TextOrNull(c, "macAddress") ?? "?"}").Line();
+        if (TextOrNull(c, "uplinkDeviceId") is not { } device)
         {
             a.Line("This client has no uplink device (VPN or Teleport connection).");
             return;
@@ -69,23 +70,23 @@ public sealed class FaqTools(UnifiClient console, ConsoleReads reads)
             var hop = await a.Step($"Device {next}", () => console.GetJsonAsync($"/v1/sites/{id}/devices/{next}", ct));
             if (hop is not { } d) break;
             hops.Add(d);
-            next = d.TryGetProperty("uplink", out var u) ? Str(u, "deviceId") : null;
+            next = d.TryGetProperty("uplink", out var u) ? TextOrNull(u, "deviceId") : null;
         }
         a.Line(Answer.Table(["Hop", "Device", "Model", "State", "IP"],
-            hops.Select((d, i) => new[] { (i + 1).ToString(), Str(d, "name") ?? "?", Str(d, "model") ?? "?", Str(d, "state") ?? "?", Str(d, "ipAddress") ?? "" })));
-        if (await StationAsync(a, siteId, Str(c, "macAddress"), ct) is { } sta)
+            hops.Select((d, i) => new[] { (i + 1).ToString(), TextOrNull(d, "name") ?? "?", TextOrNull(d, "model") ?? "?", TextOrNull(d, "state") ?? "?", TextOrNull(d, "ipAddress") ?? "" })));
+        if (await StationAsync(a, siteId, TextOrNull(c, "macAddress"), ct) is { } sta)
         {
-            a.Line(DiagnosticTools.V(sta, "is_wired") == "true"
-                ? $"**Which port:** plugged into {DiagnosticTools.V(sta, "last_uplink_name")} port {DiagnosticTools.V(sta, "sw_port")} at {DiagnosticTools.V(sta, "wired_rate_mbps")} Mbps."
-                : $"**Which port:** none, it is on Wi-Fi '{DiagnosticTools.V(sta, "essid")}' via {DiagnosticTools.V(sta, "last_uplink_name")} (client_diagnostics_faq shows its signal).");
+            a.Line(Text(sta, "is_wired") == "true"
+                ? $"**Which port:** plugged into {Text(sta, "last_uplink_name")} port {Text(sta, "sw_port")} at {Text(sta, "wired_rate_mbps")} Mbps."
+                : $"**Which port:** none, it is on Wi-Fi '{Text(sta, "essid")}' via {Text(sta, "last_uplink_name")} (client_diagnostics_faq shows its signal).");
             return;
         }
         a.Line("**Which port:** the console did not report the switch port for this client, only the device it uplinks through.");
         if (hops.Count > 0 && hops[0].TryGetProperty("interfaces", out var ifs) && ifs.TryGetProperty("ports", out var ports))
         {
-            a.Line().Line($"Ports that are up on {Str(hops[0], "name")}:");
-            a.Line(Answer.Table(["Port", "State", "Speed (Mbps)"], ports.EnumerateArray().Where(p => Str(p, "state") == "UP")
-                .Select(p => new[] { Num(p, "idx"), "UP", Num(p, "speedMbps") })));
+            a.Line().Line($"Ports that are up on {TextOrNull(hops[0], "name")}:");
+            a.Line(Answer.Table(["Port", "State", "Speed (Mbps)"], ports.EnumerateArray().Where(p => TextOrNull(p, "state") == "UP")
+                .Select(p => new[] { NumberText(p, "idx"), "UP", NumberText(p, "speedMbps") })));
         }
     });
 
@@ -101,7 +102,7 @@ public sealed class FaqTools(UnifiClient console, ConsoleReads reads)
         var matches = await FindClientsAsync(id, client, ct, a);
         if (matches.Count != 1) return;
         var ip = Ip(matches[0]);
-        a.Line($"## Client\n{Str(matches[0], "name")}: current IP {ip ?? "unknown"}, MAC {Str(matches[0], "macAddress") ?? "?"}").Line();
+        a.Line($"## Client\n{TextOrNull(matches[0], "name")}: current IP {ip ?? "unknown"}, MAC {TextOrNull(matches[0], "macAddress") ?? "?"}").Line();
 
         var nets = await a.Step("Networks", () => NetworksAsync(id, ct)) ?? [];
         var net = nets.FirstOrDefault(n => InSubnet(ip, n));
@@ -109,8 +110,8 @@ public sealed class FaqTools(UnifiClient console, ConsoleReads reads)
         if (net is null) a.Line("The client's address is in no known subnet.").Line();
         else a.Line(DescribePool(net, ip)).Line();
 
-        var sta = await StationAsync(a, siteId, Str(matches[0], "macAddress"), ct);
-        var reserved = sta is { } s && DiagnosticTools.V(s, "use_fixedip") == "true" ? DiagnosticTools.V(s, "fixed_ip") : null;
+        var sta = await StationAsync(a, siteId, TextOrNull(matches[0], "macAddress"), ct);
+        var reserved = sta is { } s && Text(s, "use_fixedip") == "true" ? Text(s, "fixed_ip") : null;
         a.Line("## Reservation");
         a.Line(sta is null ? "The console did not report this client's reservation, so whether one exists has to be checked in the UniFi app (the client's Settings, Fixed IP)."
             : reserved is null ? "No fixed IP reservation is set for this client." : $"Fixed IP reservation: {reserved}.").Line();
@@ -133,36 +134,36 @@ public sealed class FaqTools(UnifiClient console, ConsoleReads reads)
     {
         var id = (await console.FindSiteAsync(siteId, ct)).Id;
         var info = await a.Step("Console", () => console.GetJsonAsync("/v1/info", ct));
-        if (info is { } i) a.Line($"Application version {Str(i, "applicationVersion")}.").Line();
+        if (info is { } i) a.Line($"Application version {TextOrNull(i, "applicationVersion")}.").Line();
 
         var devices = await a.Step("Devices", () => console.GetAllAsync($"/v1/sites/{id}/devices", ct));
         if (devices is not null)
         {
-            var offline = devices.Where(d => Str(d, "state") != "ONLINE").ToList();
+            var offline = devices.Where(d => TextOrNull(d, "state") != "ONLINE").ToList();
             a.Line($"## Devices: {devices.Count}, {offline.Count} not online");
             a.Line(Answer.Table(["Device", "Model", "State", "IP", "Firmware update"], devices.Select(d => new[]
             {
-                Str(d, "name") ?? "?", Str(d, "model") ?? "?", Str(d, "state") ?? "?", Str(d, "ipAddress") ?? "",
+                TextOrNull(d, "name") ?? "?", TextOrNull(d, "model") ?? "?", TextOrNull(d, "state") ?? "?", TextOrNull(d, "ipAddress") ?? "",
                 d.TryGetProperty("firmwareUpdatable", out var f) && f.ValueKind == JsonValueKind.True ? "available" : "",
             })));
         }
 
         var clients = await a.Step("Clients", () => console.GetAllAsync($"/v1/sites/{id}/clients", ct));
         if (clients is not null)
-            a.Line($"## Clients: {clients.Count}").Line(string.Join(", ", clients.GroupBy(c => Str(c, "type") ?? "?").OrderBy(g => g.Key).Select(g => $"{g.Key}: {g.Count()}")));
+            a.Line($"## Clients: {clients.Count}").Line(string.Join(", ", clients.GroupBy(c => TextOrNull(c, "type") ?? "?").OrderBy(g => g.Key).Select(g => $"{g.Key}: {g.Count()}")));
     });
 
     private async Task<List<JsonElement>> FindClientsAsync(string site, string query, CancellationToken ct, Answer a)
     {
         var q = query.Trim();
         var matches = (await console.GetAllAsync($"/v1/sites/{site}/clients", ct)).Where(c =>
-            string.Equals(Str(c, "id"), q, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(Str(c, "macAddress"), q, StringComparison.OrdinalIgnoreCase)
+            string.Equals(TextOrNull(c, "id"), q, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(TextOrNull(c, "macAddress"), q, StringComparison.OrdinalIgnoreCase)
             || Ip(c) == q
-            || (Str(c, "name") ?? "").Contains(q, StringComparison.OrdinalIgnoreCase)).ToList();
+            || (TextOrNull(c, "name") ?? "").Contains(q, StringComparison.OrdinalIgnoreCase)).ToList();
         if (matches.Count == 0) a.Line($"No connected client matches '{query}'. The API lists connected clients only.");
         else if (matches.Count > 1)
-            a.Line($"'{query}' matches {matches.Count} clients; use the IP or MAC:").Line(Answer.Table(["Name", "IP", "MAC"], matches.Select(c => new[] { Str(c, "name") ?? "?", Ip(c) ?? "", Str(c, "macAddress") ?? "" })));
+            a.Line($"'{query}' matches {matches.Count} clients; use the IP or MAC:").Line(Answer.Table(["Name", "IP", "MAC"], matches.Select(c => new[] { TextOrNull(c, "name") ?? "?", Ip(c) ?? "", TextOrNull(c, "macAddress") ?? "" })));
         return matches;
     }
 
@@ -175,7 +176,7 @@ public sealed class FaqTools(UnifiClient console, ConsoleReads reads)
         if (string.IsNullOrEmpty(mac)) return null;
         var stations = await a.Step("Console client record", async () => await (await reads.SiteAsync(site, ct)).StationsAsync(ct));
         foreach (var s in stations ?? [])
-            if (string.Equals(DiagnosticTools.V(s, "mac"), mac, StringComparison.OrdinalIgnoreCase)) return s;
+            if (string.Equals(Text(s, "mac"), mac, StringComparison.OrdinalIgnoreCase)) return s;
         return null;
     }
 
@@ -184,31 +185,31 @@ public sealed class FaqTools(UnifiClient console, ConsoleReads reads)
         var result = new List<Net>();
         foreach (var n in await console.GetAllAsync($"/v1/sites/{site}/networks", ct))
         {
-            var d = await console.GetJsonAsync($"/v1/sites/{site}/networks/{Str(n, "id")}", ct);
+            var d = await console.GetJsonAsync($"/v1/sites/{site}/networks/{TextOrNull(n, "id")}", ct);
             IPAddress? host = null;
             var prefix = 0;
             if (d.TryGetProperty("ipv4Configuration", out var v4) && v4.ValueKind == JsonValueKind.Object)
             {
-                if (IPAddress.TryParse(Str(v4, "hostIpAddress"), out var parsed)) host = parsed;
+                if (IPAddress.TryParse(TextOrNull(v4, "hostIpAddress"), out var parsed)) host = parsed;
                 if (v4.TryGetProperty("prefixLength", out var p) && p.TryGetInt32(out var bits)) prefix = bits;
             }
-            result.Add(new Net(Str(n, "name") ?? "?", n.TryGetProperty("vlanId", out var vlan) && vlan.TryGetInt32(out var v) ? v : 0, host, prefix, d));
+            result.Add(new Net(TextOrNull(n, "name") ?? "?", n.TryGetProperty("vlanId", out var vlan) && vlan.TryGetInt32(out var v) ? v : 0, host, prefix, d));
         }
         return result;
     }
 
     private async Task<Dictionary<string, string>> DevicesAsync(string site, CancellationToken ct) =>
-        (await console.GetAllAsync($"/v1/sites/{site}/devices", ct)).ToDictionary(d => Str(d, "id") ?? "", d => Str(d, "name") ?? "?");
+        (await console.GetAllAsync($"/v1/sites/{site}/devices", ct)).ToDictionary(d => TextOrNull(d, "id") ?? "", d => TextOrNull(d, "name") ?? "?");
 
     private static string DescribePool(Net net, string? ip)
     {
         var header = $"{net.Name} (VLAN {net.Vlan}, {net.Host}/{net.Prefix}). ";
         if (!net.Details.TryGetProperty("ipv4Configuration", out var v4) || !v4.TryGetProperty("dhcpConfiguration", out var dhcp) || dhcp.ValueKind != JsonValueKind.Object)
             return header + "No DHCP on this network.";
-        if (Str(dhcp, "mode") != "SERVER" || !dhcp.TryGetProperty("ipAddressRange", out var range))
-            return header + $"DHCP mode {Str(dhcp, "mode")}: addresses come from elsewhere.";
-        var start = Str(range, "start");
-        var stop = Str(range, "stop");
+        if (TextOrNull(dhcp, "mode") != "SERVER" || !dhcp.TryGetProperty("ipAddressRange", out var range))
+            return header + $"DHCP mode {TextOrNull(dhcp, "mode")}: addresses come from elsewhere.";
+        var start = TextOrNull(range, "start");
+        var stop = TextOrNull(range, "stop");
         var inside = ToUInt(ip) is { } a && ToUInt(start) is { } s && ToUInt(stop) is { } e && a >= s && a <= e;
         return header + $"DHCP server pool {start} to {stop}. The client's address is {(inside ? "inside" : "outside")} the pool.";
     }
@@ -216,8 +217,8 @@ public sealed class FaqTools(UnifiClient console, ConsoleReads reads)
     private static string ClientTable(List<JsonElement> clients, Dictionary<string, string> devices) =>
         Answer.Table(["Client", "IP", "MAC", "Type", "Via"], clients.Select(c =>
         {
-            var via = Str(c, "uplinkDeviceId");
-            return new[] { Str(c, "name") ?? "?", Ip(c) ?? "", Str(c, "macAddress") ?? "", Str(c, "type") ?? "?", via is null ? "" : devices.GetValueOrDefault(via, via) };
+            var via = TextOrNull(c, "uplinkDeviceId");
+            return new[] { TextOrNull(c, "name") ?? "?", Ip(c) ?? "", TextOrNull(c, "macAddress") ?? "", TextOrNull(c, "type") ?? "?", via is null ? "" : devices.GetValueOrDefault(via, via) };
         }));
 
     private static bool InSubnet(string? ip, Net net)
@@ -234,11 +235,5 @@ public sealed class FaqTools(UnifiClient console, ConsoleReads reads)
         return (uint)b[0] << 24 | (uint)b[1] << 16 | (uint)b[2] << 8 | b[3];
     }
 
-    private static string? Ip(JsonElement c) => Str(c, "ipAddress");
-
-    internal static string? Str(JsonElement e, string name) =>
-        e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
-
-    internal static string Num(JsonElement e, string name) =>
-        e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetRawText() : "";
+    private static string? Ip(JsonElement c) => TextOrNull(c, "ipAddress");
 }

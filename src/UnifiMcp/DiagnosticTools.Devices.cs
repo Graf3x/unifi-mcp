@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
+using static UnifiMcp.ConsoleJson;
 
 namespace UnifiMcp;
 
@@ -25,15 +26,15 @@ public sealed partial class DiagnosticTools
         var devices = await site.DevicesAsync(ct);
         if (string.IsNullOrWhiteSpace(device))
         {
-            var ordered = devices.OrderBy(d => V(d, "state") == "1").ThenBy(d => V(d, "name")).ToList();
-            var down = devices.Count(d => V(d, "state") != "1");
+            var ordered = devices.OrderBy(d => Text(d, "state") == "1").ThenBy(d => Text(d, "name")).ToList();
+            var down = devices.Count(d => Text(d, "state") != "1");
             a.Line($"## Devices: {devices.Count}, {down} not online");
             a.Line(Answer.Table(["Device", "Model", "Type", "State", "Uptime", "CPU %", "Memory %", "Temp °C", "Firmware", "Issues"],
                 ordered.Select(d => new[]
                 {
-                    V(d, "name"), V(d, "model"), V(d, "type"), DeviceState(V(d, "state")), V(d, "state") == "1" ? Duration(Long(d, "uptime")) : "",
-                    Obj(d, "system-stats") is { } s ? V(s, "cpu") : "", Obj(d, "system-stats") is { } m ? V(m, "mem") : "", Temperature(d),
-                    Bool(d, "upgradable") ? $"{V(d, "version")} → {First(V(d, "upgrade_to_firmware"), "update available")}" : V(d, "version"),
+                    Text(d, "name"), Text(d, "model"), Text(d, "type"), DeviceState(Text(d, "state")), Text(d, "state") == "1" ? Duration(Long(d, "uptime")) : "",
+                    Obj(d, "system-stats") is { } s ? Text(s, "cpu") : "", Obj(d, "system-stats") is { } m ? Text(m, "mem") : "", Temperature(d),
+                    Bool(d, "upgradable") ? $"{Text(d, "version")} → {First(Text(d, "upgrade_to_firmware"), "update available")}" : Text(d, "version"),
                     string.Join(", ", Issues(d)),
                 })));
             a.Line("Call again with device set to one name for its ports, PoE and uplink.");
@@ -42,11 +43,11 @@ public sealed partial class DiagnosticTools
         }
 
         var q = device.Trim();
-        var found = devices.Where(d => string.Equals(V(d, "mac"), q, StringComparison.OrdinalIgnoreCase) || V(d, "ip") == q
-                                       || V(d, "name").Contains(q, StringComparison.OrdinalIgnoreCase)).ToList();
+        var found = devices.Where(d => string.Equals(Text(d, "mac"), q, StringComparison.OrdinalIgnoreCase) || Text(d, "ip") == q
+                                       || Text(d, "name").Contains(q, StringComparison.OrdinalIgnoreCase)).ToList();
         if (found.Count == 0)
         {
-            var none = $"No device matches '{device}'. Devices: {string.Join(", ", devices.Select(d => V(d, "name")))}.";
+            var none = $"No device matches '{device}'. Devices: {string.Join(", ", devices.Select(d => Text(d, "name")))}.";
             a.Line(none);
             a.View = NewView("message", siteId) with { Message = none };
             return;
@@ -54,39 +55,39 @@ public sealed partial class DiagnosticTools
         if (found.Count > 1)
         {
             var several = $"'{device}' matches {found.Count} devices; use the IP or MAC";
-            a.Line($"{several}:\n" + Answer.Table(["Name", "IP", "MAC"], found.Select(d => new[] { V(d, "name"), V(d, "ip"), V(d, "mac") })));
+            a.Line($"{several}:\n" + Answer.Table(["Name", "IP", "MAC"], found.Select(d => new[] { Text(d, "name"), Text(d, "ip"), Text(d, "mac") })));
             a.View = NewView("message", siteId) with
             {
                 Message = several + ".",
-                Candidates = found.Select(d => new Candidate(V(d, "name"), V(d, "ip"), V(d, "mac"))).ToList(),
+                Candidates = found.Select(d => new Candidate(Text(d, "name"), Text(d, "ip"), Text(d, "mac"))).ToList(),
             };
             return;
         }
 
         var dev = found[0];
-        a.Line($"## {V(dev, "name")} ({V(dev, "model")}, {V(dev, "type")})");
-        a.Line($"- State {DeviceState(V(dev, "state"))}, IP {V(dev, "ip")}, MAC {V(dev, "mac")}, firmware {V(dev, "version")}"
-                      + (Bool(dev, "upgradable") ? $" (update to {First(V(dev, "upgrade_to_firmware"), "a newer version")} available)." : "."));
+        a.Line($"## {Text(dev, "name")} ({Text(dev, "model")}, {Text(dev, "type")})");
+        a.Line($"- State {DeviceState(Text(dev, "state"))}, IP {Text(dev, "ip")}, MAC {Text(dev, "mac")}, firmware {Text(dev, "version")}"
+                      + (Bool(dev, "upgradable") ? $" (update to {First(Text(dev, "upgrade_to_firmware"), "a newer version")} available)." : "."));
         if (Obj(dev, "system-stats") is { } stats)
-            a.Line($"- CPU {V(stats, "cpu")} %, memory {V(stats, "mem")} %, up {Duration(Long(dev, "uptime"))}.");
-        var temps = Array(dev, "temperatures");
-        if (temps.Count > 0) a.Line("- Temperatures: " + string.Join(", ", temps.Select(t => $"{V(t, "name")} {V(t, "value")} °C")) + ".");
-        else if (V(dev, "general_temperature") is { Length: > 0 } general) a.Line($"- Temperature {general} °C.");
+            a.Line($"- CPU {Text(stats, "cpu")} %, memory {Text(stats, "mem")} %, up {Duration(Long(dev, "uptime"))}.");
+        var temps = Items(dev, "temperatures");
+        if (temps.Count > 0) a.Line("- Temperatures: " + string.Join(", ", temps.Select(t => $"{Text(t, "name")} {Text(t, "value")} °C")) + ".");
+        else if (Text(dev, "general_temperature") is { Length: > 0 } general) a.Line($"- Temperature {general} °C.");
         if (Bool(dev, "overheating")) a.Line("- **Overheating.**");
-        if (Bool(dev, "has_fan")) a.Line($"- Fan level {First(V(dev, "fan_level"), "?")}.");
-        if (V(dev, "total_max_power") is { Length: > 0 } budget && Dbl(dev, "total_max_power") > 0) a.Line($"- PoE: {First(V(dev, "total_used_power"), "?")} W used of {budget} W.");
-        if (Obj(dev, "uplink") is { } up && V(up, "type").Length > 0)
-            a.Line($"- Uplink: {V(up, "type")} " + (V(up, "uplink_device_name") is { Length: > 0 } upName ? $"to {upName} port {First(V(up, "uplink_remote_port"), "?")}" : $"on {First(V(up, "comment"), V(up, "name"), "?")}") + $", {First(V(up, "speed"), "?")} Mbps"
-                          + (Bool(up, "full_duplex") ? " full duplex" : "") + $", errors rx {First(V(up, "rx_errors"), "0")} / tx {First(V(up, "tx_errors"), "0")}.");
-        foreach (var s in Array(dev, "storage")) a.Line($"- Storage {V(s, "name")}: {Pct(Dbl(s, "used"), Dbl(s, "size"))} % used.");
+        if (Bool(dev, "has_fan")) a.Line($"- Fan level {First(Text(dev, "fan_level"), "?")}.");
+        if (Text(dev, "total_max_power") is { Length: > 0 } budget && Dbl(dev, "total_max_power") > 0) a.Line($"- PoE: {First(Text(dev, "total_used_power"), "?")} W used of {budget} W.");
+        if (Obj(dev, "uplink") is { } up && Text(up, "type").Length > 0)
+            a.Line($"- Uplink: {Text(up, "type")} " + (Text(up, "uplink_device_name") is { Length: > 0 } upName ? $"to {upName} port {First(Text(up, "uplink_remote_port"), "?")}" : $"on {First(Text(up, "comment"), Text(up, "name"), "?")}") + $", {First(Text(up, "speed"), "?")} Mbps"
+                          + (Bool(up, "full_duplex") ? " full duplex" : "") + $", errors rx {First(Text(up, "rx_errors"), "0")} / tx {First(Text(up, "tx_errors"), "0")}.");
+        foreach (var s in Items(dev, "storage")) a.Line($"- Storage {Text(s, "name")}: {Pct(Dbl(s, "used"), Dbl(s, "size"))} % used.");
         a.Line();
 
-        var radios = Array(dev, "radio_table_stats");
+        var radios = Items(dev, "radio_table_stats");
         if (radios.Count > 0)
             a.Line("## Radios").Line(Answer.Table(["Band", "Channel", "Width (MHz)", "Tx power", "Clients", "Channel use %", "Interference %", "Retries %"],
-                radios.Select(r => new[] { Band(V(r, "radio")), V(r, "channel"), V(r, "bw"), V(r, "tx_power"), V(r, "num_sta"), V(r, "cu_total"), V(r, "cu_interf"), V(r, "tx_retries_pct") })));
+                radios.Select(r => new[] { Band(Text(r, "radio")), Text(r, "channel"), Text(r, "bw"), Text(r, "tx_power"), Text(r, "num_sta"), Text(r, "cu_total"), Text(r, "cu_interf"), Text(r, "tx_retries_pct") })));
 
-        var ports = Array(dev, "port_table");
+        var ports = Items(dev, "port_table");
         var portViews = new List<PortView>();
         if (ports.Count > 0)
         {
@@ -94,13 +95,13 @@ public sealed partial class DiagnosticTools
             var connected = ConnectedDevices(devices, dev);
             if (Upstream(devices, dev, ports) is { } upstream) Add(connected, upstream.Port, upstream.Device);
             var stations = await a.Step("Connected clients", () => site.StationsAsync(ct)) ?? [];
-            foreach (var c in stations.Where(c => Bool(c, "is_wired") && SameMac(V(c, "sw_mac"), V(dev, "mac")) && V(c, "sw_port").Length > 0).OrderBy(Name))
-                Add(connected, V(c, "sw_port"), new Connected("client", Name(c), V(c, "mac")));
-            var capabilities = await a.Step("Port capabilities", () => PortCapabilitiesAsync(siteId, V(dev, "mac"), ct)) ?? [];
+            foreach (var c in stations.Where(c => Bool(c, "is_wired") && SameMac(Text(c, "sw_mac"), Text(dev, "mac")) && Text(c, "sw_port").Length > 0).OrderBy(Name))
+                Add(connected, Text(c, "sw_port"), new Connected("client", Name(c), Text(c, "mac")));
+            var capabilities = await a.Step("Port capabilities", () => PortCapabilitiesAsync(siteId, Text(dev, "mac"), ct)) ?? [];
 
             var rows = ports.Select(p =>
             {
-                var idx = V(p, "port_idx");
+                var idx = Text(p, "port_idx");
                 var (max, connector) = capabilities.TryGetValue(idx, out var cap) ? cap : (null, "RJ45");
                 return (Json: p, View: Port(p, connected.TryGetValue(idx, out var on) ? on : [], max, connector));
             }).ToList();
@@ -113,13 +114,13 @@ public sealed partial class DiagnosticTools
                 var (p, v) = r;
                 return new[]
                 {
-                    V(p, "port_idx"), V(p, "name"), ConnectedCell(v), v.State, V(p, "speed"), v.MaxSpeedMbps?.ToString(CultureInfo.InvariantCulture) ?? "",
-                    v.Duplex ?? "", Bool(p, "poe_enable") ? V(p, "poe_power") : "",
-                    V(p, "rx_errors"), V(p, "tx_errors"), ((Dbl(p, "rx_dropped") ?? 0) + (Dbl(p, "tx_dropped") ?? 0)).ToString(CultureInfo.InvariantCulture),
-                    V(p, "link_down_count"), V(p, "stp_state"), string.Join(", ", v.Flags),
+                    Text(p, "port_idx"), Text(p, "name"), ConnectedCell(v), v.State, Text(p, "speed"), v.MaxSpeedMbps?.ToString(CultureInfo.InvariantCulture) ?? "",
+                    v.Duplex ?? "", Bool(p, "poe_enable") ? Text(p, "poe_power") : "",
+                    Text(p, "rx_errors"), Text(p, "tx_errors"), ((Dbl(p, "rx_dropped") ?? 0) + (Dbl(p, "tx_dropped") ?? 0)).ToString(CultureInfo.InvariantCulture),
+                    Text(p, "link_down_count"), Text(p, "stp_state"), string.Join(", ", v.Flags),
                 };
             })));
-            var idle = rows.Where(r => r.View.State != "up" && r.View.Flags.Count == 0).Select(r => V(r.Json, "port_idx")).ToList();
+            var idle = rows.Where(r => r.View.State != "up" && r.View.Flags.Count == 0).Select(r => Text(r.Json, "port_idx")).ToList();
             if (idle.Count > 0) a.Line($"Down with nothing to report: {string.Join(", ", idle)}.");
         }
 
@@ -137,12 +138,12 @@ public sealed partial class DiagnosticTools
     private static Dictionary<string, List<Connected>> ConnectedDevices(List<JsonElement> devices, JsonElement parent)
     {
         var byPort = new Dictionary<string, List<Connected>>(StringComparer.Ordinal);
-        string mac = V(parent, "mac"), name = V(parent, "name");
-        foreach (var d in devices.OrderBy(d => V(d, "name")))
+        string mac = Text(parent, "mac"), name = Text(parent, "name");
+        foreach (var d in devices.OrderBy(d => Text(d, "name")))
         {
-            if (SameMac(V(d, "mac"), mac) || Obj(d, "uplink") is not { } up || V(up, "uplink_remote_port") is not { Length: > 0 } port) continue;
-            var isChild = V(up, "uplink_mac") is { Length: > 0 } parentMac ? SameMac(parentMac, mac) : name.Length > 0 && V(up, "uplink_device_name") == name;
-            if (isChild) Add(byPort, port, new Connected("device", V(d, "name"), V(d, "mac")));
+            if (SameMac(Text(d, "mac"), mac) || Obj(d, "uplink") is not { } up || Text(up, "uplink_remote_port") is not { Length: > 0 } port) continue;
+            var isChild = Text(up, "uplink_mac") is { Length: > 0 } parentMac ? SameMac(parentMac, mac) : name.Length > 0 && Text(up, "uplink_device_name") == name;
+            if (isChild) Add(byPort, port, new Connected("device", Text(d, "name"), Text(d, "mac")));
         }
         return byPort;
     }
@@ -155,13 +156,13 @@ public sealed partial class DiagnosticTools
     private static (string Port, Connected Device)? Upstream(List<JsonElement> devices, JsonElement dev, List<JsonElement> ports)
     {
         if (Obj(dev, "uplink") is not { } up) return null;
-        string name = V(up, "uplink_device_name"), mac = V(up, "uplink_mac");
-        var parent = devices.FirstOrDefault(d => mac.Length > 0 ? SameMac(V(d, "mac"), mac) : name.Length > 0 && V(d, "name") == name);
-        name = First(name, V(parent, "name"));
+        string name = Text(up, "uplink_device_name"), mac = Text(up, "uplink_mac");
+        var parent = devices.FirstOrDefault(d => mac.Length > 0 ? SameMac(Text(d, "mac"), mac) : name.Length > 0 && Text(d, "name") == name);
+        name = First(name, Text(parent, "name"));
         if (name.Length == 0) return null;
-        var marked = ports.Where(p => Bool(p, "is_uplink")).Select(p => V(p, "port_idx")).ToList();
-        var port = First(V(up, "port_idx"), marked.Count == 1 ? marked[0] : "");
-        return port.Length == 0 ? null : (port, new Connected("device", name, First(mac, V(parent, "mac"))));
+        var marked = ports.Where(p => Bool(p, "is_uplink")).Select(p => Text(p, "port_idx")).ToList();
+        var port = First(Text(up, "port_idx"), marked.Count == 1 ? marked[0] : "");
+        return port.Length == 0 ? null : (port, new Connected("device", name, First(mac, Text(parent, "mac"))));
     }
 
     private static void Add(Dictionary<string, List<Connected>> byPort, string port, Connected item)
@@ -178,11 +179,11 @@ public sealed partial class DiagnosticTools
     {
         var capabilities = new Dictionary<string, (long? Max, string Connector)>(StringComparer.Ordinal);
         var site = await console.FindSiteAsync(siteId, ct);
-        var listed = (await console.GetAllAsync($"/v1/sites/{site.Id}/devices", ct)).FirstOrDefault(d => SameMac(V(d, "macAddress"), mac));
-        if (!Guid.TryParse(V(listed, "id"), out var id)) return capabilities; // not listed, or an id this server will not put in a path
+        var listed = (await console.GetAllAsync($"/v1/sites/{site.Id}/devices", ct)).FirstOrDefault(d => SameMac(Text(d, "macAddress"), mac));
+        if (!Guid.TryParse(Text(listed, "id"), out var id)) return capabilities; // not listed, or an id this server will not put in a path
         var detail = await console.GetJsonAsync($"/v1/sites/{site.Id}/devices/{id}", ct);
-        foreach (var p in Array(Obj(detail, "interfaces"), "ports"))
-            capabilities[V(p, "idx")] = (Long(p, "maxSpeedMbps"), Connectors.Contains(V(p, "connector")) ? V(p, "connector") : "RJ45");
+        foreach (var p in Items(Obj(detail, "interfaces"), "ports"))
+            capabilities[Text(p, "idx")] = (Long(p, "maxSpeedMbps"), Connectors.Contains(Text(p, "connector")) ? Text(p, "connector") : "RJ45");
         return capabilities;
     }
 
@@ -192,9 +193,9 @@ public sealed partial class DiagnosticTools
         long? speed = up && Long(p, "speed") is > 0 and var s ? s : null;
         var flags = PortFlags(p, max);
         long rx = Long(p, "rx_errors") ?? 0, tx = Long(p, "tx_errors") ?? 0, downs = Long(p, "link_down_count") ?? 0;
-        return new((int)(Long(p, "port_idx") ?? 0), V(p, "name"), up ? "up" : Bool(p, "enable") ? "down" : "disabled", speed, max, connector,
+        return new((int)(Long(p, "port_idx") ?? 0), Text(p, "name"), up ? "up" : Bool(p, "enable") ? "down" : "disabled", speed, max, connector,
             up ? (Bool(p, "full_duplex") ? "full" : "half") : null, Bool(p, "poe_enable") ? Dbl(p, "poe_power") : null, rx, tx,
-            (long)((Dbl(p, "rx_dropped") ?? 0) + (Dbl(p, "tx_dropped") ?? 0)), downs, NullIfEmpty(V(p, "stp_state")), flags,
+            (long)((Dbl(p, "rx_dropped") ?? 0) + (Dbl(p, "tx_dropped") ?? 0)), downs, NullIfEmpty(Text(p, "stp_state")), flags,
             PortNote(flags, speed, max, rx, tx, downs), connected.Take(5).ToList(), connected.Count);
     }
 
@@ -238,26 +239,26 @@ public sealed partial class DiagnosticTools
         new(kind, siteId, time.GetUtcNow().UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture));
 
     private static DeviceTile Tile(JsonElement d) => new(
-        V(d, "name"), V(d, "mac"), V(d, "model"), V(d, "type"), DeviceState(V(d, "state")), Uptime(d), Stat(d, "cpu"), Stat(d, "mem"),
-        Hottest(d), V(d, "version"), UpdateTo(d), Issues(d).ToList());
+        Text(d, "name"), Text(d, "mac"), Text(d, "model"), Text(d, "type"), DeviceState(Text(d, "state")), Uptime(d), Stat(d, "cpu"), Stat(d, "mem"),
+        Hottest(d), Text(d, "version"), UpdateTo(d), Issues(d).ToList());
 
     private static DeviceDetail Detail(JsonElement d, IReadOnlyList<PortView> ports)
     {
         var poe = Dbl(d, "total_max_power") is > 0;
-        return new(V(d, "name"), V(d, "mac"), V(d, "model"), V(d, "type"), DeviceState(V(d, "state")), V(d, "ip"), V(d, "version"), UpdateTo(d),
+        return new(Text(d, "name"), Text(d, "mac"), Text(d, "model"), Text(d, "type"), DeviceState(Text(d, "state")), Text(d, "ip"), Text(d, "version"), UpdateTo(d),
             Uptime(d), Stat(d, "cpu"), Stat(d, "mem"), Hottest(d), Bool(d, "overheating"),
             poe ? Dbl(d, "total_used_power") : null, poe ? Dbl(d, "total_max_power") : null,
-            Obj(d, "uplink") is { } up && V(up, "type").Length > 0
-                ? new UplinkFacts(V(up, "type"), NullIfEmpty(V(up, "uplink_device_name")), NullIfEmpty(V(up, "uplink_remote_port")), Long(up, "speed"))
+            Obj(d, "uplink") is { } up && Text(up, "type").Length > 0
+                ? new UplinkFacts(Text(up, "type"), NullIfEmpty(Text(up, "uplink_device_name")), NullIfEmpty(Text(up, "uplink_remote_port")), Long(up, "speed"))
                 : null,
             ports);
     }
 
-    private static long? Uptime(JsonElement d) => V(d, "state") == "1" ? Long(d, "uptime") : null;
+    private static long? Uptime(JsonElement d) => Text(d, "state") == "1" ? Long(d, "uptime") : null;
 
     private static double? Stat(JsonElement d, string name) => Obj(d, "system-stats") is { } s ? Dbl(s, name) : null;
 
-    private static string? UpdateTo(JsonElement d) => Bool(d, "upgradable") ? First(V(d, "upgrade_to_firmware"), "available") : null;
+    private static string? UpdateTo(JsonElement d) => Bool(d, "upgradable") ? First(Text(d, "upgrade_to_firmware"), "available") : null;
 
     private static string? NullIfEmpty(string s) => s.Length == 0 ? null : s;
 
@@ -278,7 +279,7 @@ public sealed partial class DiagnosticTools
     private static IEnumerable<string> Issues(JsonElement d)
     {
         if (Bool(d, "overheating")) yield return "overheating";
-        var bad = Array(d, "port_table").Where(p => PortFlags(p, null).Count > 0).Select(p => V(p, "port_idx")).ToList();
+        var bad = Items(d, "port_table").Where(p => PortFlags(p, null).Count > 0).Select(p => Text(p, "port_idx")).ToList();
         if (bad.Count > 0) yield return $"port(s) {string.Join(", ", bad)} flagged";
         if (Obj(d, "uplink") is { } up && (Dbl(up, "rx_errors") ?? 0) + (Dbl(up, "tx_errors") ?? 0) > 0) yield return "uplink errors";
     }
@@ -286,14 +287,14 @@ public sealed partial class DiagnosticTools
     /// <summary>The hottest sensor, else the device's one general reading.</summary>
     private static double? Hottest(JsonElement d)
     {
-        var temps = Array(d, "temperatures").Select(t => Dbl(t, "value")).OfType<double>().ToList();
+        var temps = Items(d, "temperatures").Select(t => Dbl(t, "value")).OfType<double>().ToList();
         return temps.Count > 0 ? temps.Max() : Dbl(d, "general_temperature");
     }
 
     private static string Temperature(JsonElement d)
     {
-        var temps = Array(d, "temperatures").Select(t => Dbl(t, "value")).OfType<double>().ToList();
-        return temps.Count > 0 ? temps.Max().ToString(CultureInfo.InvariantCulture) : V(d, "general_temperature");
+        var temps = Items(d, "temperatures").Select(t => Dbl(t, "value")).OfType<double>().ToList();
+        return temps.Count > 0 ? temps.Max().ToString(CultureInfo.InvariantCulture) : Text(d, "general_temperature");
     }
 
     private static string DeviceState(string state) => state switch
