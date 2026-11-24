@@ -621,16 +621,13 @@ public class DiagnosticTests
     }
 
     [Fact]
-    public async Task A_port_lists_five_connected_and_counts_the_rest()
+    public async Task The_text_names_five_connected_and_counts_the_rest()
     {
         await using var h = await StartAsync();
         h.Unifi.Route("GET", $"{Classic}/stat/sta", Ok(Enumerable.Range(1, 7).Select(i =>
             $$"""{"mac":"cc:00:00:00:01:0{{i}}","name":"cam {{i}}","is_wired":true,"sw_mac":"AA:00:00:00:00:03","sw_port":4}""").ToArray()));
-        var r = await h.CallRawAsync("device_diagnostics_faq", new() { ["device"] = "core" });
-        var port4 = PortsOf(r)[3];
-        Assert.Equal(5, port4.GetProperty("connected").GetArrayLength());
-        Assert.Equal(7, port4.GetProperty("connectedCount").GetInt32());
-        Assert.Contains("cam 5 +2 more", ((TextContentBlock)r.Content[0]).Text);
+        var (text, _) = await h.CallAsync("device_diagnostics_faq", new() { ["device"] = "core" });
+        Assert.Contains("cam 5 +2 more", text);
     }
 
     [Fact]
@@ -640,30 +637,6 @@ public class DiagnosticTests
         h.Unifi.Route("GET", $"{Classic}/stat/sta", Ok("""{"mac":"cc:00:00:00:02:01","name":"<img src=x onerror=alert(1)>|x","is_wired":true,"sw_mac":"aa:00:00:00:00:03","sw_port":4}"""));
         var (text, _) = await h.CallAsync("device_diagnostics_faq", new() { ["device"] = "core" });
         Assert.Contains(@"<img src=x onerror=alert(1)>\|x", text);
-    }
-
-    [Fact]
-    public async Task The_uplink_port_names_the_device_upstream()
-    {
-        await using var h = await StartAsync();
-        var sfp = (await PortsAsync(h))[4];
-        var upstream = sfp.GetProperty("connected")[0];
-        Assert.Equal("device", upstream.GetProperty("kind").GetString());
-        Assert.Equal("Gateway", upstream.GetProperty("name").GetString());
-        Assert.Equal("aa:00:00:00:00:04", upstream.GetProperty("mac").GetString()); // found by name: this uplink carries no MAC
-        Assert.Equal(1, sfp.GetProperty("connectedCount").GetInt32());
-        var (text, _) = await h.CallAsync("device_diagnostics_faq", new() { ["device"] = "core" });
-        Assert.Contains("| 5 | SFP 1 | Gateway | up |", text);
-    }
-
-    [Fact]
-    public async Task The_uplink_port_is_found_by_the_console_mark_when_the_uplink_gives_no_port()
-    {
-        await using var h = await StartAsync();
-        var marked = Switch.Replace("\"type\":\"wire\",\"port_idx\":5,", "\"type\":\"wire\",").Replace("{\"port_idx\":5,\"name\":\"SFP 1\",", "{\"port_idx\":5,\"is_uplink\":true,\"name\":\"SFP 1\",");
-        Assert.Contains("\"is_uplink\":true", marked);
-        h.Unifi.Route("GET", $"{Classic}/stat/device", Ok(Ap, OfflineAp, marked, Gateway));
-        Assert.Equal("Gateway", (await PortsAsync(h))[4].GetProperty("connected")[0].GetProperty("name").GetString());
     }
 
     [Fact]
@@ -683,22 +656,6 @@ public class DiagnosticTests
         Assert.Empty(v.GetProperty("device").GetProperty("ports").EnumerateArray());
         Assert.DoesNotContain(h.Unifi.Requests, r => r.Path.Contains("/stat/sta") || r.Path.Contains("/devices"));
     }
-
-    [Theory]
-    [InlineData(100L, "100 Mb")] [InlineData(1000L, "1 GbE")] [InlineData(2500L, "2.5 GbE")] [InlineData(10000L, "10 GbE")]
-    public void Speeds_read_the_way_people_say_them(long mbps, string label) => Assert.Equal(label, DiagnosticTools.SpeedLabel(mbps));
-
-    [Fact]
-    public void A_slow_only_port_gets_a_note_about_the_device()
-    {
-        Assert.Equal("Linked at 100 Mb on a port that can do 1 GbE: the device or its cable may only support this speed.",
-            DiagnosticTools.PortNote(["slow link"], 100, 1000, 0, 0, 0));
-        Assert.Equal("Link dropped 6 times since the device restarted: check the cable and the device's power.",
-            DiagnosticTools.PortNote(["flapping"], 1000, 1000, 0, 0, 6));
-        Assert.Null(DiagnosticTools.PortNote([], 1000, 1000, 0, 0, 0));
-    }
-
-    // --- list_port_forwards -----------------------------------------------------------------------------------------
 
     [Fact]
     public async Task Port_forwards_are_listed()

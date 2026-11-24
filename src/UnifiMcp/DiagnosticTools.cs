@@ -189,7 +189,7 @@ public sealed partial class DiagnosticTools(UnifiClient console, ConsoleReads re
             }))));
         var offline = aps.Where(a => Text(a, "state") != "1").ToList();
         if (offline.Count > 0)
-            a.Line($"**Not online ({offline.Count}):** " + string.Join(", ", offline.Select(a => $"{Text(a, "name")} ({Text(a, "model")}, {DeviceState(Text(a, "state"))})"))).Line();
+            a.Line($"**Not online ({offline.Count}):** " + string.Join(", ", offline.Select(a => $"{Text(a, "name")} ({Text(a, "model")}, {DeviceReading.StateName(a)})"))).Line();
 
         var zone = await site.TimeZoneAsync(ct);
         var events = await a.Step("Radio events", () => site.SystemLogAsync(
@@ -228,13 +228,13 @@ public sealed partial class DiagnosticTools(UnifiClient console, ConsoleReads re
         if (found.Count > 1)
         {
             a.Line($"'{client}' matches {found.Count} clients; use the IP or MAC:").Line(Answer.Table(["Name", "IP", "MAC", "State"],
-                found.Select(x => new[] { Name(x), First(Text(x, "ip"), Text(x, "last_ip")), Text(x, "mac"), online ? "online" : "offline" })));
+                found.Select(x => new[] { ClientName(x), First(Text(x, "ip"), Text(x, "last_ip")), Text(x, "mac"), online ? "online" : "offline" })));
             return;
         }
 
         var zone = await site.TimeZoneAsync(ct);
         var c = found[0];
-        a.Line($"## {Name(c)} ({(online ? "online" : "offline")})");
+        a.Line($"## {ClientName(c)} ({(online ? "online" : "offline")})");
         a.Line($"- MAC {Text(c, "mac")}, vendor {First(Text(c, "oui"), "unknown")}, hostname {First(Text(c, "hostname"), "none")}.");
         a.Line($"- Network {First(Text(c, "network"), Text(c, "last_connection_network_name"), Text(c, "network_name"))}, IP {First(Text(c, "ip"), Text(c, "last_ip"), "none")}.");
         a.Line(Bool(c, "use_fixedip") ? $"- Fixed IP reservation: {Text(c, "fixed_ip")}." : "- Fixed IP reservation: none.");
@@ -341,8 +341,6 @@ public sealed partial class DiagnosticTools(UnifiClient console, ConsoleReads re
     // --- formatting: values are read by name through ConsoleJson, never by passing an object through ---------------
 
     private static string First(params string?[] values) => values.FirstOrDefault(v => !string.IsNullOrEmpty(v)) ?? "";
-
-    private static string Name(JsonElement c) => First(Text(c, "name"), Text(c, "display_name"), Text(c, "hostname"), Text(c, "mac"));
 
     private static string Band(string radio) => radio switch { "ng" => "2.4 GHz", "na" => "5 GHz", "6e" => "6 GHz", _ => radio };
 
