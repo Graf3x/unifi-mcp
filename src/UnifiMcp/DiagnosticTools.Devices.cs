@@ -18,7 +18,7 @@ public sealed partial class DiagnosticTools
                  + "errors, drops, link-down count and STP state, with bad ports flagged. Use for 'is this switch dropping packets' or 'which port is flapping'.")]
     [McpMeta("ui", JsonValue = "{\"resourceUri\":\"" + ViewResources.DeviceDiagnosticsUri + "\"}")]
     public Task<CallToolResult> DeviceDiagnostics(
-        [Description("Device name (partial match), IP address or MAC address. Omit for a summary of every device.")] string? device = null,
+        [Description("Device name (partial match), IP address or MAC address; when no name matches, a model or type such as 'udm' or 'USW'. Omit for a summary of every device.")] string? device = null,
         [Description("Site UUID or name. Omit for the configured site.")] string? siteId = null,
         CancellationToken ct = default) => Answer.RunAsync(async a =>
     {
@@ -40,9 +40,7 @@ public sealed partial class DiagnosticTools
             return;
         }
 
-        var q = device.Trim();
-        var found = devices.Where(d => string.Equals(Text(d, "mac"), q, StringComparison.OrdinalIgnoreCase) || Text(d, "ip") == q
-                                       || Text(d, "name").Contains(q, StringComparison.OrdinalIgnoreCase)).ToList();
+        var found = DeviceReading.Find(devices, device);
         if (found.Count == 0)
         {
             var none = $"No device matches '{device}'. Devices: {string.Join(", ", devices.Select(d => Text(d, "name")))}.";

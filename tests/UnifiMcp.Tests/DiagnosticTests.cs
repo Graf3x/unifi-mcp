@@ -510,6 +510,18 @@ public class DiagnosticTests
     }
 
     [Fact]
+    public async Task Device_view_finds_a_device_by_its_model_or_type_when_no_name_matches()
+    {
+        await using var h = await StartAsync();
+        foreach (var query in new[] { "udm", "UDM Pro" })
+        {
+            var v = await ViewAsync(h, new() { ["device"] = query });
+            Assert.Equal("device", v.GetProperty("view").GetString());
+            Assert.Equal("Gateway", v.GetProperty("device").GetProperty("name").GetString());
+        }
+    }
+
+    [Fact]
     public async Task Device_view_for_a_console_error_is_a_message_and_a_tool_error()
     {
         await using var h = await StartAsync();

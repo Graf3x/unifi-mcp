@@ -49,6 +49,48 @@ public class DeviceReadingTests
     private static DeviceDetail Detail(JsonElement? device = null, List<JsonElement>? clients = null, Dictionary<string, PortCapability>? capabilities = null) =>
         DeviceReading.Detail(device ?? Switch, Devices, clients ?? [], capabilities ?? Capable);
 
+    // --- finding a device -------------------------------------------------------------------------------------------
+
+    private static readonly List<JsonElement> Three = Js(SwitchJson, ApJson, GatewayJson);
+
+    private static List<string> Found(string query, List<JsonElement>? devices = null) =>
+        DeviceReading.Find(devices ?? Three, query).Select(d => d.GetProperty("name").GetString()!).ToList();
+
+    [Fact]
+    public void A_device_is_found_by_part_of_its_name_its_ip_or_its_mac()
+    {
+        Assert.Equal(["Gateway"], Found("gate"));
+        Assert.Equal(["Core Switch"], Found("192.168.1.2"));
+        Assert.Equal(["Hall AP"], Found("AA:00:00:00:00:01"));
+        Assert.Equal(["Core Switch"], Found("CORE"));
+    }
+
+    [Theory]
+    [InlineData("udm")]
+    [InlineData("UDM Pro")]
+    [InlineData("udm-pro")]
+    [InlineData("UDMPRO")]
+    public void With_no_name_match_a_device_is_found_by_its_model_or_type(string query) =>
+        Assert.Equal(["Gateway"], Found(query));
+
+    [Fact]
+    public void A_type_finds_every_device_of_that_type_and_a_model_matches_from_its_start()
+    {
+        Assert.Equal(["Core Switch"], Found("usw"));
+        Assert.Equal(["Hall AP"], Found("u6"));
+        Assert.Empty(Found("pro")); // the end of a model is not a match
+        Assert.Empty(Found("toaster"));
+        Assert.Empty(Found("--"));
+    }
+
+    [Fact]
+    public void A_name_match_wins_over_a_model_or_type_match()
+    {
+        var devices = Js(GatewayJson, """{"mac":"aa:00:00:00:00:09","type":"usw","model":"USMINI","name":"UDM closet switch","state":1}""");
+
+        Assert.Equal(["UDM closet switch"], Found("udm", devices));
+    }
+
     // --- online and state --------------------------------------------------------------------------------------------
 
     [Theory]

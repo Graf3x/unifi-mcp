@@ -19,6 +19,23 @@ internal static class DeviceReading
 
     private static readonly HashSet<string> Connectors = new(StringComparer.Ordinal) { "RJ45", "SFP", "SFPPLUS", "SFP28", "QSFP28" };
 
+    /// <summary>
+    /// The devices a query names: part of a name, an IP address or a MAC address. When none matches, the device's type
+    /// or the start of its model, ignoring case, spaces and punctuation, so "udm" or "UDM Pro" finds a UDMPRO.
+    /// </summary>
+    public static List<JsonElement> Find(IReadOnlyList<JsonElement> devices, string query)
+    {
+        var q = query.Trim();
+        var named = devices.Where(d => string.Equals(Text(d, "mac"), q, StringComparison.OrdinalIgnoreCase) || Text(d, "ip") == q
+                                       || Text(d, "name").Contains(q, StringComparison.OrdinalIgnoreCase)).ToList();
+        var key = Squeezed(q);
+        if (named.Count > 0 || key.Length == 0) return named;
+        return devices.Where(d => Squeezed(Text(d, "type")) == key || Squeezed(Text(d, "model")).StartsWith(key, StringComparison.Ordinal)).ToList();
+    }
+
+    /// <summary>Lower-case letters and digits only: "UDM Pro" and "udm-pro" both read "udmpro".</summary>
+    private static string Squeezed(string s) => new(s.Where(char.IsLetterOrDigit).Select(char.ToLowerInvariant).ToArray());
+
     /// <summary>The console reports the device as connected. Every other state counts as not online.</summary>
     public static bool IsOnline(JsonElement device) => Text(device, "state") == "1";
 
