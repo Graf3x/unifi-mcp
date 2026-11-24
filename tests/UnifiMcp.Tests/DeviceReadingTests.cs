@@ -60,6 +60,15 @@ public class DeviceReadingTests
     [InlineData("0", "offline")] [InlineData("1", "online")] [InlineData("6", "heartbeat missed")] [InlineData("11", "isolated")] [InlineData("42", "state 42")]
     public void States_have_names(string state, string name) => Assert.Equal(name, DeviceReading.StateName(J($$"""{"state":{{state}}}""")));
 
+    [Fact]
+    public void The_tile_and_the_detail_say_whether_the_device_is_online()
+    {
+        Assert.True(DeviceReading.Tile(Switch).Online);
+        Assert.False(DeviceReading.Tile(J("""{"state":6}""")).Online);
+        Assert.True(Detail().Online);
+        Assert.False(Detail(J("""{"state":0}""")).Online);
+    }
+
     // --- the tile ----------------------------------------------------------------------------------------------------
 
     [Fact]
@@ -149,6 +158,15 @@ public class DeviceReadingTests
     {
         Assert.Empty(Detail().Ports[3].Flags);
         Assert.Equal(["slow link"], Detail(capabilities: []).Ports[3].Flags); // top speed unknown
+    }
+
+    [Fact]
+    public void A_port_looks_like_a_fault_a_slow_link_up_no_link_or_off()
+    {
+        Assert.Equal(["up", "fault", "nolink", "up", "up", "off"], Detail().Ports.Select(p => p.Look));
+        Assert.Equal("slow", Detail(capabilities: []).Ports[3].Look); // 100 Mb, top speed unknown
+        var flappedDown = J("""{"state":1,"port_table":[{"port_idx":1,"up":false,"enable":true,"link_down_count":9},{"port_idx":2,"up":false,"enable":false,"rx_errors":4}]}""");
+        Assert.Equal(["fault", "off"], Detail(flappedDown).Ports.Select(p => p.Look)); // off wins: nothing to fix on a port turned off
     }
 
     [Fact]

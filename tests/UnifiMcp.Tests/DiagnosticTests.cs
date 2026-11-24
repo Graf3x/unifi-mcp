@@ -471,6 +471,8 @@ public class DiagnosticTests
         var tiles = v.GetProperty("devices").EnumerateArray().ToList();
         Assert.Equal(["Garage AP", "Core Switch", "Gateway", "Hall AP"], tiles.Select(t => t.GetProperty("name").GetString()));
         Assert.Equal("offline", tiles[0].GetProperty("state").GetString());
+        Assert.False(tiles[0].GetProperty("online").GetBoolean());
+        Assert.True(tiles[1].GetProperty("online").GetBoolean());
         var sw = tiles[1];
         Assert.Equal("aa:00:00:00:00:03", sw.GetProperty("mac").GetString());
         Assert.Equal(172800, sw.GetProperty("uptimeSeconds").GetInt64());
@@ -522,6 +524,7 @@ public class DiagnosticTests
         await using var h = await StartAsync();
         var d = (await ViewAsync(h, new() { ["device"] = "core" })).GetProperty("device");
         Assert.Equal("Core Switch", d.GetProperty("name").GetString());
+        Assert.True(d.GetProperty("online").GetBoolean());
         Assert.Equal("192.168.1.2", d.GetProperty("ip").GetString());
         Assert.Equal(21.5, d.GetProperty("poeUsedW").GetDouble());
         Assert.Equal(95, d.GetProperty("poeBudgetW").GetDouble());
@@ -550,6 +553,7 @@ public class DiagnosticTests
         var p = await PortsAsync(h);
         Assert.Equal([1, 2, 3, 4, 5, 6], p.Select(x => x.GetProperty("index").GetInt32()));
         Assert.Equal(["up", "up", "down", "up", "up", "disabled"], p.Select(x => x.GetProperty("state").GetString()));
+        Assert.Equal(["up", "fault", "nolink", "up", "up", "off"], p.Select(x => x.GetProperty("look").GetString()));
         Assert.Equal("device", p[0].GetProperty("connected")[0].GetProperty("kind").GetString());
         Assert.Equal("Hall AP", p[0].GetProperty("connected")[0].GetProperty("name").GetString());
         Assert.Equal(6.65, p[0].GetProperty("poeW").GetDouble());

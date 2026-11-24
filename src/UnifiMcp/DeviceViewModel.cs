@@ -8,17 +8,17 @@ namespace UnifiMcp;
 internal sealed record DiagnosticsView(string View, string? SiteId, string BuiltAt, IReadOnlyList<DeviceTile>? Devices = null,
     DeviceDetail? Device = null, string? Message = null, IReadOnlyList<Candidate>? Candidates = null);
 
-/// <summary><c>UpdateTo</c> is the version an update brings, <see cref="DeviceReading.UnknownVersion"/> when the console does not say, null without one.</summary>
-internal sealed record DeviceTile(string Name, string Mac, string Model, string Type, string State, long? UptimeSeconds, double? CpuPct,
+/// <summary><c>Online</c> as on <see cref="DeviceDetail"/>. <c>UpdateTo</c> is the version an update brings, <see cref="DeviceReading.UnknownVersion"/> when the console does not say, null without one.</summary>
+internal sealed record DeviceTile(string Name, string Mac, string Model, string Type, string State, bool Online, long? UptimeSeconds, double? CpuPct,
     double? MemoryPct, double? TemperatureC, string Firmware, string? UpdateTo, IReadOnlyList<string> Issues);
 
 internal sealed record Candidate(string Name, string Ip, string Mac);
 
 /// <summary>
-/// <c>TemperatureC</c> is the hottest of <c>Sensors</c>, else the device's one general reading. <c>UpdateTo</c> as on
+/// <c>Online</c> is the console reporting the device as connected. <c>TemperatureC</c> is the hottest of <c>Sensors</c>, else the device's one general reading. <c>UpdateTo</c> as on
 /// <see cref="DeviceTile"/>.
 /// </summary>
-internal sealed record DeviceDetail(string Name, string Mac, string Model, string Type, string State, string Ip, string Firmware, string? UpdateTo,
+internal sealed record DeviceDetail(string Name, string Mac, string Model, string Type, string State, bool Online, string Ip, string Firmware, string? UpdateTo,
     long? UptimeSeconds, double? CpuPct, double? MemoryPct, double? TemperatureC, bool Overheating, double? PoeUsedW,
     double? PoeBudgetW, UplinkFacts? Uplink, IReadOnlyList<PortView> Ports, IReadOnlyList<Sensor> Sensors, bool HasFan, long? FanLevel,
     IReadOnlyList<StorageUse> Storage, IReadOnlyList<RadioFacts> Radios);
@@ -35,8 +35,11 @@ internal sealed record StorageUse(string Name, double? UsedPct);
 internal sealed record RadioFacts(string Radio, long? Channel, long? WidthMhz, double? TxPower, long? Clients, double? ChannelUsePct,
     double? InterferencePct, double? RetriesPct);
 
-/// <summary><c>State</c> is <c>up</c>, <c>down</c> or <c>disabled</c>. <c>Connected</c> holds at most five entries; <c>ConnectedCount</c> is the total.</summary>
-internal sealed record PortView(int Index, string Name, string State, long? SpeedMbps, long? MaxSpeedMbps, string Connector, string? Duplex,
+/// <summary>
+/// <c>State</c> is <c>up</c>, <c>down</c> or <c>disabled</c>. <c>Look</c> is how the view draws it: <c>fault</c>, <c>slow</c>,
+/// <c>up</c>, <c>nolink</c> or <c>off</c>. <c>Connected</c> holds at most five entries; <c>ConnectedCount</c> is the total.
+/// </summary>
+internal sealed record PortView(int Index, string Name, string State, string Look, long? SpeedMbps, long? MaxSpeedMbps, string Connector, string? Duplex,
     double? PoeW, long RxErrors, long TxErrors, long Drops, long LinkDowns, string? Stp, IReadOnlyList<string> Flags,
     string? Note, IReadOnlyList<Connected> Connected, int ConnectedCount);
 

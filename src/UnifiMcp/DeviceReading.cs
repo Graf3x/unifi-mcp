@@ -31,7 +31,7 @@ internal static class DeviceReading
 
     /// <summary>One device at a glance, for the summary.</summary>
     public static DeviceTile Tile(JsonElement d) => new(
-        Text(d, "name"), Text(d, "mac"), Text(d, "model"), Text(d, "type"), StateName(d), Uptime(d), Stat(d, "cpu"), Stat(d, "mem"),
+        Text(d, "name"), Text(d, "mac"), Text(d, "model"), Text(d, "type"), StateName(d), IsOnline(d), Uptime(d), Stat(d, "cpu"), Stat(d, "mem"),
         Hottest(d), Text(d, "version"), UpdateTo(d), Issues(d).ToList());
 
     /// <summary>
@@ -49,7 +49,7 @@ internal static class DeviceReading
             Add(connected, Text(c, "sw_port"), new Connected("client", ClientName(c), Text(c, "mac")));
 
         var poe = Dbl(d, "total_max_power") is > 0;
-        return new(Text(d, "name"), Text(d, "mac"), Text(d, "model"), Text(d, "type"), StateName(d), Text(d, "ip"), Text(d, "version"), UpdateTo(d),
+        return new(Text(d, "name"), Text(d, "mac"), Text(d, "model"), Text(d, "type"), StateName(d), IsOnline(d), Text(d, "ip"), Text(d, "version"), UpdateTo(d),
             Uptime(d), Stat(d, "cpu"), Stat(d, "mem"), Hottest(d), Bool(d, "overheating"),
             poe ? Dbl(d, "total_used_power") : null, poe ? Dbl(d, "total_max_power") : null,
             Uplink(d),
@@ -119,11 +119,22 @@ internal static class DeviceReading
         long? speed = up && Long(p, "speed") is > 0 and var s ? s : null;
         var flags = PortFlags(p, cap.MaxSpeedMbps);
         long rx = Long(p, "rx_errors") ?? 0, tx = Long(p, "tx_errors") ?? 0, downs = Long(p, "link_down_count") ?? 0;
-        return new((int)(Long(p, "port_idx") ?? 0), Text(p, "name"), up ? "up" : Bool(p, "enable") ? "down" : "disabled", speed, cap.MaxSpeedMbps, cap.Connector,
+        var state = up ? "up" : Bool(p, "enable") ? "down" : "disabled";
+        return new((int)(Long(p, "port_idx") ?? 0), Text(p, "name"), state, Look(state, flags), speed, cap.MaxSpeedMbps, cap.Connector,
             up ? (Bool(p, "full_duplex") ? "full" : "half") : null, Bool(p, "poe_enable") ? Dbl(p, "poe_power") : null, rx, tx,
             (long)((Dbl(p, "rx_dropped") ?? 0) + (Dbl(p, "tx_dropped") ?? 0)), downs, NullIfEmpty(Text(p, "stp_state")), flags,
             PortNote(flags, speed, cap.MaxSpeedMbps, rx, tx, downs), connected.Take(5).ToList(), connected.Count);
     }
+
+    /// <summary>
+    /// How the view draws a port: off when it is disabled (nothing to fix on a port turned off), a fault for a flag that
+    /// points at the cable or the device, slow for a slow link alone, else up or no link.
+    /// </summary>
+    private static string Look(string state, List<string> flags) =>
+        state == "disabled" ? "off"
+        : flags.Any(f => f != SlowLink) ? "fault"
+        : flags.Count > 0 ? "slow"
+        : state == "up" ? "up" : "nolink";
 
     /// <summary>
     /// The one place a port's flags are decided. A port at 100 Mb or less is a slow link unless that is all the port can

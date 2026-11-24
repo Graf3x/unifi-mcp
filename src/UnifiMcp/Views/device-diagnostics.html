@@ -253,7 +253,7 @@ function createApp(info) {
   function deviceTile(d) {
     var first = el("span", "line");
     first.appendChild(document.createTextNode((d.model || "?") + " · "));
-    first.appendChild(el("span", d.state === "online" ? "" : "bad", d.state));
+    first.appendChild(el("span", d.online ? "" : "bad", d.state));
     var facts = [];
     if (known(d.uptimeSeconds)) facts.push("up " + duration(d.uptimeSeconds));
     if (known(d.cpuPct)) facts.push("CPU " + d.cpuPct + " %");
@@ -303,7 +303,7 @@ function createApp(info) {
     title.appendChild(el("h1", "", d.name || "(unnamed)"));
     var facts = el("p", "muted");
     facts.appendChild(document.createTextNode((d.model || "?") + " · "));
-    facts.appendChild(el("span", d.state === "online" ? "" : "bad", d.state));
+    facts.appendChild(el("span", d.online ? "" : "bad", d.state));
     var more = [];
     if (known(d.poeBudgetW)) more.push("PoE " + (known(d.poeUsedW) ? d.poeUsedW : "?") + " of " + d.poeBudgetW + " W");
     if (known(d.uptimeSeconds)) more.push("up " + duration(d.uptimeSeconds));
@@ -338,17 +338,10 @@ function createApp(info) {
 
   /* --- the faceplate --------------------------------------------------------------------------------------------- */
 
-  var FAULTS = ["errors", "flapping", "half duplex"];
+  /* The server decides each port's look (DeviceReading); these are only the legend's words for it. */
   var LOOKS = { up: "normal", slow: "slow", fault: "fault", nolink: "no link", off: "disabled" };
   var refreshing = false;
 
-  function look(port) {
-    var flags = list(port.flags);
-    if (port.state === "disabled") return "off";
-    if (flags.some(function (flag) { return FAULTS.indexOf(flag) >= 0; })) return "fault";
-    if (flags.indexOf("slow link") >= 0) return "slow";
-    return port.state === "up" ? "up" : "nolink";
-  }
   function stateWord(port) { return port.state === "up" ? "up" : port.state === "disabled" ? "disabled" : "no link"; }
   function speedLabel(mbps) { return !known(mbps) ? "?" : mbps < 1000 ? mbps + " Mb" : mbps / 1000 + " GbE"; }
   function count(value) { return (known(value) ? value : 0).toLocaleString(); }
@@ -443,7 +436,7 @@ function createApp(info) {
       if (announce) tellModel(device, port);
     }
     function portButton(port, label) {
-      var kind = look(port), flags = list(port.flags);
+      var kind = port.look, flags = list(port.flags);
       var button = el("button", "port look-" + kind + (port.poeW > 0 ? " poe" : ""), label);
       button.type = "button";
       button.setAttribute("aria-label", "Port " + port.index + ", " + (port.name || "") + ", " + stateWord(port) + (flags.length > 0 ? ", " + flags.join(", ") : ""));
@@ -489,7 +482,7 @@ function createApp(info) {
     replace(nodes);
 
     /* Keep the port that was selected; else the first fault; else the first slow port; else none. */
-    function first(kind) { return ports.filter(function (p) { return look(p) === kind; })[0]; }
+    function first(kind) { return ports.filter(function (p) { return p.look === kind; })[0]; }
     var chosen = ports.filter(function (p) { return p.index === state.selectedPort; })[0] || first("fault") || first("slow") || null;
     select(chosen, true);
   }

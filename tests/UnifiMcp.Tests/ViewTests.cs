@@ -51,6 +51,13 @@ public class ViewTests
     public void The_view_speaks_the_protocol_the_way_hosts_check_it(string expected) =>
         Assert.Contains(expected, ViewResources.Html("views/device-diagnostics.html"));
 
+    // The server decides what a device and a port look like (DeviceReading); the view draws its words, and holds no rule
+    // that would have to agree with C# by spelling.
+    [Theory]
+    [InlineData("FAULTS")] [InlineData("\"slow link\"")] [InlineData("\"half duplex\"")] [InlineData("=== \"online\"")] [InlineData("function look(")]
+    public void The_view_holds_no_device_rules(string rule) =>
+        Assert.DoesNotContain(rule, ViewResources.Html("views/device-diagnostics.html"));
+
     // An answer that arrives after the user moved on (another tile, Back, a new result from the host) must not replace
     // the screen. Each of those starts a new navigation; Refresh keeps the current one.
     [Fact]
