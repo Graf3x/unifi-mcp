@@ -15,6 +15,8 @@ internal sealed record PortCapability(long? MaxSpeedMbps, string Connector);
 /// </summary>
 internal static class DeviceReading
 {
+    private const string SlowLink = "slow link";
+
     private static readonly HashSet<string> Connectors = new(StringComparer.Ordinal) { "RJ45", "SFP", "SFPPLUS", "SFP28", "QSFP28" };
 
     /// <summary>The console reports the device as connected. Every other state counts as not online.</summary>
@@ -133,7 +135,7 @@ internal static class DeviceReading
         if ((Dbl(p, "rx_errors") ?? 0) + (Dbl(p, "tx_errors") ?? 0) > 0) flags.Add("errors");
         if ((Dbl(p, "link_down_count") ?? 0) >= 5) flags.Add("flapping");
         if (Bool(p, "up") && !Bool(p, "full_duplex")) flags.Add("half duplex");
-        if (Bool(p, "up") && Dbl(p, "speed") is > 0 and <= 100 && maxSpeedMbps is not <= 100) flags.Add("slow link");
+        if (Bool(p, "up") && Dbl(p, "speed") is > 0 and <= 100 && maxSpeedMbps is not <= 100) flags.Add(SlowLink);
         return flags;
     }
 
@@ -182,7 +184,8 @@ internal static class DeviceReading
     private static IEnumerable<string> Issues(JsonElement d)
     {
         if (Bool(d, "overheating")) yield return "overheating";
-        var bad = Items(d, "port_table").Where(p => PortFlags(p, null).Count > 0).Select(p => Text(p, "port_idx")).ToList();
+        // A slow link depends on the port's top speed, which only the detail reads: the summary never flags what the detail clears.
+        var bad = Items(d, "port_table").Where(p => PortFlags(p, null).Any(f => f != SlowLink)).Select(p => Text(p, "port_idx")).ToList();
         if (bad.Count > 0) yield return $"port(s) {string.Join(", ", bad)} flagged";
         if (Obj(d, "uplink") is { } up && (Dbl(up, "rx_errors") ?? 0) + (Dbl(up, "tx_errors") ?? 0) > 0) yield return "uplink errors";
     }

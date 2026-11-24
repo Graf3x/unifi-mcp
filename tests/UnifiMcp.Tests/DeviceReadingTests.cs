@@ -97,6 +97,13 @@ public class DeviceReadingTests
         Assert.StartsWith("port(s) 2", DeviceReading.Tile(Switch).Issues[0]);
     }
 
+    [Fact]
+    public void The_summary_never_flags_a_port_for_a_speed_only_the_detail_can_judge()
+    {
+        Assert.Equal("port(s) 2 flagged", DeviceReading.Tile(Switch).Issues.Single()); // port 4 runs at 100 Mb, all it can do
+        Assert.Empty(DeviceReading.Tile(J("""{"state":1,"port_table":[{"port_idx":4,"up":true,"full_duplex":true,"speed":100}]}""")).Issues);
+    }
+
     // --- the detail --------------------------------------------------------------------------------------------------
 
     [Fact]
