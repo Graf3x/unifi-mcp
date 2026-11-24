@@ -49,6 +49,10 @@ internal static class ConsoleJson
     public static List<JsonElement> Items(JsonElement? e, string name) =>
         e is { ValueKind: JsonValueKind.Object } o && o.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Array ? v.EnumerateArray().ToList() : [];
 
+    /// <summary>A client by the name people know it by: its alias, else its display name, its hostname, its MAC.</summary>
+    public static string ClientName(JsonElement c) =>
+        new[] { Text(c, "name"), Text(c, "display_name"), Text(c, "hostname"), Text(c, "mac") }.FirstOrDefault(v => v.Length > 0) ?? "";
+
     /// <summary>A console's answer cut to 500 characters, for an error message.</summary>
     public static string Short(string body) => body.Length <= 500 ? body : body[..500] + "...";
 }

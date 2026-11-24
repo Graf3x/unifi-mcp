@@ -15,6 +15,17 @@ The console's official, documented API. Everything the server changes goes throu
 The undocumented API behind the console's own web interface. The server only reads from it, slowly and with short-lived caching, because it answers what the Integration API cannot.
 _Avoid_: private API, legacy API
 
+**Device reading**:
+What the server makes of one device as the console reports it at one moment: whether it is online, its health, firmware and uplink, its ports and what is plugged into each. The summary, the device's own answer and its view all show the same reading.
+
+**Online**:
+The console reports the device as connected. Every other state (upgrading, adopting, heartbeat missed, …) counts as not online.
+_Avoid_: up (a port is up), connected (a client is connected)
+
+**Port flag**:
+A problem a switch port shows: errors, flapping, half duplex or a slow link. A slow link depends on what the port can do at most, so only the device's own answer can raise it; the summary flags the rest.
+_Avoid_: alert, warning
+
 ## Answers
 
 **Step**:

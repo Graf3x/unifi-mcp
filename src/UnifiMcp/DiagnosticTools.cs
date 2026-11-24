@@ -173,7 +173,7 @@ public sealed partial class DiagnosticTools(UnifiClient console, ConsoleReads re
         var aps = devices.Where(d => Text(d, "type") == "uap").ToList();
         var neighbours = await a.Step("Neighbouring networks", () => site.RogueApsAsync(ct)) ?? [];
 
-        var online = aps.Where(a => Text(a, "state") == "1").ToList();
+        var online = aps.Where(DeviceReading.IsOnline).ToList();
         a.Line($"## Radios: {online.Count} access point(s) online");
         a.Line(Answer.Table(["AP", "Band", "Channel", "Width (MHz)", "Tx power", "Clients", "Channel use %", "Interference %", "Retries %", "Satisfaction", "Neighbours on channel (≥ -80 dBm)", "Flags"],
             online.SelectMany(ap => Items(ap, "radio_table_stats").Select(r =>
@@ -187,9 +187,9 @@ public sealed partial class DiagnosticTools(UnifiClient console, ConsoleReads re
                 return new[] { Text(ap, "name"), Band(Text(r, "radio")), Text(r, "channel"), Text(r, "bw"), Text(r, "tx_power"), Text(r, "num_sta"), Text(r, "cu_total"), Text(r, "cu_interf"),
                     Text(r, "tx_retries_pct"), Dbl(r, "satisfaction") is >= 0 ? Text(r, "satisfaction") : "", $"{strong} neighbour(s)", string.Join(", ", flags) };
             }))));
-        var offline = aps.Where(a => Text(a, "state") != "1").ToList();
+        var offline = aps.Where(a => !DeviceReading.IsOnline(a)).ToList();
         if (offline.Count > 0)
-            a.Line($"**Not online ({offline.Count}):** " + string.Join(", ", offline.Select(a => $"{Text(a, "name")} ({Text(a, "model")}, {DeviceState(Text(a, "state"))})"))).Line();
+            a.Line($"**Not online ({offline.Count}):** " + string.Join(", ", offline.Select(a => $"{Text(a, "name")} ({Text(a, "model")}, {DeviceReading.StateName(a)})"))).Line();
 
         var zone = await site.TimeZoneAsync(ct);
         var events = await a.Step("Radio events", () => site.SystemLogAsync(
@@ -228,13 +228,13 @@ public sealed partial class DiagnosticTools(UnifiClient console, ConsoleReads re
         if (found.Count > 1)
         {
             a.Line($"'{client}' matches {found.Count} clients; use the IP or MAC:").Line(Answer.Table(["Name", "IP", "MAC", "State"],
-                found.Select(x => new[] { Name(x), First(Text(x, "ip"), Text(x, "last_ip")), Text(x, "mac"), online ? "online" : "offline" })));
+                found.Select(x => new[] { ClientName(x), First(Text(x, "ip"), Text(x, "last_ip")), Text(x, "mac"), online ? "online" : "offline" })));
             return;
         }
 
         var zone = await site.TimeZoneAsync(ct);
         var c = found[0];
-        a.Line($"## {Name(c)} ({(online ? "online" : "offline")})");
+        a.Line($"## {ClientName(c)} ({(online ? "online" : "offline")})");
         a.Line($"- MAC {Text(c, "mac")}, vendor {First(Text(c, "oui"), "unknown")}, hostname {First(Text(c, "hostname"), "none")}.");
         a.Line($"- Network {First(Text(c, "network"), Text(c, "last_connection_network_name"), Text(c, "network_name"))}, IP {First(Text(c, "ip"), Text(c, "last_ip"), "none")}.");
         a.Line(Bool(c, "use_fixedip") ? $"- Fixed IP reservation: {Text(c, "fixed_ip")}." : "- Fixed IP reservation: none.");
@@ -342,8 +342,6 @@ public sealed partial class DiagnosticTools(UnifiClient console, ConsoleReads re
 
     private static string First(params string?[] values) => values.FirstOrDefault(v => !string.IsNullOrEmpty(v)) ?? "";
 
-    private static string Name(JsonElement c) => First(Text(c, "name"), Text(c, "display_name"), Text(c, "hostname"), Text(c, "mac"));
-
     private static string Band(string radio) => radio switch { "ng" => "2.4 GHz", "na" => "5 GHz", "6e" => "6 GHz", _ => radio };
 
     private static string Kbps(JsonElement e, string name) => Dbl(e, name) is { } k ? Math.Round(k / 1000).ToString(CultureInfo.InvariantCulture) : "?";
@@ -354,8 +352,6 @@ public sealed partial class DiagnosticTools(UnifiClient console, ConsoleReads re
 
     private static string Max(List<JsonElement> samples, string name) =>
         samples.Select(s => Dbl(s, name)).OfType<double>().DefaultIfEmpty().Max().ToString(CultureInfo.InvariantCulture);
-
-    private static string Pct(double? part, double? whole) => part is { } p && whole is > 0 ? Math.Round(100 * p / whole.Value).ToString(CultureInfo.InvariantCulture) : "?";
 
     private static string Millis(long? ms, TimeZoneInfo zone) =>
         ms is { } v ? TimeZoneInfo.ConvertTime(DateTimeOffset.FromUnixTimeMilliseconds(v), zone).ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) : "?";
