@@ -26,6 +26,7 @@ follow [guide 1](README.md#guide-1-quick-local-setup) in the README.
 |---|---|
 | `src/UnifiMcp/ApiTool.cs`, `ReadOperationTool.cs`, `OpenApiCatalog.cs` | Tools generated from the OpenAPI document in `openapi/` |
 | `src/UnifiMcp/FaqTools.cs`, `DiagnosticTools.cs`, `DiagnosticTools.Devices.cs` | The task-oriented and diagnostics tools |
+| `src/UnifiMcp/DeviceReading.cs` | The device reading: every rule about a console device record, for the text answers and the view alike |
 | `src/UnifiMcp/Answer.cs`, `ConsoleJson.cs` | A composite tool's answer (steps, failure lines, tables, the cap, the view) and reading the console's JSON by field name |
 | `src/UnifiMcp/ViewResources.cs`, `Views/`, `DeviceViewModel.cs` | Interactive views (MCP Apps): one embedded HTML file per view, and the data a tool hands it in `_meta` |
 | `src/UnifiMcp/ConsoleTransport.cs` | The only code that talks to the console: the key, certificate trust (pin or CA), scrubbing |
@@ -46,6 +47,9 @@ follow [guide 1](README.md#guide-1-quick-local-setup) in the README.
   `UNIFI_ALLOW_WRITES` and the per-call `confirm`.
 - **Composite tools:** write the answer through `Answer`: put every read the answer can do without in `a.Step`, so its
   failure is reported and the rest still runs, and read the console's JSON through `ConsoleJson`.
+- **Devices:** a rule about a console device record (online, its state, a port's flags or look, what is plugged in
+  where) goes in `DeviceReading`, and the text and the view render the records it returns. Neither the tools nor the
+  view page decide such a thing themselves; `DeviceReadingTests` tests each rule over one record.
 - **Routes:** give every new route an entry in `RouteTable`, with the listeners that serve it. A path with no entry
   is a 404 on every listener before authentication, and `RouteTableTests` fails on a mapped route with no entry, or an
   entry with no route.

@@ -7,6 +7,13 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `device_diagnostics_faq`'s summary no longer flags a port as a slow link when it runs at all the port can do (a
+  100 Mb-only port read "port(s) 4 flagged" on the summary and its tile, and had no flag once the device was opened).
+  The summary flags errors, flapping and half duplex; a slow link shows in the device's own answer.
+- `device_diagnostics_faq` no longer shows an offline device's last uptime in its text answer; the summary and the view
+  already left it out.
+- A port that is down has no speed in `device_diagnostics_faq`'s text port table, as in the view; it used to show the
+  last speed the console reported.
 - A composite tool (the `*_faq` tools, `system_log`, `list_port_forwards`) that cannot answer at all, because it is not
   configured, names a site the console doesn't have or loses a read it can't do without, returns the reason as a tool
   error (`isError`), after whatever it had already written, and the audit line says `-> error`. Before, the faq tools and
