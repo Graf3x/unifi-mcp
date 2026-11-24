@@ -5,6 +5,11 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Added
+
+- `device_diagnostics_faq` finds a device by its model or type when no name, IP or MAC matches, so "udm", "UDM Pro"
+  or "USW" opens that device (or lists every device it fits). A name match still comes first.
+
 ### Fixed
 
 - `device_diagnostics_faq`'s summary no longer flags a port as a slow link when it runs at all the port can do (a
