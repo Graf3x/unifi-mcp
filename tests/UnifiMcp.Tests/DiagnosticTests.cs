@@ -425,6 +425,29 @@ public class DiagnosticTests
         Assert.Contains("53.2", text);
     }
 
+    [Fact]
+    public async Task An_offline_device_s_text_shows_no_uptime()
+    {
+        await using var h = await StartAsync();
+        h.Unifi.Route("GET", $"{Classic}/stat/device", Ok(Ap, OfflineAp, Switch.Replace("\"name\":\"Core Switch\",\"state\":1", "\"name\":\"Core Switch\",\"state\":0"), Gateway));
+        var (text, _) = await h.CallAsync("device_diagnostics_faq", new() { ["device"] = "core" });
+        Assert.Contains("- State offline,", text);
+        Assert.Contains("- CPU 3 %, memory 55 %.", text); // the last reading, without the uptime it no longer has
+        Assert.DoesNotContain(" up 2 d", text);
+    }
+
+    [Fact]
+    public async Task A_down_port_s_text_shows_no_speed()
+    {
+        await using var h = await StartAsync();
+        var flapped = Switch.Replace("""{"port_idx":3,"name":"Port 3","up":false,"enable":true,"speed":0,"rx_errors":0,"tx_errors":0,"link_down_count":0}""",
+            """{"port_idx":3,"name":"Port 3","up":false,"enable":true,"speed":1000,"rx_errors":0,"tx_errors":0,"link_down_count":9}""");
+        Assert.Contains("\"link_down_count\":9", flapped);
+        h.Unifi.Route("GET", $"{Classic}/stat/device", Ok(Ap, OfflineAp, flapped, Gateway));
+        var (text, _) = await h.CallAsync("device_diagnostics_faq", new() { ["device"] = "core" });
+        Assert.Contains("| 3 | Port 3 |  | down |  | 1000 |  |", text);
+    }
+
     // --- device_diagnostics_faq: the view's data, carried in the result's _meta ---------------------------------------
 
     private static async Task<JsonElement> ViewAsync(Harness h, Dictionary<string, object?>? args = null, bool isError = false)

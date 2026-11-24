@@ -105,7 +105,7 @@ public class DeviceReadingTests
         var d = Detail();
         Assert.Equal(("Core Switch", "192.168.1.2", "online"), (d.Name, d.Ip, d.State));
         Assert.Equal((21.5, 95.0), (d.PoeUsedW, d.PoeBudgetW));
-        Assert.Equal(new UplinkFacts("wire", "Gateway", "9", 10000), d.Uplink);
+        Assert.Equal(new UplinkFacts("wire", "Gateway", "9", 10000, FullDuplex: true), d.Uplink);
         Assert.False(d.Overheating);
     }
 
@@ -155,6 +155,46 @@ public class DeviceReadingTests
     public void Capabilities_keep_only_known_connectors() =>
         Assert.Equal(new PortCapability(2500, "RJ45"),
             DeviceReading.Capabilities(J("""{"interfaces":{"ports":[{"idx":1,"connector":"<b>","maxSpeedMbps":2500}]}}"""))["1"]);
+
+    [Fact]
+    public void The_detail_has_every_sensor_the_fan_and_the_storage()
+    {
+        var gw = Detail(J(GatewayJson.Replace("\"port_table\":[]", "\"storage\":[{\"name\":\"Backup\",\"size\":2000,\"used\":500},{\"name\":\"Odd\",\"size\":0,\"used\":1}],\"port_table\":[]")));
+        Assert.Equal([new Sensor("CPU", 45), new Sensor("Local", 43)], gw.Sensors);
+        Assert.Equal([new StorageUse("Backup", 25), new StorageUse("Odd", null)], gw.Storage);
+        Assert.False(gw.HasFan);
+        var sw = Detail();
+        Assert.Empty(sw.Sensors);
+        Assert.Equal(61, sw.TemperatureC);
+        Assert.True(sw.HasFan);
+        Assert.Equal(0, sw.FanLevel);
+    }
+
+    [Fact]
+    public void The_uplink_has_its_duplex_and_errors()
+    {
+        var up = Detail().Uplink!;
+        Assert.True(up.FullDuplex);
+        Assert.Equal((0L, 0L), (up.RxErrors, up.TxErrors));
+    }
+
+    [Fact]
+    public void An_uplink_to_no_known_device_names_its_own_interface()
+    {
+        var gw = J("""{"state":1,"uplink":{"type":"wire","name":"eth8","comment":"WAN","speed":1000,"rx_errors":4,"tx_errors":1}}""");
+        var up = Detail(gw).Uplink!;
+        Assert.Equal(("wire", null, "WAN"), (up.Type, up.DeviceName, up.Interface));
+        Assert.Equal((4L, 1L, false), (up.RxErrors, up.TxErrors, up.FullDuplex));
+        Assert.Equal("eth8", Detail(J("""{"uplink":{"type":"wire","name":"eth8"}}""")).Uplink!.Interface);
+    }
+
+    [Fact]
+    public void An_access_point_has_its_radios()
+    {
+        var ap = J(ApJson.Replace("\"uptime\":86400,", "\"uptime\":86400,\"radio_table_stats\":[{\"radio\":\"na\",\"channel\":36,\"bw\":80,\"tx_power\":20,\"num_sta\":9,\"cu_total\":12,\"cu_interf\":3,\"tx_retries_pct\":4.1}],"));
+        Assert.Equal([new RadioFacts("na", 36, 80, 20, 9, 12, 3, 4.1)], Detail(ap).Radios);
+        Assert.Empty(Detail().Radios);
+    }
 
     // --- what is plugged in where ------------------------------------------------------------------------------------
 

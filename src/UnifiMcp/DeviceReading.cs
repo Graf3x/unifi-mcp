@@ -50,16 +50,22 @@ internal static class DeviceReading
         return new(Text(d, "name"), Text(d, "mac"), Text(d, "model"), Text(d, "type"), StateName(d), Text(d, "ip"), Text(d, "version"), UpdateTo(d),
             Uptime(d), Stat(d, "cpu"), Stat(d, "mem"), Hottest(d), Bool(d, "overheating"),
             poe ? Dbl(d, "total_used_power") : null, poe ? Dbl(d, "total_max_power") : null,
-            Obj(d, "uplink") is { } up && Text(up, "type").Length > 0
-                ? new UplinkFacts(Text(up, "type"), NullIfEmpty(Text(up, "uplink_device_name")), NullIfEmpty(Text(up, "uplink_remote_port")), Long(up, "speed"))
-                : null,
+            Uplink(d),
             ports.Select(p =>
             {
                 var idx = Text(p, "port_idx");
                 var cap = capabilities.TryGetValue(idx, out var c) ? c : new PortCapability(null, "RJ45");
                 return Port(p, connected.TryGetValue(idx, out var on) ? on : [], cap);
-            }).ToList());
+            }).ToList(),
+            Items(d, "temperatures").Select(t => new Sensor(Text(t, "name"), Dbl(t, "value"))).ToList(),
+            Bool(d, "has_fan"), Long(d, "fan_level"),
+            Items(d, "storage").Select(s => new StorageUse(Text(s, "name"), Dbl(s, "used") is { } used && Dbl(s, "size") is > 0 and var size ? 100 * used / size : null)).ToList(),
+            Items(d, "radio_table_stats").Select(r => new RadioFacts(Text(r, "radio"), Long(r, "channel"), Long(r, "bw"), Dbl(r, "tx_power"), Long(r, "num_sta"),
+                Dbl(r, "cu_total"), Dbl(r, "cu_interf"), Dbl(r, "tx_retries_pct"))).ToList());
     }
+
+    /// <summary>The version an update brings when the console does not say which.</summary>
+    public const string UnknownVersion = "available";
 
     /// <summary>What each port can do, by port number, from the official API's device detail. An unknown connector reads as RJ45.</summary>
     public static Dictionary<string, PortCapability> Capabilities(JsonElement officialDetail)
@@ -188,11 +194,17 @@ internal static class DeviceReading
         return temps.Count > 0 ? temps.Max() : Dbl(d, "general_temperature");
     }
 
+    private static UplinkFacts? Uplink(JsonElement d) =>
+        Obj(d, "uplink") is { } up && Text(up, "type").Length > 0
+            ? new UplinkFacts(Text(up, "type"), NullIfEmpty(Text(up, "uplink_device_name")), NullIfEmpty(Text(up, "uplink_remote_port")), Long(up, "speed"),
+                Bool(up, "full_duplex"), Long(up, "rx_errors") ?? 0, Long(up, "tx_errors") ?? 0, NullIfEmpty(First(Text(up, "comment"), Text(up, "name"))))
+            : null;
+
     private static long? Uptime(JsonElement d) => IsOnline(d) ? Long(d, "uptime") : null;
 
     private static double? Stat(JsonElement d, string name) => Obj(d, "system-stats") is { } s ? Dbl(s, name) : null;
 
-    private static string? UpdateTo(JsonElement d) => Bool(d, "upgradable") ? First(Text(d, "upgrade_to_firmware"), "available") : null;
+    private static string? UpdateTo(JsonElement d) => Bool(d, "upgradable") ? First(Text(d, "upgrade_to_firmware"), UnknownVersion) : null;
 
     private static string First(params string[] values) => values.FirstOrDefault(v => v.Length > 0) ?? "";
 

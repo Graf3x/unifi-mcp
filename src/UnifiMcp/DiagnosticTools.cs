@@ -353,8 +353,6 @@ public sealed partial class DiagnosticTools(UnifiClient console, ConsoleReads re
     private static string Max(List<JsonElement> samples, string name) =>
         samples.Select(s => Dbl(s, name)).OfType<double>().DefaultIfEmpty().Max().ToString(CultureInfo.InvariantCulture);
 
-    private static string Pct(double? part, double? whole) => part is { } p && whole is > 0 ? Math.Round(100 * p / whole.Value).ToString(CultureInfo.InvariantCulture) : "?";
-
     private static string Millis(long? ms, TimeZoneInfo zone) =>
         ms is { } v ? TimeZoneInfo.ConvertTime(DateTimeOffset.FromUnixTimeMilliseconds(v), zone).ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) : "?";
 
