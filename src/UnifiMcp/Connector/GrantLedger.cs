@@ -47,19 +47,19 @@ public sealed class GrantLedger(SqliteOAuthStore store, TimeProvider time, Setti
     /// when the owner has to approve (no consent, or its family was revoked, since every token minted into a revoked
     /// family is born revoked).
     /// </summary>
-    internal async Task<string?> AuthorizeAsync(OAuthUser user, OAuthEndpoints.ResolvedClient client, CodeRequest request, CancellationToken ct = default)
+    internal async Task<string?> AuthorizeAsync(OAuthUser user, Client client, CodeRequest request, CancellationToken ct = default)
     {
-        var existing = await store.GetConsentAsync(user.Subject, client.Key, ct);
+        var existing = await store.GetConsentAsync(user.Subject, client.ConsentKey, ct);
         if (existing is null || await store.IsFamilyRevokedAsync(existing.FamilyId, ct)) return null;
         return await IssueCodeAsync(user, client, existing, request, ct);
     }
 
     /// <summary>The owner approves a client: a consent with a fresh family (replacing any earlier one) and its first code.</summary>
-    internal async Task<string> ApproveAsync(OAuthUser user, OAuthEndpoints.ResolvedClient client, CodeRequest request, CancellationToken ct = default)
+    internal async Task<string> ApproveAsync(OAuthUser user, Client client, CodeRequest request, CancellationToken ct = default)
     {
         var consent = new Consent
         {
-            UserId = user.Subject, ClientId = client.Key, ClientName = client.DisplayName, ClientUri = client.FromMetadataDocument ? client.ClientId : null,
+            UserId = user.Subject, ClientId = client.ConsentKey, ClientName = client.DisplayName, ClientUri = client.FromMetadataDocument ? client.ClientId : null,
             Scope = request.Scope, FamilyId = TokenIssuer.NewSecret(), CreatedAt = time.GetUtcNow(), LastUsedAt = time.GetUtcNow(),
         };
         await store.UpsertConsentAsync(consent, ct);
@@ -67,7 +67,7 @@ public sealed class GrantLedger(SqliteOAuthStore store, TimeProvider time, Setti
     }
 
     /// <summary>Saves a single-use code (its hash only) and marks the consent used; returns the code itself.</summary>
-    private async Task<string> IssueCodeAsync(OAuthUser user, OAuthEndpoints.ResolvedClient client, Consent consent, CodeRequest request, CancellationToken ct)
+    private async Task<string> IssueCodeAsync(OAuthUser user, Client client, Consent consent, CodeRequest request, CancellationToken ct)
     {
         var code = TokenIssuer.NewSecret();
         await store.SaveCodeAsync(new AuthorizationCode
@@ -88,7 +88,7 @@ public sealed class GrantLedger(SqliteOAuthStore store, TimeProvider time, Setti
     /// Trades a refresh token for the next one in its family. A token presented again after it was used means it leaked,
     /// so the whole family is revoked; so is a family whose owner is no longer admitted.
     /// </summary>
-    internal async Task<GrantOutcome> RotateAsync(string presented, OAuthEndpoints.ResolvedClient client, CancellationToken ct = default)
+    internal async Task<GrantOutcome> RotateAsync(string presented, Client client, CancellationToken ct = default)
     {
         var hash = TokenIssuer.Hash(presented);
         var stored = await store.GetRefreshTokenAsync(hash, ct);
@@ -113,7 +113,7 @@ public sealed class GrantLedger(SqliteOAuthStore store, TimeProvider time, Setti
             await store.RevokeFamilyAsync(stored.FamilyId, ct);
             return new GrantRefused(GrantRefusal.NotAdmitted, NotAllowedAnyMore(settings), who, $"{admitted}; family revoked");
         }
-        var consent = await store.GetConsentAsync(stored.User.Subject, client.Key, ct);
+        var consent = await store.GetConsentAsync(stored.User.Subject, client.ConsentKey, ct);
         if (consent is null || consent.FamilyId != stored.FamilyId)
             return new GrantRefused(GrantRefusal.ConsentWithdrawn, "Consent was withdrawn.", who);
 
@@ -133,7 +133,7 @@ public sealed class GrantLedger(SqliteOAuthStore store, TimeProvider time, Setti
     /// Trades an authorization code for the first refresh token of its consent's family. The code is spent before it is
     /// checked, so a wrong verifier or redirect burns it. An empty <paramref name="redirectUri"/> means the client sent none.
     /// </summary>
-    internal async Task<GrantOutcome> ExchangeAsync(string code, string verifier, string redirectUri, OAuthEndpoints.ResolvedClient client, CancellationToken ct = default)
+    internal async Task<GrantOutcome> ExchangeAsync(string code, string verifier, string redirectUri, Client client, CancellationToken ct = default)
     {
         var stored = await store.RedeemCodeAsync(TokenIssuer.Hash(code), ct);
         if (stored is null) return new GrantRefused(GrantRefusal.Invalid, InvalidCode);
@@ -149,7 +149,7 @@ public sealed class GrantLedger(SqliteOAuthStore store, TimeProvider time, Setti
 
         // A code issued under a family revoked since then never mints into it (the token would be born revoked). The
         // next authorize shows the consent page again, and that starts a fresh family.
-        var consent = await store.GetConsentAsync(stored.User.Subject, client.Key, ct);
+        var consent = await store.GetConsentAsync(stored.User.Subject, client.ConsentKey, ct);
         if (consent is null) return new GrantRefused(GrantRefusal.ConsentWithdrawn, "Consent was withdrawn.", who);
         if (await store.IsFamilyRevokedAsync(consent.FamilyId, ct))
             return new GrantRefused(GrantRefusal.Revoked, "Access was revoked. Connect the application again.", who, "consent's family is revoked");
@@ -190,7 +190,7 @@ public sealed class GrantLedger(SqliteOAuthStore store, TimeProvider time, Setti
     internal Task<int> SweepAsync(CancellationToken ct = default) => store.SweepExpiredAsync(ct);
 
     /// <summary>Mints a refresh token into a family and stores only its hash; returns the token itself.</summary>
-    private async Task<string> SaveRefreshTokenAsync(OAuthEndpoints.ResolvedClient client, string familyId, string scope, OAuthUser user, CancellationToken ct)
+    private async Task<string> SaveRefreshTokenAsync(Client client, string familyId, string scope, OAuthUser user, CancellationToken ct)
     {
         var token = TokenIssuer.NewSecret();
         await store.SaveRefreshTokenAsync(new RefreshToken

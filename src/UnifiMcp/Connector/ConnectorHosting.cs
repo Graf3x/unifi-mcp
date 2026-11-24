@@ -58,6 +58,7 @@ public static class ConnectorHosting
         b.Services.AddHttpClient(HttpClientMetadataDocuments.HttpClientName, c => c.Timeout = HttpClientMetadataDocuments.FetchTimeout)
             .ConfigurePrimaryHttpMessageHandler(HttpClientMetadataDocuments.CreateHandler);
         b.Services.AddSingleton<IClientMetadataDocuments, HttpClientMetadataDocuments>();
+        b.Services.AddSingleton<Clients>();
 
         if (s.SignIn == SignInMode.Code) b.Services.AddSingleton<SignInCodes>();
         var auth = b.Services.AddAuthentication();

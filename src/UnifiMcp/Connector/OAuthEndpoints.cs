@@ -92,7 +92,7 @@ public static class OAuthEndpoints
             .RequireRateLimiting(RegisterRateLimitPolicy);
 
         // ---- authorize ------------------------------------------------------------------------------
-        app.MapGet("/oauth/authorize", async Task<IResult> (HttpContext http, SqliteOAuthStore store, ITokenIssuer issuer, GrantLedger ledger, IClientMetadataDocuments documents,
+        app.MapGet("/oauth/authorize", async Task<IResult> (HttpContext http, Clients clients, ITokenIssuer issuer, GrantLedger ledger,
                 IDataProtectionProvider dp, Settings settings, TimeProvider time, ILoggerFactory lf, CancellationToken ct) =>
             {
                 var q = http.Request.Query;
@@ -100,12 +100,12 @@ public static class OAuthEndpoints
                 var redirectUri = q["redirect_uri"].ToString();
 
                 // Until the client and redirect URI are known-good nothing may be redirected: render the error.
-                var (client, clientProblem) = await ResolveClientAsync(clientId, store, documents, ct);
+                var (client, clientProblem) = await clients.ResolveAsync(clientId, ct);
                 if (client is null)
-                    return Page(400, Pages.ErrorPage("Unknown client", clientProblem == UnknownClient
+                    return Page(400, Pages.ErrorPage("Unknown client", clientProblem == Clients.Unknown
                         ? "This application is not registered with UniFi Network. Reconnect it and try again."
                         : $"This application's identity could not be verified: {Truncate(clientProblem)}"));
-                if (string.IsNullOrEmpty(redirectUri) || !HttpClientMetadataDocuments.RedirectAllowed(client.RedirectUris, redirectUri))
+                if (string.IsNullOrEmpty(redirectUri) || !client.Allows(redirectUri))
                     return Page(400, Pages.ErrorPage("Redirect not allowed", "The application asked to send you to an address it did not register."));
 
                 var state = q["state"].ToString();
@@ -149,7 +149,7 @@ public static class OAuthEndpoints
             })
             .RequireRateLimiting(AuthorizeRateLimitPolicy);
 
-        app.MapPost("/oauth/consent", async Task<IResult> (HttpContext http, SqliteOAuthStore store, GrantLedger ledger, IClientMetadataDocuments documents, IDataProtectionProvider dp,
+        app.MapPost("/oauth/consent", async Task<IResult> (HttpContext http, Clients clients, GrantLedger ledger, IDataProtectionProvider dp,
                 TimeProvider time, ILoggerFactory lf, CancellationToken ct) =>
             {
                 if (!http.Request.HasFormContentType) return Page(400, Pages.ErrorPage("This request has expired", "Go back to the application and connect again."));
@@ -170,8 +170,8 @@ public static class OAuthEndpoints
                     return Page(400, Pages.ErrorPage("Sign-in changed", "The signed-in account is not the one this request was for. Connect again."));
                 }
 
-                var (client, _) = await ResolveClientAsync(pending.ClientId, store, documents, ct);
-                if (client is null || !HttpClientMetadataDocuments.RedirectAllowed(client.RedirectUris, pending.RedirectUri))
+                var (client, _) = await clients.ResolveAsync(pending.ClientId, ct);
+                if (client is null || !client.Allows(pending.RedirectUri))
                     return Page(400, Pages.ErrorPage("Unknown client", "This application is no longer registered."));
 
                 if (form["decision"].ToString() != "allow")
@@ -187,7 +187,7 @@ public static class OAuthEndpoints
             });
 
         // ---- token ---------------------------------------------------------------------------------
-        app.MapPost("/oauth/token", async Task<IResult> (HttpContext http, SqliteOAuthStore store, ITokenIssuer issuer, GrantLedger ledger, IClientMetadataDocuments documents,
+        app.MapPost("/oauth/token", async Task<IResult> (HttpContext http, Clients clients, ITokenIssuer issuer, GrantLedger ledger,
                 ILoggerFactory lf, CancellationToken ct) =>
             {
                 var log = Log(lf);
@@ -209,8 +209,8 @@ public static class OAuthEndpoints
                 var form = await http.Request.ReadFormAsync(ct);
                 var grant = form["grant_type"].ToString();
                 clientId = form["client_id"].ToString();
-                var (client, clientProblem) = await ResolveClientAsync(clientId, store, documents, ct);
-                if (client is null) return Refuse(401, "invalid_client", Truncate(clientProblem) ?? UnknownClient);
+                var (client, clientProblem) = await clients.ResolveAsync(clientId, ct);
+                if (client is null) return Refuse(401, "invalid_client", Truncate(clientProblem) ?? Clients.Unknown);
                 // Checked before a code or refresh token is spent, so a client that asked for the wrong audience can still retry.
                 if (!ResourceAllowed(form["resource"].ToString(), issuer))
                     return Refuse(400, "invalid_target", "This server issues tokens for its own MCP endpoint only.");
@@ -227,7 +227,7 @@ public static class OAuthEndpoints
                         if (outcome is GrantRefused refused)
                             return Refuse(400, "invalid_grant", refused.Description, refused.Label, refused.Reason);
                         var issued = (GrantIssued)outcome;
-                        if (!client.FromMetadataDocument) await store.TouchClientAsync(client.ClientId, ct);
+                        await clients.RecordUseAsync(client, ct);
                         log.LogInformation("OAuth: issued tokens to {Email} for client {ClientId} from {Ip}", LogText.Clean(issued.User.Label),
                             LogText.Clean(client.ClientId), ClientIp(http));
                         return await TokenResponseAsync(issuer, issued.User, client.ClientId, issued.Scope, issued.RefreshToken, ct);
@@ -240,7 +240,7 @@ public static class OAuthEndpoints
                         if (outcome is GrantRefused refused)
                             return Refuse(400, "invalid_grant", refused.Description, refused.Label, refused.Reason);
                         var issued = (GrantIssued)outcome;
-                        if (!client.FromMetadataDocument) await store.TouchClientAsync(client.ClientId, ct);
+                        await clients.RecordUseAsync(client, ct);
                         log.LogInformation("OAuth: refreshed tokens for {Email} client {ClientId} from {Ip}", LogText.Clean(issued.User.Label),
                             LogText.Clean(client.ClientId), ClientIp(http));
                         return await TokenResponseAsync(issuer, issued.User, client.ClientId, issued.Scope, issued.RefreshToken, ct);
@@ -266,33 +266,6 @@ public static class OAuthEndpoints
     }
 
     // ---------------------------------------------------------------------------------------------------- helpers
-
-    private const string UnknownClient = "Unknown client.";
-
-    /// <summary>
-    /// One shape for both kinds of client. <see cref="Key"/> is what consents use: the registered id, or a hash of the
-    /// metadata URL.
-    /// </summary>
-    internal sealed record ResolvedClient(string ClientId, string Key, string DisplayName, IReadOnlyList<string> RedirectUris, bool FromMetadataDocument)
-    {
-        public static ResolvedClient FromRegistered(OAuthClient c) => new(c.ClientId, c.ClientId, c.ClientName, c.RedirectUris, false);
-        // The document is self-asserted: the relying party shown to the user is the host that published it.
-        public static ResolvedClient FromDocument(ClientMetadataDocument d) => new(d.ClientId, KeyFor(d.ClientId), d.Host, d.RedirectUris, true);
-        public static string KeyFor(string clientId) =>
-            HttpClientMetadataDocuments.IsClientIdUrl(clientId, out _) ? "cimd_" + TokenIssuer.Hash(clientId)[..32] : clientId;
-    }
-
-    private static async Task<(ResolvedClient? Client, string? Problem)> ResolveClientAsync(string clientId, SqliteOAuthStore store, IClientMetadataDocuments documents, CancellationToken ct)
-    {
-        if (string.IsNullOrEmpty(clientId)) return (null, "client_id is required.");
-        if (HttpClientMetadataDocuments.IsClientIdUrl(clientId, out _))
-        {
-            var (doc, problem) = await documents.ResolveAsync(clientId, ct);
-            return doc is null ? (null, problem) : (ResolvedClient.FromDocument(doc), null);
-        }
-        var registered = await store.GetClientAsync(clientId, ct);
-        return registered is null || registered.Disabled ? (null, UnknownClient) : (ResolvedClient.FromRegistered(registered), null);
-    }
 
     private static object Metadata(ITokenIssuer issuer) => new
     {
@@ -418,7 +391,7 @@ public static class OAuthEndpoints
         public Task ExecuteAsync(HttpContext http) => Pages.WriteAsync(http.Response, status, html, formTarget);
     }
 
-    private static IResult ConsentPage(ResolvedClient client, OAuthUser user, string requestToken, string redirectUri, Settings settings)
+    private static IResult ConsentPage(Client client, OAuthUser user, string requestToken, string redirectUri, Settings settings)
     {
         var redirect = Uri.TryCreate(redirectUri, UriKind.Absolute, out var x) ? x : null;
         var host = redirect?.Host ?? redirectUri;
