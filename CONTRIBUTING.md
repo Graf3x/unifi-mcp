@@ -33,6 +33,7 @@ follow [guide 1](README.md#guide-1-quick-local-setup) in the README.
 | `src/UnifiMcp/UnifiClient.cs` | The console's two APIs over that transport: the write gate, paging, finding a site |
 | `src/UnifiMcp/ConsoleReads.cs` | The console's internal API: one named read per endpoint, cached and throttled |
 | `src/UnifiMcp/Listeners.cs`, `RouteTable.cs`, `Connector/PublicGate.cs` | Which listener a request came in on, which paths each listener serves, and the gate that refuses the rest |
+| `src/UnifiMcp/Connector/Clients.cs` | The Client module: resolving and registering a client, and its redirect rules |
 | `src/UnifiMcp/Connector/` | The Claude connector: OAuth, sign-in pages, token issuing |
 | `src/UnifiMcp/Setup/` | The setup page: its checks, its markup, script and styles, and the README guide it renders |
 | `tests/UnifiMcp.Tests/` | xUnit tests; `ToolContractTests` checks every tool against Claude's tool rules |
@@ -50,6 +51,9 @@ follow [guide 1](README.md#guide-1-quick-local-setup) in the README.
 - **Devices:** a rule about a console device record (online, its state, a port's flags or look, what is plugged in
   where) goes in `DeviceReading`, and the text and the view render the records it returns. Neither the tools nor the
   view page decide such a thing themselves; `DeviceReadingTests` tests each rule over one record.
+- **Clients:** whether a client or a redirect address is acceptable is decided in `Clients.cs`, for registrations and
+  metadata documents alike; the OAuth endpoints only translate to and from HTTP. `OAuthClientsTests` tests the rules
+  through `Clients`, with no HTTP.
 - **Routes:** give every new route an entry in `RouteTable`, with the listeners that serve it. A path with no entry
   is a 404 on every listener before authentication, and `RouteTableTests` fails on a mapped route with no entry, or an
   entry with no route.

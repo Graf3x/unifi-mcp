@@ -50,6 +50,14 @@ _Avoid_: authorization, allow-listing
 An application that asks for access on the owner's behalf, such as Claude. It is identified by a registration or by a published metadata document.
 _Avoid_: app, connector (the connector is this server's public side)
 
+**Registration**:
+A client that introduced itself to this server and was given an id. Registering alone grants nothing.
+_Avoid_: app registration, account
+
+**Metadata document**:
+A client's description of itself, published at the address it uses as its id. Its publisher vouches for it, so the owner is shown the publisher's host, not the name the document gives.
+_Avoid_: manifest, client file
+
 **Consent**:
 The owner's standing approval of one client. It is given once and holds until it is withdrawn or its family is revoked.
 _Avoid_: authorization, approval
