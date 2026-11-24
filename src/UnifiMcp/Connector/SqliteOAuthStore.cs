@@ -130,9 +130,9 @@ public sealed class SqliteOAuthStore
         return cmd;
     }
 
-    // ---- clients ----
+    // ---- client registrations ----
 
-    public async Task<OAuthClient> CreateClientAsync(OAuthClient client, CancellationToken ct = default)
+    public async Task<ClientRegistration> CreateRegistrationAsync(ClientRegistration client, CancellationToken ct = default)
     {
         client.CreatedAt = _time.GetUtcNow();
         await using var conn = await OpenAsync(ct);
@@ -152,7 +152,7 @@ public sealed class SqliteOAuthStore
         return client;
     }
 
-    public async Task<OAuthClient?> GetClientAsync(string clientId, CancellationToken ct = default)
+    public async Task<ClientRegistration?> GetRegistrationAsync(string clientId, CancellationToken ct = default)
     {
         await using var conn = await OpenAsync(ct);
         await using var cmd = Cmd(conn, """
@@ -162,7 +162,7 @@ public sealed class SqliteOAuthStore
             """, ("$id", clientId));
         await using var r = await cmd.ExecuteReaderAsync(ct);
         if (!await r.ReadAsync(ct)) return null;
-        return new OAuthClient
+        return new ClientRegistration
         {
             ClientId = r.GetString(0),
             ClientName = r.GetString(1),
@@ -178,7 +178,7 @@ public sealed class SqliteOAuthStore
         };
     }
 
-    public async Task TouchClientAsync(string clientId, CancellationToken ct = default)
+    public async Task TouchRegistrationAsync(string clientId, CancellationToken ct = default)
     {
         await using var conn = await OpenAsync(ct);
         await using var cmd = Cmd(conn, "UPDATE clients SET last_used_at = $now WHERE client_id = $id",

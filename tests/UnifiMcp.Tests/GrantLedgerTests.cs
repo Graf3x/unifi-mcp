@@ -15,10 +15,10 @@ public sealed class GrantLedgerTests : IDisposable
     private Settings _settings = new() { SignIn = SignInMode.Google, AllowedGoogleEmailsValue = Owner };
 
     private static readonly OAuthUser User = new() { Subject = "google-sub-1", Email = Owner, Name = "Owner" };
-    private static readonly OAuthEndpoints.ResolvedClient Client =
-        OAuthEndpoints.ResolvedClient.FromRegistered(new OAuthClient { ClientId = "client-1", ClientName = "Claude", RedirectUris = ["https://claude.ai/cb"] });
-    private static readonly OAuthEndpoints.ResolvedClient OtherClient =
-        OAuthEndpoints.ResolvedClient.FromRegistered(new OAuthClient { ClientId = "client-2", ClientName = "Other", RedirectUris = ["https://other.example/cb"] });
+    private static readonly Client Client =
+        Client.Registered(new ClientRegistration { ClientId = "client-1", ClientName = "Claude", RedirectUris = ["https://claude.ai/cb"] });
+    private static readonly Client OtherClient =
+        Client.Registered(new ClientRegistration { ClientId = "client-2", ClientName = "Other", RedirectUris = ["https://other.example/cb"] });
 
     public GrantLedgerTests() => _store = new SqliteOAuthStore(_path, _time);
 
@@ -36,7 +36,7 @@ public sealed class GrantLedgerTests : IDisposable
     {
         await _store.UpsertConsentAsync(new Consent
         {
-            UserId = User.Subject, ClientId = Client.Key, ClientName = Client.DisplayName, Scope = "mcp:tools", FamilyId = family,
+            UserId = User.Subject, ClientId = Client.ConsentKey, ClientName = Client.DisplayName, Scope = "mcp:tools", FamilyId = family,
             CreatedAt = _time.GetUtcNow(), LastUsedAt = _time.GetUtcNow(),
         });
         var token = TokenIssuer.NewSecret();
@@ -78,7 +78,7 @@ public sealed class GrantLedgerTests : IDisposable
 
         Issued(await Ledger().RotateAsync(token, Client));
 
-        Assert.Equal(_time.GetUtcNow(), (await _store.GetConsentAsync(User.Subject, Client.Key))!.LastUsedAt);
+        Assert.Equal(_time.GetUtcNow(), (await _store.GetConsentAsync(User.Subject, Client.ConsentKey))!.LastUsedAt);
     }
 
     [Fact]
@@ -216,7 +216,7 @@ public sealed class GrantLedgerTests : IDisposable
     public async Task A_withdrawn_consent_refuses_the_refresh_token()
     {
         var token = await GrantAsync();
-        await _store.DeleteConsentAsync(User.Subject, Client.Key);
+        await _store.DeleteConsentAsync(User.Subject, Client.ConsentKey);
 
         var refused = Refused(await Ledger().RotateAsync(token, Client));
 
@@ -239,7 +239,7 @@ public sealed class GrantLedgerTests : IDisposable
     {
         var code = await Ledger().ApproveAsync(User, Client, Request);
 
-        var consent = await _store.GetConsentAsync(User.Subject, Client.Key);
+        var consent = await _store.GetConsentAsync(User.Subject, Client.ConsentKey);
         Assert.NotNull(consent);
         Assert.Equal("Claude", consent.ClientName);
         Assert.Null(consent.ClientUri);
@@ -253,13 +253,13 @@ public sealed class GrantLedgerTests : IDisposable
     public async Task Authorize_with_a_standing_consent_issues_a_code_in_the_same_family_and_marks_it_used()
     {
         await Ledger().ApproveAsync(User, Client, Request);
-        var family = (await _store.GetConsentAsync(User.Subject, Client.Key))!.FamilyId;
+        var family = (await _store.GetConsentAsync(User.Subject, Client.ConsentKey))!.FamilyId;
         _time.Advance(TimeSpan.FromDays(2));
 
         var code = await Ledger().AuthorizeAsync(User, Client, Request);
 
         Assert.NotNull(code);
-        var consent = (await _store.GetConsentAsync(User.Subject, Client.Key))!;
+        var consent = (await _store.GetConsentAsync(User.Subject, Client.ConsentKey))!;
         Assert.Equal(family, consent.FamilyId);
         Assert.Equal(_time.GetUtcNow(), consent.LastUsedAt);
         Issued(await Ledger().ExchangeAsync(code, Verifier, Redirect, Client));
@@ -269,7 +269,7 @@ public sealed class GrantLedgerTests : IDisposable
     public async Task Authorize_asks_again_once_the_consents_family_was_revoked()
     {
         await Ledger().ApproveAsync(User, Client, Request);
-        await _store.RevokeFamilyAsync((await _store.GetConsentAsync(User.Subject, Client.Key))!.FamilyId);
+        await _store.RevokeFamilyAsync((await _store.GetConsentAsync(User.Subject, Client.ConsentKey))!.FamilyId);
 
         Assert.Null(await Ledger().AuthorizeAsync(User, Client, Request));
     }
@@ -278,12 +278,12 @@ public sealed class GrantLedgerTests : IDisposable
     public async Task Approving_again_after_a_revocation_starts_a_fresh_family()
     {
         await Ledger().ApproveAsync(User, Client, Request);
-        var old = (await _store.GetConsentAsync(User.Subject, Client.Key))!.FamilyId;
+        var old = (await _store.GetConsentAsync(User.Subject, Client.ConsentKey))!.FamilyId;
         await _store.RevokeFamilyAsync(old);
 
         var code = await Ledger().ApproveAsync(User, Client, Request);
 
-        var fresh = (await _store.GetConsentAsync(User.Subject, Client.Key))!.FamilyId;
+        var fresh = (await _store.GetConsentAsync(User.Subject, Client.ConsentKey))!.FamilyId;
         Assert.NotEqual(old, fresh);
         Issued(await Ledger().ExchangeAsync(code, Verifier, Redirect, Client));
     }
@@ -310,11 +310,11 @@ public sealed class GrantLedgerTests : IDisposable
     public async Task Approving_a_metadata_document_client_records_its_document_url()
     {
         const string url = "https://claude.ai/oauth/claude-code-client-metadata";
-        var client = new OAuthEndpoints.ResolvedClient(url, OAuthEndpoints.ResolvedClient.KeyFor(url), "claude.ai", [Redirect], true);
+        var client = new Client(url, Client.ConsentKeyFor(url), "claude.ai", [Redirect], true);
 
         await Ledger().ApproveAsync(User, client, Request);
 
-        var consent = (await _store.GetConsentAsync(User.Subject, client.Key))!;
+        var consent = (await _store.GetConsentAsync(User.Subject, client.ConsentKey))!;
         Assert.Equal(url, consent.ClientUri);
         Assert.Equal("claude.ai", consent.ClientName);
     }
@@ -353,7 +353,7 @@ public sealed class GrantLedgerTests : IDisposable
         var code = await Ledger().ApproveAsync(User, Client, Request);
         var token = Issued(await Ledger().ExchangeAsync(code, Verifier, Redirect, Client)).RefreshToken;
 
-        Assert.True(await Ledger().DisconnectAsync(User, Client.Key));
+        Assert.True(await Ledger().DisconnectAsync(User, Client.ConsentKey));
 
         Assert.Empty(await Ledger().ListConsentsAsync(User));
         Assert.Equal(GrantRefusal.Revoked, Refused(await Ledger().RotateAsync(token, Client)).Kind);
@@ -363,7 +363,7 @@ public sealed class GrantLedgerTests : IDisposable
     [Fact]
     public async Task Disconnecting_a_client_that_is_not_connected_changes_nothing()
     {
-        Assert.False(await Ledger().DisconnectAsync(User, Client.Key));
+        Assert.False(await Ledger().DisconnectAsync(User, Client.ConsentKey));
     }
 
     [Fact]
@@ -371,7 +371,7 @@ public sealed class GrantLedgerTests : IDisposable
     {
         await Ledger().ApproveAsync(Stranger, Client, Request);
 
-        Assert.False(await Ledger().DisconnectAsync(User, Client.Key));
+        Assert.False(await Ledger().DisconnectAsync(User, Client.ConsentKey));
 
         Assert.NotNull(await Ledger().AuthorizeAsync(Stranger, Client, Request));
     }
@@ -413,7 +413,7 @@ public sealed class GrantLedgerTests : IDisposable
         if (withConsent)
             await _store.UpsertConsentAsync(new Consent
             {
-                UserId = User.Subject, ClientId = Client.Key, ClientName = Client.DisplayName, Scope = "mcp:tools", FamilyId = family,
+                UserId = User.Subject, ClientId = Client.ConsentKey, ClientName = Client.DisplayName, Scope = "mcp:tools", FamilyId = family,
                 CreatedAt = _time.GetUtcNow(), LastUsedAt = _time.GetUtcNow(),
             });
         var code = TokenIssuer.NewSecret();

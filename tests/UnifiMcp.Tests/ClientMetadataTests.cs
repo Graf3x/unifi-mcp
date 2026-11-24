@@ -76,27 +76,6 @@ public sealed class ClientMetadataTests
     }
 
     [Fact]
-    public void Redirects_must_share_origin_or_be_loopback()
-    {
-        ClientMetadataDocument With(string redirect) => new() { ClientId = ClientId, RedirectUris = [redirect] };
-
-        Assert.Null(HttpClientMetadataDocuments.Validate(With("https://claude.ai/api/mcp/auth_callback"), ClientId));
-        Assert.Null(HttpClientMetadataDocuments.Validate(With("https://claude.ai:443/cb"), ClientId));
-        Assert.NotNull(HttpClientMetadataDocuments.Validate(With("https://claude.ai:8443/cb"), ClientId));
-        Assert.NotNull(HttpClientMetadataDocuments.Validate(With("https://evil.example/cb"), ClientId));
-        Assert.Null(HttpClientMetadataDocuments.Validate(With("http://127.0.0.1:1234/cb"), ClientId));
-    }
-
-    [Fact]
-    public void Loopback_redirect_matches_any_port()
-    {
-        Assert.True(HttpClientMetadataDocuments.RedirectAllowed(["http://127.0.0.1/cb"], "http://127.0.0.1:5555/cb"));
-        Assert.False(HttpClientMetadataDocuments.RedirectAllowed(["http://127.0.0.1/cb"], "http://127.0.0.1:5555/other"));
-        Assert.False(HttpClientMetadataDocuments.RedirectAllowed(["https://claude.ai/cb"], "https://claude.ai:444/cb"));
-        Assert.True(HttpClientMetadataDocuments.RedirectAllowed(["https://claude.ai/cb"], "https://claude.ai/cb"));
-    }
-
-    [Fact]
     public async Task Valid_document_resolves_and_is_cached_for_an_hour()
     {
         var (docs, handler, time) = Build(_ => Json(ValidDoc()));
@@ -109,6 +88,20 @@ public sealed class ClientMetadataTests
         Assert.Equal(1, handler.Calls);
 
         time.Advance(TimeSpan.FromMinutes(61));
+        await docs.ResolveAsync(ClientId);
+        Assert.Equal(2, handler.Calls);
+    }
+
+    [Fact]
+    public async Task A_document_the_client_rules_refuse_is_not_cached()
+    {
+        var (docs, handler, _) = Build(_ => Json($$"""{"client_id":"{{ClientId}}","redirect_uris":["https://evil.example/cb"]}"""));
+
+        var (doc, problem) = await docs.ResolveAsync(ClientId);
+        Assert.Null(doc);
+        Assert.Equal("redirect_uri 'https://evil.example/cb' is not same-origin with the client_id URL.", problem);
+
+        // Fetched again: a publisher who fixes the document is not kept waiting for the cache.
         await docs.ResolveAsync(ClientId);
         Assert.Equal(2, handler.Calls);
     }

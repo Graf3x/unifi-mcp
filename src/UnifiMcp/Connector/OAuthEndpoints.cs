@@ -19,10 +19,7 @@ public static class OAuthEndpoints
     public const string TokenRateLimitPolicy = "oauth-token";
     public const string AuthorizeRateLimitPolicy = "oauth-authorize";
     internal static readonly string[] AllowedScopes = ["mcp:tools"];
-    internal const int MaxRedirectUris = 5;
     internal const int MaxRegistrationBytes = 16 * 1024;
-    internal const int MaxRedirectUriLength = 2000;
-    internal const int MaxClientNameLength = 200;
     internal static readonly TimeSpan PendingConsentLifetime = TimeSpan.FromMinutes(10);
     private const string ConsentProtectorPurpose = "UnifiMcp.OAuth.PendingConsent.v1";
     private const int MaxProblemLength = 300;
@@ -39,7 +36,7 @@ public static class OAuthEndpoints
         app.MapGet("/oauth/jwks", async (ITokenIssuer issuer, CancellationToken ct) => Results.Json(await issuer.GetJwksAsync(ct), Json));
 
         // ---- RFC 7591 dynamic client registration -----------------------------------------------------
-        app.MapPost("/oauth/register", async Task<IResult> (HttpContext http, SqliteOAuthStore store, ILoggerFactory lf, CancellationToken ct) =>
+        app.MapPost("/oauth/register", async Task<IResult> (HttpContext http, Clients clients, ILoggerFactory lf, CancellationToken ct) =>
             {
                 // Anyone may call this, so the body is read only up to the cap: a declared length over it is refused
                 // unread, and a chunked one stops being read as soon as it proves larger.
@@ -54,24 +51,10 @@ public static class OAuthEndpoints
                 try { request = await JsonSerializer.DeserializeAsync<RegistrationRequest>(body, Json, ct); }
                 catch (JsonException) { request = null; }
                 if (request is null) return OAuthError(400, "invalid_client_metadata", "Body must be a JSON client metadata document.");
-                if (request.ClientName is { Length: > MaxClientNameLength })
-                    return OAuthError(400, "invalid_client_metadata", $"client_name must be at most {MaxClientNameLength} characters.");
 
-                var problem = ValidateRegistration(request);
-                if (problem is not null) return OAuthError(400, "invalid_redirect_uri", problem);
-
-                var client = new OAuthClient
-                {
-                    ClientId = "mcp_" + TokenIssuer.NewSecret().Replace('-', 'a').Replace('_', 'b')[..24].ToLowerInvariant(),
-                    ClientName = Trim(request.ClientName, 100) ?? "Unnamed client",
-                    RedirectUris = request.RedirectUris!.Select(u => u.Trim()).Distinct(StringComparer.Ordinal).ToList(),
-                    ClientUri = Trim(request.ClientUri, 200),
-                    LogoUri = Trim(request.LogoUri, 400),
-                    SoftwareId = Trim(request.SoftwareId, 100),
-                    SoftwareVersion = Trim(request.SoftwareVersion, 50),
-                    RegisteredFrom = $"{ClientIp(http)} {Trim(http.Request.Headers.UserAgent.ToString(), 120)}",
-                };
-                await store.CreateClientAsync(client, ct);
+                var outcome = await clients.RegisterAsync(request, $"{ClientIp(http)} {Trim(http.Request.Headers.UserAgent.ToString(), 120)}", ct);
+                if (outcome is RegistrationRefused refused) return OAuthError(400, refused.Error, refused.Description);
+                var client = ((Registered)outcome).Registration;
                 Log(lf).LogInformation("OAuth: client {ClientId} '{Name}' registered from {From}", client.ClientId, LogText.Clean(client.ClientName),
                     LogText.Clean(client.RegisteredFrom));
 
@@ -92,7 +75,7 @@ public static class OAuthEndpoints
             .RequireRateLimiting(RegisterRateLimitPolicy);
 
         // ---- authorize ------------------------------------------------------------------------------
-        app.MapGet("/oauth/authorize", async Task<IResult> (HttpContext http, SqliteOAuthStore store, ITokenIssuer issuer, GrantLedger ledger, IClientMetadataDocuments documents,
+        app.MapGet("/oauth/authorize", async Task<IResult> (HttpContext http, Clients clients, ITokenIssuer issuer, GrantLedger ledger,
                 IDataProtectionProvider dp, Settings settings, TimeProvider time, ILoggerFactory lf, CancellationToken ct) =>
             {
                 var q = http.Request.Query;
@@ -100,12 +83,12 @@ public static class OAuthEndpoints
                 var redirectUri = q["redirect_uri"].ToString();
 
                 // Until the client and redirect URI are known-good nothing may be redirected: render the error.
-                var (client, clientProblem) = await ResolveClientAsync(clientId, store, documents, ct);
+                var (client, clientProblem) = await clients.ResolveAsync(clientId, ct);
                 if (client is null)
-                    return Page(400, Pages.ErrorPage("Unknown client", clientProblem == UnknownClient
+                    return Page(400, Pages.ErrorPage("Unknown client", clientProblem == Clients.Unknown
                         ? "This application is not registered with UniFi Network. Reconnect it and try again."
                         : $"This application's identity could not be verified: {Truncate(clientProblem)}"));
-                if (string.IsNullOrEmpty(redirectUri) || !HttpClientMetadataDocuments.RedirectAllowed(client.RedirectUris, redirectUri))
+                if (string.IsNullOrEmpty(redirectUri) || !client.Allows(redirectUri))
                     return Page(400, Pages.ErrorPage("Redirect not allowed", "The application asked to send you to an address it did not register."));
 
                 var state = q["state"].ToString();
@@ -149,7 +132,7 @@ public static class OAuthEndpoints
             })
             .RequireRateLimiting(AuthorizeRateLimitPolicy);
 
-        app.MapPost("/oauth/consent", async Task<IResult> (HttpContext http, SqliteOAuthStore store, GrantLedger ledger, IClientMetadataDocuments documents, IDataProtectionProvider dp,
+        app.MapPost("/oauth/consent", async Task<IResult> (HttpContext http, Clients clients, GrantLedger ledger, IDataProtectionProvider dp,
                 TimeProvider time, ILoggerFactory lf, CancellationToken ct) =>
             {
                 if (!http.Request.HasFormContentType) return Page(400, Pages.ErrorPage("This request has expired", "Go back to the application and connect again."));
@@ -170,8 +153,8 @@ public static class OAuthEndpoints
                     return Page(400, Pages.ErrorPage("Sign-in changed", "The signed-in account is not the one this request was for. Connect again."));
                 }
 
-                var (client, _) = await ResolveClientAsync(pending.ClientId, store, documents, ct);
-                if (client is null || !HttpClientMetadataDocuments.RedirectAllowed(client.RedirectUris, pending.RedirectUri))
+                var (client, _) = await clients.ResolveAsync(pending.ClientId, ct);
+                if (client is null || !client.Allows(pending.RedirectUri))
                     return Page(400, Pages.ErrorPage("Unknown client", "This application is no longer registered."));
 
                 if (form["decision"].ToString() != "allow")
@@ -187,7 +170,7 @@ public static class OAuthEndpoints
             });
 
         // ---- token ---------------------------------------------------------------------------------
-        app.MapPost("/oauth/token", async Task<IResult> (HttpContext http, SqliteOAuthStore store, ITokenIssuer issuer, GrantLedger ledger, IClientMetadataDocuments documents,
+        app.MapPost("/oauth/token", async Task<IResult> (HttpContext http, Clients clients, ITokenIssuer issuer, GrantLedger ledger,
                 ILoggerFactory lf, CancellationToken ct) =>
             {
                 var log = Log(lf);
@@ -209,8 +192,8 @@ public static class OAuthEndpoints
                 var form = await http.Request.ReadFormAsync(ct);
                 var grant = form["grant_type"].ToString();
                 clientId = form["client_id"].ToString();
-                var (client, clientProblem) = await ResolveClientAsync(clientId, store, documents, ct);
-                if (client is null) return Refuse(401, "invalid_client", Truncate(clientProblem) ?? UnknownClient);
+                var (client, clientProblem) = await clients.ResolveAsync(clientId, ct);
+                if (client is null) return Refuse(401, "invalid_client", Truncate(clientProblem) ?? Clients.Unknown);
                 // Checked before a code or refresh token is spent, so a client that asked for the wrong audience can still retry.
                 if (!ResourceAllowed(form["resource"].ToString(), issuer))
                     return Refuse(400, "invalid_target", "This server issues tokens for its own MCP endpoint only.");
@@ -227,7 +210,7 @@ public static class OAuthEndpoints
                         if (outcome is GrantRefused refused)
                             return Refuse(400, "invalid_grant", refused.Description, refused.Label, refused.Reason);
                         var issued = (GrantIssued)outcome;
-                        if (!client.FromMetadataDocument) await store.TouchClientAsync(client.ClientId, ct);
+                        await clients.RecordUseAsync(client, ct);
                         log.LogInformation("OAuth: issued tokens to {Email} for client {ClientId} from {Ip}", LogText.Clean(issued.User.Label),
                             LogText.Clean(client.ClientId), ClientIp(http));
                         return await TokenResponseAsync(issuer, issued.User, client.ClientId, issued.Scope, issued.RefreshToken, ct);
@@ -240,7 +223,7 @@ public static class OAuthEndpoints
                         if (outcome is GrantRefused refused)
                             return Refuse(400, "invalid_grant", refused.Description, refused.Label, refused.Reason);
                         var issued = (GrantIssued)outcome;
-                        if (!client.FromMetadataDocument) await store.TouchClientAsync(client.ClientId, ct);
+                        await clients.RecordUseAsync(client, ct);
                         log.LogInformation("OAuth: refreshed tokens for {Email} client {ClientId} from {Ip}", LogText.Clean(issued.User.Label),
                             LogText.Clean(client.ClientId), ClientIp(http));
                         return await TokenResponseAsync(issuer, issued.User, client.ClientId, issued.Scope, issued.RefreshToken, ct);
@@ -266,33 +249,6 @@ public static class OAuthEndpoints
     }
 
     // ---------------------------------------------------------------------------------------------------- helpers
-
-    private const string UnknownClient = "Unknown client.";
-
-    /// <summary>
-    /// One shape for both kinds of client. <see cref="Key"/> is what consents use: the registered id, or a hash of the
-    /// metadata URL.
-    /// </summary>
-    internal sealed record ResolvedClient(string ClientId, string Key, string DisplayName, IReadOnlyList<string> RedirectUris, bool FromMetadataDocument)
-    {
-        public static ResolvedClient FromRegistered(OAuthClient c) => new(c.ClientId, c.ClientId, c.ClientName, c.RedirectUris, false);
-        // The document is self-asserted: the relying party shown to the user is the host that published it.
-        public static ResolvedClient FromDocument(ClientMetadataDocument d) => new(d.ClientId, KeyFor(d.ClientId), d.Host, d.RedirectUris, true);
-        public static string KeyFor(string clientId) =>
-            HttpClientMetadataDocuments.IsClientIdUrl(clientId, out _) ? "cimd_" + TokenIssuer.Hash(clientId)[..32] : clientId;
-    }
-
-    private static async Task<(ResolvedClient? Client, string? Problem)> ResolveClientAsync(string clientId, SqliteOAuthStore store, IClientMetadataDocuments documents, CancellationToken ct)
-    {
-        if (string.IsNullOrEmpty(clientId)) return (null, "client_id is required.");
-        if (HttpClientMetadataDocuments.IsClientIdUrl(clientId, out _))
-        {
-            var (doc, problem) = await documents.ResolveAsync(clientId, ct);
-            return doc is null ? (null, problem) : (ResolvedClient.FromDocument(doc), null);
-        }
-        var registered = await store.GetClientAsync(clientId, ct);
-        return registered is null || registered.Disabled ? (null, UnknownClient) : (ResolvedClient.FromRegistered(registered), null);
-    }
 
     private static object Metadata(ITokenIssuer issuer) => new
     {
@@ -337,23 +293,6 @@ public static class OAuthEndpoints
         }, Json);
     }
 
-    internal static string? ValidateRegistration(RegistrationRequest request)
-    {
-        if (request.RedirectUris is not { Count: > 0 }) return "redirect_uris is required.";
-        if (request.RedirectUris.Count > MaxRedirectUris) return $"At most {MaxRedirectUris} redirect_uris.";
-        foreach (var raw in request.RedirectUris)
-        {
-            if (raw is { Length: > MaxRedirectUriLength }) return $"Each redirect_uri must be at most {MaxRedirectUriLength} characters.";
-            if (!Uri.TryCreate(raw?.Trim(), UriKind.Absolute, out var uri)) return $"redirect_uri '{Truncate(raw)}' is not an absolute URI.";
-            if (!string.IsNullOrEmpty(uri.Fragment)) return "redirect_uris must not contain a fragment.";
-            if (uri.Scheme != Uri.UriSchemeHttps) return $"redirect_uri '{Truncate(raw)}' must use https.";
-        }
-        if (request.TokenEndpointAuthMethod is not (null or "none")) return "Only public clients (token_endpoint_auth_method=none, PKCE) are supported.";
-        if (request.GrantTypes is { Count: > 0 } && request.GrantTypes.Any(g => g is not ("authorization_code" or "refresh_token"))) return "Supported grant_types: authorization_code, refresh_token.";
-        if (request.ResponseTypes is { Count: > 0 } && request.ResponseTypes.Any(r => r != "code")) return "Supported response_types: code.";
-        return null;
-    }
-
     internal static string? NormalizeScope(string requested)
     {
         var parts = requested.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
@@ -365,6 +304,7 @@ public static class OAuthEndpoints
     internal static string ClientIp(HttpContext http) =>
         http.Request.Headers["CF-Connecting-IP"].ToString() is { Length: > 0 and <= 64 } ip ? LogText.Clean(ip) : "unknown";
 
+    /// <summary>The caller's user agent, for the registration's record: trimmed and capped.</summary>
     private static string? Trim(string? value, int max) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim().Length <= max ? value.Trim() : value.Trim()[..max];
 
@@ -418,11 +358,11 @@ public static class OAuthEndpoints
         public Task ExecuteAsync(HttpContext http) => Pages.WriteAsync(http.Response, status, html, formTarget);
     }
 
-    private static IResult ConsentPage(ResolvedClient client, OAuthUser user, string requestToken, string redirectUri, Settings settings)
+    private static IResult ConsentPage(Client client, OAuthUser user, string requestToken, string redirectUri, Settings settings)
     {
         var redirect = Uri.TryCreate(redirectUri, UriKind.Absolute, out var x) ? x : null;
         var host = redirect?.Host ?? redirectUri;
-        var loopback = redirect is not null && HttpClientMetadataDocuments.IsLoopback(redirect);
+        var loopback = redirect is not null && Clients.IsLoopback(redirect);
         var who = client.FromMetadataDocument
             ? $"An application published by <b>{Pages.Encode(client.DisplayName)}</b>"
             : $"<b>{Pages.Encode(client.DisplayName)}</b>";
@@ -452,17 +392,4 @@ public static class OAuthEndpoints
     internal sealed record PendingAuthorization(string ClientId, string RedirectUri, string CodeChallenge, string Scope, string? Resource, string State,
         string UserSubject, DateTimeOffset ExpiresAt);
 
-    public sealed class RegistrationRequest
-    {
-        [JsonPropertyName("client_name")] public string? ClientName { get; set; }
-        [JsonPropertyName("redirect_uris")] public List<string>? RedirectUris { get; set; }
-        [JsonPropertyName("client_uri")] public string? ClientUri { get; set; }
-        [JsonPropertyName("logo_uri")] public string? LogoUri { get; set; }
-        [JsonPropertyName("software_id")] public string? SoftwareId { get; set; }
-        [JsonPropertyName("software_version")] public string? SoftwareVersion { get; set; }
-        [JsonPropertyName("token_endpoint_auth_method")] public string? TokenEndpointAuthMethod { get; set; }
-        [JsonPropertyName("grant_types")] public List<string>? GrantTypes { get; set; }
-        [JsonPropertyName("response_types")] public List<string>? ResponseTypes { get; set; }
-        [JsonPropertyName("scope")] public string? Scope { get; set; }
-    }
 }

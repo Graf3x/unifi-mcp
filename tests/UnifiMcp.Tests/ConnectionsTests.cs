@@ -18,11 +18,11 @@ public sealed class ConnectionsTests
     private static readonly CodeRequest Request = new("https://claude.ai/cb", "challenge", "mcp:tools", null);
 
     /// <summary>A client approved straight through the ledger, as if it had gone through the consent page.</summary>
-    private static Task<string> ApproveAsync(PublicHarness h, OAuthUser user, OAuthEndpoints.ResolvedClient client) =>
+    private static Task<string> ApproveAsync(PublicHarness h, OAuthUser user, Client client) =>
         Ledger(h).ApproveAsync(user, client, Request);
 
     /// <summary>A client known by a metadata document: <paramref name="clientId"/> is what the page shows as its address.</summary>
-    private static OAuthEndpoints.ResolvedClient Client(string key, string name, string? clientId = null) =>
+    private static Client Client(string key, string name, string? clientId = null) =>
         new(clientId ?? key, key, name, [Request.RedirectUri], clientId is not null);
 
     private static async Task<bool> ConnectedAsync(PublicHarness h, OAuthUser user, string key) =>
