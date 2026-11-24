@@ -5,6 +5,8 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 0.8.0
+
 ### Added
 
 - `device_diagnostics_faq` finds a device by its model or type when no name, IP or MAC matches, so "udm", "UDM Pro"
