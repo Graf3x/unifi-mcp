@@ -7,7 +7,7 @@ namespace UnifiMcp;
 /// A client registered through RFC 7591 dynamic registration. Public client (PKCE, no secret): registering one
 /// grants nothing by itself; the owner still has to log in and consent before any token is issued.
 /// </summary>
-public sealed class OAuthClient
+public sealed class ClientRegistration
 {
     public string ClientId { get; set; } = string.Empty;
     public string ClientName { get; set; } = string.Empty;

@@ -597,16 +597,23 @@ public sealed partial class OAuthFlowTests
         await RegisterAsync(h, ip: "203.0.113.8");
     }
 
+    /// <summary>The rules are the Client module's (OAuthClientsTests); this is how each kind of refusal is answered.</summary>
     [Fact]
-    public async Task Register_refuses_http_and_too_many_redirects()
+    public async Task Register_answers_a_refusal_with_its_oauth_error()
     {
         await using var h = await PublicHarness.StartAsync();
         using var client = h.NewClient();
-        foreach (var uris in new[] { new[] { "http://claude.ai/cb" }, Enumerable.Range(0, 6).Select(i => $"https://claude.ai/cb{i}").ToArray(), Array.Empty<string>() })
+        async Task<(HttpStatusCode, string?, string?)> Register(object request)
         {
-            var response = await client.PostAsJsonAsync("/oauth/register", new { redirect_uris = uris });
-            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            var response = await client.PostAsJsonAsync("/oauth/register", request);
+            var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+            return (response.StatusCode, body.GetProperty("error").GetString(), body.GetProperty("error_description").GetString());
         }
+
+        Assert.Equal((HttpStatusCode.BadRequest, "invalid_redirect_uri", "redirect_uri 'http://claude.ai/cb' must use https."),
+            await Register(new { redirect_uris = new[] { "http://claude.ai/cb" } }));
+        Assert.Equal((HttpStatusCode.BadRequest, "invalid_client_metadata", "client_name must be at most 200 characters."),
+            await Register(new { client_name = new string('n', 201), redirect_uris = new[] { Callback } }));
     }
 
     /// <summary>Counts the request body bytes the app reads, ahead of all of its middleware.</summary>
@@ -694,27 +701,6 @@ public sealed partial class OAuthFlowTests
 
         Assert.Equal(HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
         Assert.True(Interlocked.Read(ref counter.Read) < 256 * 1024, $"read {Interlocked.Read(ref counter.Read)} bytes");
-    }
-
-    [Fact]
-    public async Task Register_caps_redirect_uri_and_client_name_lengths()
-    {
-        await using var h = await PublicHarness.StartAsync();
-        using var client = h.NewClient();
-        async Task<(HttpStatusCode, string?)> Register(object request)
-        {
-            var response = await client.PostAsJsonAsync("/oauth/register", request);
-            return (response.StatusCode, response.StatusCode == HttpStatusCode.Created ? null
-                : (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("error").GetString());
-        }
-
-        var longUri = "https://claude.ai/" + new string('a', 2000 - "https://claude.ai/".Length);
-        Assert.Equal((HttpStatusCode.Created, null), await Register(new { redirect_uris = new[] { longUri } }));
-        Assert.Equal((HttpStatusCode.BadRequest, "invalid_redirect_uri"), await Register(new { redirect_uris = new[] { longUri + "a" } }));
-
-        Assert.Equal((HttpStatusCode.Created, null), await Register(new { client_name = new string('n', 200), redirect_uris = new[] { Callback } }));
-        Assert.Equal((HttpStatusCode.BadRequest, "invalid_client_metadata"),
-            await Register(new { client_name = new string('n', 201), redirect_uris = new[] { Callback } }));
     }
 
     [Fact]

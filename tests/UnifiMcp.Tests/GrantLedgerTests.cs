@@ -16,9 +16,9 @@ public sealed class GrantLedgerTests : IDisposable
 
     private static readonly OAuthUser User = new() { Subject = "google-sub-1", Email = Owner, Name = "Owner" };
     private static readonly Client Client =
-        Client.Registered(new OAuthClient { ClientId = "client-1", ClientName = "Claude", RedirectUris = ["https://claude.ai/cb"] });
+        Client.Registered(new ClientRegistration { ClientId = "client-1", ClientName = "Claude", RedirectUris = ["https://claude.ai/cb"] });
     private static readonly Client OtherClient =
-        Client.Registered(new OAuthClient { ClientId = "client-2", ClientName = "Other", RedirectUris = ["https://other.example/cb"] });
+        Client.Registered(new ClientRegistration { ClientId = "client-2", ClientName = "Other", RedirectUris = ["https://other.example/cb"] });
 
     public GrantLedgerTests() => _store = new SqliteOAuthStore(_path, _time);
 

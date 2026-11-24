@@ -184,13 +184,13 @@ public sealed class OAuthStoreTests : IDisposable
     public async Task Client_and_consent_round_trip_and_delete()
     {
         var store = NewStore();
-        var created = await store.CreateClientAsync(new OAuthClient { ClientId = "c1", ClientName = "Claude", RedirectUris = ["https://claude.ai/cb"] });
+        var created = await store.CreateRegistrationAsync(new ClientRegistration { ClientId = "c1", ClientName = "Claude", RedirectUris = ["https://claude.ai/cb"] });
         Assert.Equal(_time.GetUtcNow(), created.CreatedAt);
-        Assert.Null((await store.GetClientAsync("c1"))!.LastUsedAt);
+        Assert.Null((await store.GetRegistrationAsync("c1"))!.LastUsedAt);
         _time.Advance(TimeSpan.FromHours(1));
-        await store.TouchClientAsync("c1");
-        Assert.Equal(_time.GetUtcNow(), (await store.GetClientAsync("c1"))!.LastUsedAt);
-        Assert.Null(await store.GetClientAsync("nope"));
+        await store.TouchRegistrationAsync("c1");
+        Assert.Equal(_time.GetUtcNow(), (await store.GetRegistrationAsync("c1"))!.LastUsedAt);
+        Assert.Null(await store.GetRegistrationAsync("nope"));
 
         await store.UpsertConsentAsync(new Consent { UserId = "u1", ClientId = "c1", ClientName = "Claude", Scope = "mcp", FamilyId = "f1", LastUsedAt = _time.GetUtcNow() });
         await store.UpsertConsentAsync(new Consent { UserId = "u1", ClientId = "c1", ClientName = "Claude", Scope = "mcp", FamilyId = "f2", LastUsedAt = _time.GetUtcNow() });
@@ -253,12 +253,12 @@ public sealed class OAuthStoreTests : IDisposable
     public async Task Store_survives_reopen()
     {
         var first = NewStore();
-        await first.CreateClientAsync(new OAuthClient { ClientId = "c1", ClientName = "Claude", RedirectUris = ["https://claude.ai/cb"] });
+        await first.CreateRegistrationAsync(new ClientRegistration { ClientId = "c1", ClientName = "Claude", RedirectUris = ["https://claude.ai/cb"] });
         await first.UpsertConsentAsync(new Consent { UserId = "u1", ClientId = "c1", ClientName = "Claude", Scope = "mcp", FamilyId = "f1", LastUsedAt = _time.GetUtcNow() });
         SqliteConnection.ClearAllPools();
 
         var second = NewStore();
-        var client = await second.GetClientAsync("c1");
+        var client = await second.GetRegistrationAsync("c1");
         Assert.Equal("Claude", client!.ClientName);
         Assert.Equal(["https://claude.ai/cb"], client.RedirectUris);
         Assert.Equal("f1", (await second.GetConsentAsync("u1", "c1"))!.FamilyId);

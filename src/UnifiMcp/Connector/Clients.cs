@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace UnifiMcp;
 
 /// <summary>
@@ -7,7 +9,7 @@ namespace UnifiMcp;
 /// </summary>
 public sealed record Client(string ClientId, string ConsentKey, string DisplayName, IReadOnlyList<string> RedirectUris, bool FromMetadataDocument)
 {
-    internal static Client Registered(OAuthClient registration) =>
+    internal static Client Registered(ClientRegistration registration) =>
         new(registration.ClientId, registration.ClientId, registration.ClientName, registration.RedirectUris, false);
 
     // The document is self-asserted: the relying party shown to the owner is the host that published it.
@@ -20,6 +22,29 @@ public sealed record Client(string ClientId, string ConsentKey, string DisplayNa
     /// <summary>Whether a request may send the owner back to <paramref name="redirectUri"/>.</summary>
     public bool Allows(string redirectUri) => Clients.RedirectAllowed(RedirectUris, redirectUri);
 }
+
+/// <summary>What a client sends to register (RFC 7591): its client metadata.</summary>
+public sealed class RegistrationRequest
+{
+    [JsonPropertyName("client_name")] public string? ClientName { get; set; }
+    [JsonPropertyName("redirect_uris")] public List<string>? RedirectUris { get; set; }
+    [JsonPropertyName("client_uri")] public string? ClientUri { get; set; }
+    [JsonPropertyName("logo_uri")] public string? LogoUri { get; set; }
+    [JsonPropertyName("software_id")] public string? SoftwareId { get; set; }
+    [JsonPropertyName("software_version")] public string? SoftwareVersion { get; set; }
+    [JsonPropertyName("token_endpoint_auth_method")] public string? TokenEndpointAuthMethod { get; set; }
+    [JsonPropertyName("grant_types")] public List<string>? GrantTypes { get; set; }
+    [JsonPropertyName("response_types")] public List<string>? ResponseTypes { get; set; }
+    [JsonPropertyName("scope")] public string? Scope { get; set; }
+}
+
+public abstract record RegistrationOutcome;
+
+/// <summary>The client is registered: the stored registration, for the response.</summary>
+public sealed record Registered(ClientRegistration Registration) : RegistrationOutcome;
+
+/// <summary>Nothing was stored. <see cref="Error"/> is the RFC 7591 error code; <see cref="Description"/> is safe to send back.</summary>
+public sealed record RegistrationRefused(string Error, string Description) : RegistrationOutcome;
 
 /// <summary>
 /// The Client module: which client a <c>client_id</c> names and whether it may be used. The OAuth endpoints translate
@@ -43,15 +68,66 @@ public sealed class Clients(SqliteOAuthStore store, IClientMetadataDocuments doc
             problem ??= document is null ? null : DocumentProblem(document, clientId);
             return document is null || problem is not null ? (null, problem) : (Client.Documented(document), null);
         }
-        var registered = await store.GetClientAsync(clientId, ct);
+        var registered = await store.GetRegistrationAsync(clientId, ct);
         return registered is null || registered.Disabled ? (null, Unknown) : (Client.Registered(registered), null);
+    }
+
+    internal const int MaxRegistrationRedirectUris = 5;
+    internal const int MaxRedirectUriLength = 2000;
+    internal const int MaxClientNameLength = 200;
+    private const int MaxProblemLength = 300;
+
+    /// <summary>
+    /// Registers a client (RFC 7591) under a fresh id, or says why not. Registration alone grants nothing: the owner
+    /// still signs in and consents. <paramref name="registeredFrom"/> is only ever logged and stored.
+    /// </summary>
+    public async Task<RegistrationOutcome> RegisterAsync(RegistrationRequest request, string registeredFrom, CancellationToken ct = default)
+    {
+        if (request.ClientName is { Length: > MaxClientNameLength })
+            return new RegistrationRefused("invalid_client_metadata", $"client_name must be at most {MaxClientNameLength} characters.");
+        if (RegistrationProblem(request) is { } problem) return new RegistrationRefused("invalid_redirect_uri", problem);
+
+        var registration = new ClientRegistration
+        {
+            ClientId = "mcp_" + TokenIssuer.NewSecret().Replace('-', 'a').Replace('_', 'b')[..24].ToLowerInvariant(),
+            ClientName = Trim(request.ClientName, 100) ?? "Unnamed client",
+            RedirectUris = request.RedirectUris!.Select(u => u.Trim()).Distinct(StringComparer.Ordinal).ToList(),
+            ClientUri = Trim(request.ClientUri, 200),
+            LogoUri = Trim(request.LogoUri, 400),
+            SoftwareId = Trim(request.SoftwareId, 100),
+            SoftwareVersion = Trim(request.SoftwareVersion, 50),
+            RegisteredFrom = registeredFrom,
+        };
+        return new Registered(await store.CreateRegistrationAsync(registration, ct));
     }
 
     /// <summary>Marks a registration used, when tokens were issued to it. A document client has no record to mark.</summary>
     public Task RecordUseAsync(Client client, CancellationToken ct = default) =>
-        client.FromMetadataDocument ? Task.CompletedTask : store.TouchClientAsync(client.ClientId, ct);
+        client.FromMetadataDocument ? Task.CompletedTask : store.TouchRegistrationAsync(client.ClientId, ct);
 
     // ---- redirect addresses: the rules for both kinds of client ----------------------------------------------------
+
+    /// <summary>
+    /// What is wrong with a registration's redirects and client type, or null. Anyone may register, so a registered
+    /// redirect must be https; loopback is for document clients, whose publisher vouches for them.
+    /// </summary>
+    private static string? RegistrationProblem(RegistrationRequest request)
+    {
+        if (request.RedirectUris is not { Count: > 0 }) return "redirect_uris is required.";
+        if (request.RedirectUris.Count > MaxRegistrationRedirectUris) return $"At most {MaxRegistrationRedirectUris} redirect_uris.";
+        foreach (var raw in request.RedirectUris)
+        {
+            if (raw is { Length: > MaxRedirectUriLength }) return $"Each redirect_uri must be at most {MaxRedirectUriLength} characters.";
+            if (!Uri.TryCreate(raw?.Trim(), UriKind.Absolute, out var uri)) return $"redirect_uri '{Truncate(raw)}' is not an absolute URI.";
+            if (!string.IsNullOrEmpty(uri.Fragment)) return "redirect_uris must not contain a fragment.";
+            if (uri.Scheme != Uri.UriSchemeHttps) return $"redirect_uri '{Truncate(raw)}' must use https.";
+        }
+        if (!IsPublic(request.TokenEndpointAuthMethod)) return "Only public clients (token_endpoint_auth_method=none, PKCE) are supported.";
+        if (request.GrantTypes is { Count: > 0 } && request.GrantTypes.Any(g => g is not ("authorization_code" or "refresh_token")))
+            return "Supported grant_types: authorization_code, refresh_token.";
+        if (request.ResponseTypes is { Count: > 0 } && request.ResponseTypes.Any(r => r != "code")) return "Supported response_types: code.";
+        return null;
+    }
 
     internal const int MaxDocumentRedirectUris = 10;
 
@@ -101,4 +177,10 @@ public sealed class Clients(SqliteOAuthStore store, IClientMetadataDocuments doc
         }
         return false;
     }
+
+    private static string? Trim(string? value, int max) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim().Length <= max ? value.Trim() : value.Trim()[..max];
+
+    /// <summary>A problem can echo the client's own text: only this much of it.</summary>
+    private static string? Truncate(string? s) => s is null || s.Length <= MaxProblemLength ? s : s[..MaxProblemLength] + "…";
 }

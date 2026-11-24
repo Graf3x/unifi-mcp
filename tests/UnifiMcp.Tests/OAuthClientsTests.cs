@@ -46,7 +46,7 @@ public sealed class OAuthClientsTests : IDisposable
     [Fact]
     public async Task A_registered_client_resolves_by_its_id_and_is_consented_to_by_it()
     {
-        await _store.CreateClientAsync(new OAuthClient { ClientId = "mcp_abc", ClientName = "Claude", RedirectUris = ["https://claude.ai/cb"] });
+        await _store.CreateRegistrationAsync(new ClientRegistration { ClientId = "mcp_abc", ClientName = "Claude", RedirectUris = ["https://claude.ai/cb"] });
 
         var (client, problem) = await Clients().ResolveAsync("mcp_abc");
 
@@ -59,7 +59,7 @@ public sealed class OAuthClientsTests : IDisposable
     [Fact]
     public async Task An_unknown_or_disabled_registration_is_an_unknown_client()
     {
-        await _store.CreateClientAsync(new OAuthClient { ClientId = "mcp_off", ClientName = "Off", RedirectUris = ["https://claude.ai/cb"], Disabled = true });
+        await _store.CreateRegistrationAsync(new ClientRegistration { ClientId = "mcp_off", ClientName = "Off", RedirectUris = ["https://claude.ai/cb"], Disabled = true });
 
         Assert.Equal((null, "Unknown client."), await Clients().ResolveAsync("mcp_nope"));
         Assert.Equal((null, "Unknown client."), await Clients().ResolveAsync("mcp_off"));
@@ -158,18 +158,106 @@ public sealed class OAuthClientsTests : IDisposable
         Assert.False(web.Allows(""));
     }
 
+    // ---- registering ----------------------------------------------------------------------------------------------
+
+    private static RegistrationRequest Asking(params string[] redirects) => new() { ClientName = "Claude", RedirectUris = [.. redirects] };
+
+    private async Task<RegistrationRefused> RefusedAsync(RegistrationRequest request) =>
+        Assert.IsType<RegistrationRefused>(await Clients().RegisterAsync(request, "203.0.113.7 test"));
+
+    [Fact]
+    public async Task Registering_stores_a_public_client_under_a_fresh_id_and_it_resolves()
+    {
+        var request = new RegistrationRequest
+        {
+            ClientName = "  Claude  ", RedirectUris = [" https://claude.ai/cb ", "https://claude.ai/cb", "https://claude.ai/other"],
+            ClientUri = "https://claude.ai", SoftwareId = new string('s', 150), TokenEndpointAuthMethod = "none",
+            GrantTypes = ["authorization_code", "refresh_token"], ResponseTypes = ["code"],
+        };
+
+        var registered = Assert.IsType<Registered>(await Clients().RegisterAsync(request, "203.0.113.7 test")).Registration;
+
+        Assert.Matches("^mcp_[a-z0-9]{24}$", registered.ClientId);
+        Assert.Equal("Claude", registered.ClientName);
+        Assert.Equal(["https://claude.ai/cb", "https://claude.ai/other"], registered.RedirectUris); // trimmed, each once
+        Assert.Equal(100, registered.SoftwareId!.Length);
+        Assert.Equal("203.0.113.7 test", registered.RegisteredFrom);
+        Assert.Equal(_time.GetUtcNow(), registered.CreatedAt);
+
+        var client = (await Clients().ResolveAsync(registered.ClientId)).Client!;
+        Assert.Equal(("Claude", registered.ClientId, false), (client.DisplayName, client.ConsentKey, client.FromMetadataDocument));
+        Assert.True(client.Allows("https://claude.ai/other"));
+    }
+
+    [Fact]
+    public async Task Each_registration_gets_its_own_id_and_an_unnamed_one_a_placeholder_name()
+    {
+        var first = Assert.IsType<Registered>(await Clients().RegisterAsync(new RegistrationRequest { RedirectUris = ["https://claude.ai/cb"] }, "x")).Registration;
+        var second = Assert.IsType<Registered>(await Clients().RegisterAsync(Asking("https://claude.ai/cb"), "x")).Registration;
+
+        Assert.NotEqual(first.ClientId, second.ClientId);
+        Assert.Equal("Unnamed client", first.ClientName);
+    }
+
+    [Theory]
+    [InlineData("http://claude.ai/cb", "redirect_uri 'http://claude.ai/cb' must use https.")]
+    [InlineData("http://127.0.0.1/cb", "redirect_uri 'http://127.0.0.1/cb' must use https.")] // loopback is for document clients only
+    [InlineData("https://claude.ai/cb#here", "redirect_uris must not contain a fragment.")]
+    [InlineData("not a uri", "redirect_uri 'not a uri' is not an absolute URI.")]
+    public async Task A_registered_redirect_must_be_an_https_address(string redirect, string problem) =>
+        Assert.Equal(new RegistrationRefused("invalid_redirect_uri", problem), await RefusedAsync(Asking(redirect)));
+
+    [Fact]
+    public async Task A_registration_lists_one_to_five_redirects_of_up_to_2000_characters()
+    {
+        Assert.Equal("redirect_uris is required.", (await RefusedAsync(new RegistrationRequest())).Description);
+        Assert.Equal("redirect_uris is required.", (await RefusedAsync(Asking())).Description);
+        Assert.Equal("At most 5 redirect_uris.", (await RefusedAsync(Asking([.. Enumerable.Range(0, 6).Select(i => $"https://claude.ai/cb{i}")]))).Description);
+        Assert.IsType<Registered>(await Clients().RegisterAsync(Asking([.. Enumerable.Range(0, 5).Select(i => $"https://claude.ai/cb{i}")]), "x"));
+
+        var longest = "https://claude.ai/" + new string('a', 2000 - "https://claude.ai/".Length);
+        Assert.IsType<Registered>(await Clients().RegisterAsync(Asking(longest), "x"));
+        Assert.Equal(new RegistrationRefused("invalid_redirect_uri", "Each redirect_uri must be at most 2000 characters."), await RefusedAsync(Asking(longest + "a")));
+    }
+
+    [Fact]
+    public async Task A_client_name_is_at_most_200_characters()
+    {
+        var named = Asking("https://claude.ai/cb");
+        named.ClientName = new string('n', 200);
+        Assert.IsType<Registered>(await Clients().RegisterAsync(named, "x"));
+
+        named.ClientName = new string('n', 201);
+        Assert.Equal(new RegistrationRefused("invalid_client_metadata", "client_name must be at most 200 characters."), await RefusedAsync(named));
+    }
+
+    [Fact]
+    public async Task A_registered_client_must_be_public_and_use_the_code_flow()
+    {
+        var secret = Asking("https://claude.ai/cb");
+        secret.TokenEndpointAuthMethod = "client_secret_basic";
+        var credentials = Asking("https://claude.ai/cb");
+        credentials.GrantTypes = ["client_credentials"];
+        var implicitFlow = Asking("https://claude.ai/cb");
+        implicitFlow.ResponseTypes = ["token"];
+
+        Assert.Equal(new RegistrationRefused("invalid_redirect_uri", "Only public clients (token_endpoint_auth_method=none, PKCE) are supported."), await RefusedAsync(secret));
+        Assert.Equal(new RegistrationRefused("invalid_redirect_uri", "Supported grant_types: authorization_code, refresh_token."), await RefusedAsync(credentials));
+        Assert.Equal(new RegistrationRefused("invalid_redirect_uri", "Supported response_types: code."), await RefusedAsync(implicitFlow));
+    }
+
     // ---- last use -------------------------------------------------------------------------------------------------
 
     [Fact]
     public async Task Recording_use_marks_a_registration_and_leaves_a_document_client_alone()
     {
-        await _store.CreateClientAsync(new OAuthClient { ClientId = "mcp_abc", ClientName = "Claude", RedirectUris = ["https://claude.ai/cb"] });
+        await _store.CreateRegistrationAsync(new ClientRegistration { ClientId = "mcp_abc", ClientName = "Claude", RedirectUris = ["https://claude.ai/cb"] });
         var registered = (await Clients().ResolveAsync("mcp_abc")).Client!;
         _time.Advance(TimeSpan.FromHours(2));
 
         await Clients().RecordUseAsync(registered);
         await Clients().RecordUseAsync(new Client(DocumentUrl, Client.ConsentKeyFor(DocumentUrl), "claude.ai", ["https://claude.ai/cb"], true));
 
-        Assert.Equal(_time.GetUtcNow(), (await _store.GetClientAsync("mcp_abc"))!.LastUsedAt);
+        Assert.Equal(_time.GetUtcNow(), (await _store.GetRegistrationAsync("mcp_abc"))!.LastUsedAt);
     }
 }
