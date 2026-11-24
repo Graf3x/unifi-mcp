@@ -327,7 +327,8 @@ public class DiagnosticTests
         Assert.Contains("Hall AP", text);
         Assert.Contains("22.5", text);     // retries
         Assert.Contains("71", text);       // channel utilisation
-        Assert.Contains("Garage AP", text); // offline AP called out
+        Assert.Contains("## Radios: 1 access point(s) online", text);
+        Assert.Contains("**Not online (1):** Garage AP (U6M, offline)", text); // offline AP called out, with its state
         Assert.Contains("2 neighbour", text); // two strong networks share channel 6; the -91 one is too weak to count
         NoSecrets(text);
     }

@@ -173,7 +173,7 @@ public sealed partial class DiagnosticTools(UnifiClient console, ConsoleReads re
         var aps = devices.Where(d => Text(d, "type") == "uap").ToList();
         var neighbours = await a.Step("Neighbouring networks", () => site.RogueApsAsync(ct)) ?? [];
 
-        var online = aps.Where(a => Text(a, "state") == "1").ToList();
+        var online = aps.Where(DeviceReading.IsOnline).ToList();
         a.Line($"## Radios: {online.Count} access point(s) online");
         a.Line(Answer.Table(["AP", "Band", "Channel", "Width (MHz)", "Tx power", "Clients", "Channel use %", "Interference %", "Retries %", "Satisfaction", "Neighbours on channel (≥ -80 dBm)", "Flags"],
             online.SelectMany(ap => Items(ap, "radio_table_stats").Select(r =>
@@ -187,7 +187,7 @@ public sealed partial class DiagnosticTools(UnifiClient console, ConsoleReads re
                 return new[] { Text(ap, "name"), Band(Text(r, "radio")), Text(r, "channel"), Text(r, "bw"), Text(r, "tx_power"), Text(r, "num_sta"), Text(r, "cu_total"), Text(r, "cu_interf"),
                     Text(r, "tx_retries_pct"), Dbl(r, "satisfaction") is >= 0 ? Text(r, "satisfaction") : "", $"{strong} neighbour(s)", string.Join(", ", flags) };
             }))));
-        var offline = aps.Where(a => Text(a, "state") != "1").ToList();
+        var offline = aps.Where(a => !DeviceReading.IsOnline(a)).ToList();
         if (offline.Count > 0)
             a.Line($"**Not online ({offline.Count}):** " + string.Join(", ", offline.Select(a => $"{Text(a, "name")} ({Text(a, "model")}, {DeviceReading.StateName(a)})"))).Line();
 
