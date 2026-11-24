@@ -11,7 +11,7 @@ namespace UnifiMcp;
 /// <c>client_id</c> is an HTTPS URL that dereferences to the client's own registration metadata. Claude's hosted
 /// surfaces and Claude Code identify themselves this way, so no registration endpoint round-trip and no stored
 /// client per connection. The document is self-asserted, so it is validated (self-referential, sane redirect
-/// URIs) and the consent page names the URL's host as the relying party, never the document's client_name.
+/// URIs, by the Client module) and the consent page names the URL's host as the relying party, never the document's client_name.
 /// </summary>
 public interface IClientMetadataDocuments
 {
@@ -191,47 +191,13 @@ public sealed class HttpClientMetadataDocuments(IHttpClientFactory httpClientFac
     }
 
     /// <summary>
-    /// The document must name itself, and every redirect must be same-origin with it or a loopback address
-    /// (native clients such as Claude Code bind an ephemeral port). Anything else lets a document redirect users
-    /// to a host its publisher does not control.
+    /// The document must name itself, and pass the Client module's rules (redirects, public client). Checked before
+    /// it is cached, so a refused document is fetched again next time.
     /// </summary>
     internal static string? Validate(ClientMetadataDocument? doc, string clientIdUrl)
     {
         if (doc is null) return "client metadata document is empty.";
         if (!string.Equals(doc.ClientId, clientIdUrl, StringComparison.Ordinal)) return "client metadata document is not self-referential (client_id differs from its URL).";
-        if (doc.RedirectUris.Count is 0 or > 10) return "client metadata document must list 1–10 redirect_uris.";
-        if (doc.TokenEndpointAuthMethod is not (null or "none")) return "only public clients (token_endpoint_auth_method=none) are supported.";
-
-        var origin = new Uri(clientIdUrl);
-        foreach (var raw in doc.RedirectUris)
-        {
-            if (!Uri.TryCreate(raw, UriKind.Absolute, out var r) || !string.IsNullOrEmpty(r.Fragment)) return $"redirect_uri '{raw}' is not a valid absolute URI.";
-            if (IsLoopback(r)) continue;
-            if (r.Scheme != origin.Scheme || !string.Equals(r.Host, origin.Host, StringComparison.OrdinalIgnoreCase) || r.Port != origin.Port)
-                return $"redirect_uri '{raw}' is not same-origin with the client_id URL.";
-        }
-        return null;
-    }
-
-    internal static bool IsLoopback(Uri u) =>
-        u.Scheme == Uri.UriSchemeHttp && (u.IsLoopback || u.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase));
-
-    /// <summary>
-    /// Exact match for web redirects; port-agnostic for loopback ones (RFC 8252 §7.3, applied to localhost too
-    /// because Claude Code declares it).
-    /// </summary>
-    internal static bool RedirectAllowed(IEnumerable<string> registered, string requested)
-    {
-        if (!Uri.TryCreate(requested, UriKind.Absolute, out var req)) return false;
-        foreach (var raw in registered)
-        {
-            if (string.Equals(raw, requested, StringComparison.Ordinal)) return true;
-            if (!Uri.TryCreate(raw, UriKind.Absolute, out var reg)) continue;
-            if (IsLoopback(reg) && IsLoopback(req) &&
-                string.Equals(reg.Host, req.Host, StringComparison.OrdinalIgnoreCase) &&
-                string.Equals(reg.AbsolutePath, req.AbsolutePath, StringComparison.Ordinal))
-                return true;
-        }
-        return false;
+        return Clients.DocumentProblem(doc, clientIdUrl);
     }
 }

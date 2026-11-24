@@ -395,7 +395,7 @@ public static class OAuthEndpoints
     {
         var redirect = Uri.TryCreate(redirectUri, UriKind.Absolute, out var x) ? x : null;
         var host = redirect?.Host ?? redirectUri;
-        var loopback = redirect is not null && HttpClientMetadataDocuments.IsLoopback(redirect);
+        var loopback = redirect is not null && Clients.IsLoopback(redirect);
         var who = client.FromMetadataDocument
             ? $"An application published by <b>{Pages.Encode(client.DisplayName)}</b>"
             : $"<b>{Pages.Encode(client.DisplayName)}</b>";

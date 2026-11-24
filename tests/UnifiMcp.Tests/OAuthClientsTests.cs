@@ -102,6 +102,62 @@ public sealed class OAuthClientsTests : IDisposable
         Assert.Equal(0, _documents.Calls);
     }
 
+    // ---- redirect addresses -------------------------------------------------------------------------------------
+
+    [Theory]
+    [InlineData("https://claude.ai/api/mcp/auth_callback", null)]
+    [InlineData("https://claude.ai:443/cb", null)]
+    [InlineData("http://127.0.0.1:1234/cb", null)]
+    [InlineData("http://localhost/cb", null)]
+    [InlineData("https://claude.ai:8443/cb", "redirect_uri 'https://claude.ai:8443/cb' is not same-origin with the client_id URL.")]
+    [InlineData("https://evil.example/cb", "redirect_uri 'https://evil.example/cb' is not same-origin with the client_id URL.")]
+    [InlineData("http://claude.ai/cb", "redirect_uri 'http://claude.ai/cb' is not same-origin with the client_id URL.")]
+    [InlineData("https://claude.ai/cb#here", "redirect_uri 'https://claude.ai/cb#here' is not a valid absolute URI.")]
+    [InlineData("not a uri", "redirect_uri 'not a uri' is not a valid absolute URI.")]
+    public async Task A_document_s_redirects_must_share_its_origin_or_be_loopback(string redirect, string? problem)
+    {
+        _documents.Document = Document(redirect);
+
+        var (client, refused) = await Clients().ResolveAsync(DocumentUrl);
+
+        Assert.Equal(problem, refused);
+        Assert.Equal(problem is null, client is not null);
+    }
+
+    [Fact]
+    public async Task A_document_lists_one_to_ten_redirects()
+    {
+        const string tooFewOrMany = "client metadata document must list 1–10 redirect_uris.";
+        _documents.Document = Document();
+        Assert.Equal((null, tooFewOrMany), await Clients().ResolveAsync(DocumentUrl));
+        _documents.Document = Document([.. Enumerable.Range(0, 11).Select(i => $"https://claude.ai/cb{i}")]);
+        Assert.Equal((null, tooFewOrMany), await Clients().ResolveAsync(DocumentUrl));
+        _documents.Document = Document([.. Enumerable.Range(0, 10).Select(i => $"https://claude.ai/cb{i}")]);
+        Assert.NotNull((await Clients().ResolveAsync(DocumentUrl)).Client);
+    }
+
+    [Fact]
+    public async Task A_document_client_must_be_public()
+    {
+        _documents.Document = Document("https://claude.ai/cb");
+        _documents.Document.TokenEndpointAuthMethod = "client_secret_basic";
+
+        Assert.Equal((null, "only public clients (token_endpoint_auth_method=none) are supported."), await Clients().ResolveAsync(DocumentUrl));
+    }
+
+    [Fact]
+    public void A_loopback_redirect_matches_on_any_port_and_a_web_one_exactly()
+    {
+        var loopback = new Client(DocumentUrl, Client.ConsentKeyFor(DocumentUrl), "claude.ai", ["http://127.0.0.1/cb"], true);
+        Assert.True(loopback.Allows("http://127.0.0.1:5555/cb"));
+        Assert.False(loopback.Allows("http://127.0.0.1:5555/other"));
+
+        var web = new Client("mcp_abc", "mcp_abc", "Claude", ["https://claude.ai/cb"], false);
+        Assert.True(web.Allows("https://claude.ai/cb"));
+        Assert.False(web.Allows("https://claude.ai:444/cb"));
+        Assert.False(web.Allows(""));
+    }
+
     // ---- last use -------------------------------------------------------------------------------------------------
 
     [Fact]
