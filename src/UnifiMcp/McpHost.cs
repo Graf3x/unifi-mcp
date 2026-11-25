@@ -141,8 +141,12 @@ public static class McpHost
                 app.Logger.LogWarning("The setup page listens on {Listen}, beyond this machine, over plain HTTP: anyone on the network who sees its traffic sees the sign-in code. Prefer 127.0.0.1.", settings.SetupListen);
             if (settings.LanListen is { } lan)
                 app.Logger.LogWarning("The LAN listener on {Listen} is plain HTTP: anyone on the network who sees its traffic sees MCP_LAN_ACCESS_TOKEN, and the token gives full access to the tools. Use it only on a network you trust, or put a TLS proxy in front.", lan);
+            // With no public URL nobody expects the connector (guide 4 mounts no public folder), so it is not a warning then.
             if (claims?.PublicSkipped is { } skipped)
-                app.Logger.LogWarning("Public socket not bound: {Reason}. The tailnet side still runs.", skipped);
+                app.Logger.Log(settings.PublicBaseUrl is null ? LogLevel.Information : LogLevel.Warning,
+                    "Public socket not bound: {Reason}. The tailnet side still runs.", skipped);
+            if (claims?.SharedFolder is { } shared)
+                app.Logger.LogWarning("The public and tailnet sockets share the folder {Folder}, so whatever can reach the public one (the tunnel container) can reach the tailnet one too. Give the public socket a folder of its own (README, Updating).", shared);
             // With the LAN listener on, an empty allow-list is the normal state: only the tailnet listener uses it.
             if (settings.AllowedLogins().Count == 0 && settings.LanListen is null)
                 app.Logger.LogWarning("No allowed logins yet ({File}): every caller is refused.", settings.AllowedLoginsFile);

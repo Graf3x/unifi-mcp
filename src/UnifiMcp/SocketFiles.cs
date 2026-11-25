@@ -17,6 +17,13 @@ public sealed class SocketClaims : IDisposable
     /// <summary>Why the public socket is not bound, when it is configured and isn't. The tailnet side starts anyway.</summary>
     public string? PublicSkipped { get; private set; }
 
+    /// <summary>
+    /// The folder both bound sockets are in, when they share one. Whatever is given that folder to reach the public socket
+    /// (the tunnel container) can then reach the tailnet socket too, whose callers are trusted by the login header alone.
+    /// </summary>
+    public string? SharedFolder =>
+        Bound.Count == 2 && Path.GetDirectoryName(Bound[0]) is { } folder && folder == Path.GetDirectoryName(Bound[1]) ? folder : null;
+
     /// <summary>Claims both sockets. The tailnet one must succeed; the public one is skipped when its folder is missing or not writable.</summary>
     public IReadOnlyList<string> Claim(Settings settings)
     {

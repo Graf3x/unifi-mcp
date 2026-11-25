@@ -69,11 +69,14 @@ Anything else the API offers, Claude finds with `search_operations` and runs wit
   checked against a trusted CA. There is no default pin and no way to turn verification off.
 - The API key comes from the `UNIFI_API_KEY` environment variable, falling back to `/config/unifi-api-key` only when the
   variable is unset or empty. It is never logged or returned, and is scrubbed from console errors.
-- No published ports unless you add the LAN listener. The server listens on two Unix sockets:
-  - `public.sock`, the Claude connector, reached through a Cloudflare tunnel. It takes OAuth bearer tokens, issued only
+- No published ports unless you add the LAN listener. The server listens on two Unix sockets, each in a folder of its own:
+  - `run-public/public.sock`, the Claude connector, reached through a Cloudflare tunnel. It takes OAuth bearer tokens, issued only
     after the owner signs in (see [guide 2](#guide-2-claudeai-with-a-sign-in-code) and [guide 3](#guide-3-full-setup-with-google-sign-in)), and, if you set one, the fixed `MCP_ACCESS_TOKEN`.
-  - `mcp.sock`, optional tailnet access: reached through `tailscale serve`, which stamps `Tailscale-User-Login`; the server
-    checks it against an allow-list. The public socket ignores that header.
+  - `run/mcp.sock`, optional tailnet access: reached through `tailscale serve`, which stamps `Tailscale-User-Login`; the server
+    checks it against an allow-list. The public socket ignores that header. The tunnel container mounts only
+    `run-public`, so it can't reach this socket and send a login of its choosing.
+- At startup the server removes only a stale socket at either path. A file, a link or a socket someone still listens
+  on is left alone and the server stops with a message naming the path; so does a second server on the same folders.
 - The LAN listener ([guide 4](#guide-4-claude-code-across-your-lan)) is off unless `MCP_LAN_LISTEN` is set. It serves only
   `/mcp` and `/healthz`, accepts only `MCP_LAN_ACCESS_TOKEN` (never the public token, the sign-in or the Tailscale
   header), and the server won't start with it on and no token. It is plain HTTP; the startup log says so.
@@ -215,12 +218,12 @@ Each value in `.env` comes from one place. The striped ones are only for [guide 
 ```sh
 git clone https://github.com/Graf3x/unifi-mcp && cd unifi-mcp
 cp .env.example .env
-mkdir -p data run
+mkdir -p data run run-public
 ```
 
 Only `docker-compose.yml` and `.env.example` are needed at run time if you would rather copy those two files. Create
-`data` and `run` as yourself: the containers run as `PUID:PGID` from `.env` (your `id -u` / `id -g`) and must be able to
-write there.
+`data`, `run` and `run-public` as yourself: the containers run as `PUID:PGID` from `.env` (your `id -u` / `id -g`) and
+must be able to write there.
 
 #### Step 2: Console values
 
@@ -234,7 +237,7 @@ In Cloudflare Zero Trust, Networks, Tunnels: create a Cloudflared tunnel and cop
 leave it and come back under Networks, Tunnels.
 
 On the tunnel, add a published application route (public hostname): `unifi.example.com`, Path empty, Service URL
-`unix:/run/unifi-mcp/public.sock`, defaults otherwise.
+`unix:/run/unifi-mcp-public/public.sock`, defaults otherwise.
 
 Make sure nothing on that hostname asks for a login or a challenge: no Access application (watch for a wildcard such as
 `*.example.com`), no WAF, bot-fight or challenge rule. Claude's servers cannot pass one.
@@ -398,12 +401,32 @@ docker compose pull && docker compose up -d
 To build from your checkout instead of pulling the published image, uncomment `build: .` and `pull_policy: build` in
 `docker-compose.yml`, then `docker compose up -d --build`. For guide 1, `git pull` and run `dotnet run` again.
 
+#### Moving the public socket to its own folder
+
+Guides 2 and 3 set up before this change put both sockets in `./run` and mounted all of it into the tunnel container,
+so that container could also reach `mcp.sock`, which trusts the login its caller names. The public socket now lives in
+`./run-public`, and the tunnel container mounts only that folder. A new image looks for the public socket there; until
+you move it, the connector is down (the log says `Public socket not bound`) and the tailnet side keeps working.
+
+1. Create the folder as yourself: `mkdir -p run-public`.
+2. Take the new `docker-compose.yml`, or change yours: add `- ./run-public:/run/unifi-mcp-public` under the
+   `unifi-mcp` service's `volumes`, and replace `- ./run:/run/unifi-mcp` under `cloudflared` with
+   `- ./run-public:/run/unifi-mcp-public`. Don't keep `./run` in the tunnel container, not even read-only.
+3. In Cloudflare Zero Trust, Networks, Tunnels, edit the route's Service URL to
+   `unix:/run/unifi-mcp-public/public.sock`.
+4. `docker compose pull && docker compose up -d`, then open the setup page: the Cloudflare tunnel check should pass.
+   You may delete the old `run/public.sock`. If you set `MCP_PUBLIC_LISTEN` in `.env`, remove it or point it into
+   `/run/unifi-mcp-public`.
+
 ### Troubleshooting
 
 - Guide 1, 403 from `http://127.0.0.1:5199/mcp`: the `Tailscale-User-Login` header is missing, or its value is not in
   `MCP_ALLOWED_LOGINS`.
 - 503 from `https://unifi.example.com/mcp`: the connector is not configured or its keys cannot be opened; the startup log
   line says why.
+- 502 from `https://unifi.example.com/mcp`: the tunnel can't reach the public socket. The route's Service URL must be
+  `unix:/run/unifi-mcp-public/public.sock`, and `./run-public` must be mounted in both containers (see
+  [Moving the public socket to its own folder](#moving-the-public-socket-to-its-own-folder)).
 - Guide 4, 401 from `http://192.168.1.20:7420/mcp`: the header is missing, or its token isn't `MCP_LAN_ACCESS_TOKEN`
   (`MCP_ACCESS_TOKEN` is not accepted there). No answer at all: the port isn't published, or a firewall is in the way.
 - `docker ps` shows the container as unhealthy: the server doesn't answer `/healthz` on `mcp.sock`. The image checks it
@@ -461,7 +484,7 @@ All settings come from the environment (`.env` with Docker Compose). After chang
 | `MCP_ALLOWED_LOGINS_FILE` | `/config/allowed-logins` | Read when `MCP_ALLOWED_LOGINS` is empty. |
 | `MCP_ALLOWED_GOOGLE_EMAILS_FILE` | `/config/allowed-google-emails` | Read when `MCP_ALLOWED_GOOGLE_EMAILS` is empty. |
 | `MCP_LISTEN` | `unix:/run/unifi-mcp/mcp.sock` | The tailnet listener. A TCP address is refused unless it is loopback and `MCP_ALLOW_LOOPBACK_TCP=true`. |
-| `MCP_PUBLIC_LISTEN` | `unix:/run/unifi-mcp/public.sock` | The connector's listener. |
+| `MCP_PUBLIC_LISTEN` | `unix:/run/unifi-mcp-public/public.sock` | The connector's listener. Keep it in a folder of its own: that folder is all the tunnel container mounts. |
 | `MCP_ALLOW_LOOPBACK_TCP` | `false` | Allows a loopback `MCP_LISTEN`, as in guide 1. |
 | `MCP_DATA_DIR` | `/data` | Where the connector keeps its sign-in store and keys. |
 | `MCP_LAN_LISTEN` | off | The token-only LAN listener: an IP address and a port, e.g. `http://0.0.0.0:7420`. Serves `/mcp` and `/healthz` over plain HTTP; needs `MCP_LAN_ACCESS_TOKEN`. `docker-compose.lan.yml` sets it. |
@@ -568,7 +591,7 @@ deploy an app that declares a key that is unset or not granted to it). `<host>` 
    `https://<host>/signin-google`. Store the client ID and secret with `fleet-key set GOOGLE_CLIENT_ID` and
    `fleet-key set GOOGLE_CLIENT_SECRET`, then `fleet-key allow` each for `unifi-mcp`.
 2. Owner, Cloudflare Zero Trust: as in [guide 2 step 3](#step-3-cloudflare-tunnel), route `<host>` to
-   `unix:/run/unifi-mcp/public.sock`. Store the token with `fleet-key set UNIFI_MCP_TUNNEL_TOKEN` and `fleet-key allow` it.
+   `unix:/run/unifi-mcp-public/public.sock`. Store the token with `fleet-key set UNIFI_MCP_TUNNEL_TOKEN` and `fleet-key allow` it.
 3. Owner: put your Google address in `config/allowed-google-emails`, one per line:
    `echo 'you@example.com' | sudo tee allowed-google-emails >/dev/null`.
 4. Owner, only if the tunnel will not connect: fleet-mini may be blocked from Cloudflare on outbound port 7844. Opening it
@@ -577,6 +600,20 @@ deploy an app that declares a key that is unset or not granted to it). `<host>` 
    generates it), `MCP_PUBLIC_BASE_URL`, `./data:/data` and the `cloudflared` sidecar. No ports are published.
 6. In Claude: Settings, Connectors, Add custom connector, URL `https://<host>/mcp`. Sign in with Google, approve,
    and ask Claude to call `getting_started`.
+
+#### Migration: the public socket's own folder
+
+The release that moves the public socket out of `./run` changes the live tunnel's origin. The connector is down from the
+deploy until step 3 is done; the tailnet side keeps working throughout.
+
+1. Owner, on fleet-mini, before the deploy: create `run-public` next to `run`, with the same owner, unless Fleet has
+   already made it:
+   `cd /srv/fleet/apps/unifi-mcp && sudo install -d -o "$(stat -c %u run)" -g "$(stat -c %g run)" -m 700 run-public`.
+2. Deploy (the owner merges the release). `deploy/compose.yaml` mounts `./run-public` into both containers and no longer
+   mounts `./run` into `cloudflared`.
+3. Owner, Cloudflare Zero Trust: edit the route for `<host>`, Service URL `unix:/run/unifi-mcp-public/public.sock`.
+4. Check: the logs have no `Public socket not bound` line, and `https://<host>/healthz` answers `ok`. The tailnet route
+   (`tailscale serve` on `run/mcp.sock`) needs no change. The old `run/public.sock` can be deleted.
 
 #### Allow-list behaviour
 
