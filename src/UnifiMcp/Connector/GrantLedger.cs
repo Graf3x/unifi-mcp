@@ -119,28 +119,35 @@ public sealed class GrantLedger(SqliteOAuthStore store, TimeProvider time, Setti
             await store.RevokeFamilyAsync(stored.FamilyId, ct);
             return new GrantRefused(GrantRefusal.NotAdmitted, NotAllowedAnyMore(settings), who, $"{admitted}; family revoked");
         }
+        // A grant that no longer stands is refused before signing, so a signer that cannot work never hides that refusal.
+        // The write checks again, for a change made while the access token is signed.
+        if (RotationRefused(await store.GetStandingAsync(stored.User.Subject, client.ConsentKey, stored.FamilyId, ct), who) is { } early)
+            return early;
         var access = sign is null ? null : await sign(stored.User, stored.Scope, ct);
         var (next, successor) = NewRefreshToken(client, stored.FamilyId, stored.Scope, stored.User);
-        switch (await store.RotateRefreshTokenAsync(hash, successor, client.ConsentKey, ct))
-        {
-            case GrantWrite.Done:
-                return new GrantIssued(stored.User, stored.Scope, next, access);
-            case GrantWrite.FamilyRevoked:
-                return new GrantRefused(GrantRefusal.Revoked, "Access was revoked.", who, "refresh token's family is revoked");
-            case GrantWrite.ConsentWithdrawn:
-                return new GrantRefused(GrantRefusal.ConsentWithdrawn, "Consent was withdrawn.", who);
-            default:
-                // Another request redeemed (or revoked) this token between our read and our write: treat as reuse.
-                await store.RevokeFamilyAsync(stored.FamilyId, ct);
-                return new GrantRefused(GrantRefusal.Reuse, ReuseDetected, who, "concurrent refresh token reuse; family revoked");
-        }
+        var written = await store.RotateRefreshTokenAsync(hash, successor, client.ConsentKey, ct);
+        if (written == GrantWrite.Done) return new GrantIssued(stored.User, stored.Scope, next, access);
+        if (RotationRefused(written, who) is { } refused) return refused;
+        // Another request redeemed (or revoked) this token between our read and our write: treat as reuse.
+        await store.RevokeFamilyAsync(stored.FamilyId, ct);
+        return new GrantRefused(GrantRefusal.Reuse, ReuseDetected, who, "concurrent refresh token reuse; family revoked");
     }
+
+    /// <summary>Why a rotation cannot be written, or null when it is done or its token was spent by someone else.</summary>
+    private static GrantRefused? RotationRefused(GrantWrite write, string who) => write switch
+    {
+        GrantWrite.FamilyRevoked => new GrantRefused(GrantRefusal.Revoked, "Access was revoked.", who, "refresh token's family is revoked"),
+        GrantWrite.ConsentWithdrawn => new GrantRefused(GrantRefusal.ConsentWithdrawn, "Consent was withdrawn.", who),
+        // Ran out, unused, while the access token was signed: nobody else holds it, so it is not reuse.
+        GrantWrite.Expired => new GrantRefused(GrantRefusal.Invalid, InvalidRefresh, who, "refresh token expired"),
+        _ => null,
+    };
 
     /// <summary>
     /// Trades an authorization code for the first refresh token of the family it was issued under, while that family is
     /// still the owner's consent. The code is spent before it is checked, so a wrong verifier or redirect burns it. An
     /// empty <paramref name="redirectUri"/> means the client sent none. <paramref name="sign"/> makes the access token
-    /// before the refresh token is saved.
+    /// before the refresh token is saved; the code is already spent by then.
     /// </summary>
     internal async Task<GrantOutcome> ExchangeAsync(string code, string verifier, string redirectUri, Client client, AccessTokenSigner? sign = null,
         CancellationToken ct = default)
@@ -157,18 +164,25 @@ public sealed class GrantLedger(SqliteOAuthStore store, TimeProvider time, Setti
         if (OwnerAdmission.Admit(stored.User, settings) is var admitted && admitted != Admission.Allowed)
             return new GrantRefused(GrantRefusal.NotAdmitted, NotAllowedAnyMore(settings), who, admitted.ToString());
 
-        var access = sign is null ? null : await sign(stored.User, stored.Scope, ct);
         // A code mints only into the family it was issued under, and only while that family is the owner's consent: a
         // code from before a disconnect, or from a consent given again since, yields nothing. The next authorize shows
-        // the consent page again, and that starts a fresh family.
+        // the consent page again, and that starts a fresh family. Checked before signing, so a signer that cannot work
+        // never hides that refusal, and again as the token is saved.
+        if (ExchangeRefused(await store.GetStandingAsync(stored.User.Subject, client.ConsentKey, stored.FamilyId, ct), who) is { } early)
+            return early;
+        var access = sign is null ? null : await sign(stored.User, stored.Scope, ct);
         var (refresh, first) = NewRefreshToken(client, stored.FamilyId, stored.Scope, stored.User);
-        return await store.SaveFirstRefreshTokenAsync(first, client.ConsentKey, ct) switch
-        {
-            GrantWrite.Done => new GrantIssued(stored.User, stored.Scope, refresh, access),
-            GrantWrite.FamilyRevoked => new GrantRefused(GrantRefusal.Revoked, "Access was revoked. Connect the application again.", who, "consent's family is revoked"),
-            _ => new GrantRefused(GrantRefusal.ConsentWithdrawn, "Consent was withdrawn.", who),
-        };
+        var written = await store.SaveFirstRefreshTokenAsync(first, client.ConsentKey, ct);
+        return (GrantOutcome?)ExchangeRefused(written, who) ?? new GrantIssued(stored.User, stored.Scope, refresh, access);
     }
+
+    /// <summary>Why a code's first refresh token cannot be written, or null when it can.</summary>
+    private static GrantRefused? ExchangeRefused(GrantWrite write, string who) => write switch
+    {
+        GrantWrite.Done => null,
+        GrantWrite.FamilyRevoked => new GrantRefused(GrantRefusal.Revoked, "Access was revoked. Connect the application again.", who, "consent's family is revoked"),
+        _ => new GrantRefused(GrantRefusal.ConsentWithdrawn, "Consent was withdrawn.", who),
+    };
 
     /// <summary>
     /// RFC 7009: a client gives back a refresh token (live or already used) and its whole family is revoked. Null for a
