@@ -11,8 +11,10 @@ public enum GrantWrite
     FamilyRevoked,
     /// <summary>The owner's consent for the client is gone, or now belongs to another family.</summary>
     ConsentWithdrawn,
-    /// <summary>The presented refresh token was already used, revoked or expired by the time of the write.</summary>
+    /// <summary>The presented refresh token was already used or revoked by the time of the write.</summary>
     Spent,
+    /// <summary>The presented refresh token expired, unused, by the time of the write: nobody redeemed it.</summary>
+    Expired,
 }
 
 /// <summary>
@@ -429,7 +431,7 @@ public sealed class SqliteOAuthStore
         await using var conn = await OpenAsync(ct);
         await using var tx = (SqliteTransaction)await conn.BeginTransactionAsync(ct);
         var now = Now;
-        if (await StandingAsync(conn, tx, token, consentKey, now, ct) is var standing and not GrantWrite.Done) return standing;
+        if (await StandingAsync(conn, tx, token.FamilyId, token.User.Subject, consentKey, now, ct) is var standing and not GrantWrite.Done) return standing;
         await InsertRefreshTokenAsync(conn, tx, token, ct);
         await tx.CommitAsync(ct);
         return GrantWrite.Done;
@@ -439,14 +441,16 @@ public sealed class SqliteOAuthStore
     /// Trades the presented refresh token for <paramref name="successor"/> in one transaction: the family must still be
     /// the owner's standing consent and not revoked, the presented token must still be live and unused, then it is
     /// spent, the successor saved and that consent (and only while it is still that family's) marked used. Any failure
-    /// leaves all of it as it was, the presented token included.
+    /// leaves all of it as it was, the presented token included. A token that ran out unused is <see cref="GrantWrite.Expired"/>,
+    /// not <see cref="GrantWrite.Spent"/>: expiry is no sign that anyone else holds it.
     /// </summary>
     public async Task<GrantWrite> RotateRefreshTokenAsync(string presentedHash, RefreshToken successor, string consentKey, CancellationToken ct = default)
     {
         await using var conn = await OpenAsync(ct);
         await using var tx = (SqliteTransaction)await conn.BeginTransactionAsync(ct);
         var now = Now;
-        if (await StandingAsync(conn, tx, successor, consentKey, now, ct) is var standing and not GrantWrite.Done) return standing;
+        if (await StandingAsync(conn, tx, successor.FamilyId, successor.User.Subject, consentKey, now, ct) is var standing and not GrantWrite.Done)
+            return standing;
         await using (var spend = Cmd(conn, """
             UPDATE refresh_tokens SET redeemed = 1
             WHERE token_hash = $hash AND family_id = $family AND redeemed = 0 AND revoked = 0 AND expires_at > $now
@@ -455,7 +459,7 @@ public sealed class SqliteOAuthStore
         {
             spend.Transaction = tx;
             await using var r = await spend.ExecuteReaderAsync(ct);
-            if (!await r.ReadAsync(ct)) return GrantWrite.Spent;
+            if (!await r.ReadAsync(ct)) return await ExpiredUnusedAsync(conn, tx, presentedHash, now, ct) ? GrantWrite.Expired : GrantWrite.Spent;
             while (await r.ReadAsync(ct)) { }
         }
         await InsertRefreshTokenAsync(conn, tx, successor, ct);
@@ -464,14 +468,35 @@ public sealed class SqliteOAuthStore
         return GrantWrite.Done;
     }
 
+    /// <summary>Whether the token is still there, unused and unrevoked, but past its expiry.</summary>
+    private static async Task<bool> ExpiredUnusedAsync(SqliteConnection conn, SqliteTransaction tx, string tokenHash, long now, CancellationToken ct)
+    {
+        await using var cmd = Cmd(conn, """
+            SELECT 1 FROM refresh_tokens WHERE token_hash = $hash AND redeemed = 0 AND revoked = 0 AND expires_at <= $now
+            """, ("$hash", tokenHash), ("$now", now));
+        cmd.Transaction = tx;
+        return await cmd.ExecuteScalarAsync(ct) is not null;
+    }
+
+    /// <summary>
+    /// Whether a token of <paramref name="familyId"/> may be issued now: <see cref="GrantWrite.Done"/>, or why not. The
+    /// same check the issuing writes make, for a caller that wants to refuse before doing anything costly; those writes
+    /// check again.
+    /// </summary>
+    public async Task<GrantWrite> GetStandingAsync(string subject, string consentKey, string familyId, CancellationToken ct = default)
+    {
+        await using var conn = await OpenAsync(ct);
+        return await StandingAsync(conn, null, familyId, subject, consentKey, Now, ct);
+    }
+
     /// <summary>Whether a token of this family may be issued now: its family not revoked, and still the owner's consent.</summary>
-    private static async Task<GrantWrite> StandingAsync(SqliteConnection conn, SqliteTransaction tx, RefreshToken token, string consentKey, long now,
-        CancellationToken ct)
+    private static async Task<GrantWrite> StandingAsync(SqliteConnection conn, SqliteTransaction? tx, string familyId, string subject, string consentKey,
+        long now, CancellationToken ct)
     {
         await using var cmd = Cmd(conn, $"""
             SELECT {FamilyRevokedSql("$family", "$cutoff")},
                    EXISTS (SELECT 1 FROM consents WHERE user_id = $user AND client_id = $client AND family_id = $family)
-            """, ("$family", token.FamilyId), ("$cutoff", CutoffAt(now)), ("$user", token.User.Subject), ("$client", consentKey));
+            """, ("$family", familyId), ("$cutoff", CutoffAt(now)), ("$user", subject), ("$client", consentKey));
         cmd.Transaction = tx;
         await using var r = await cmd.ExecuteReaderAsync(ct);
         await r.ReadAsync(ct);

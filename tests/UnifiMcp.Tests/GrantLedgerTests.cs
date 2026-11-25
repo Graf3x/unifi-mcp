@@ -714,6 +714,58 @@ public sealed class GrantLedgerTests : IDisposable
         Issued(await Ledger().RotateAsync(token, Client));
     }
 
+    private static Task<string> SignerThatFails(OAuthUser user, string scope, CancellationToken ct) =>
+        throw new System.Security.Cryptography.CryptographicException("keyring lost");
+
+    [Fact]
+    public async Task A_refresh_whose_consent_is_already_withdrawn_is_refused_without_signing()
+    {
+        var token = await GrantAsync();
+        await _store.DeleteConsentAsync(User.Subject, Client.ConsentKey);
+
+        var refused = Refused(await Ledger().RotateAsync(token, Client, SignerThatFails));
+
+        Assert.Equal(GrantRefusal.ConsentWithdrawn, refused.Kind);
+    }
+
+    [Fact]
+    public async Task A_code_whose_consent_is_already_withdrawn_is_refused_without_signing()
+    {
+        var code = await CodeAsync(withConsent: false);
+
+        var refused = Refused(await Ledger().ExchangeAsync(code, Verifier, Redirect, Client, SignerThatFails));
+
+        Assert.Equal(GrantRefusal.ConsentWithdrawn, refused.Kind);
+    }
+
+    [Fact]
+    public async Task A_code_whose_family_is_already_revoked_is_refused_without_signing()
+    {
+        var code = await CodeAsync();
+        await _store.RevokeFamilyAsync(Family);
+
+        var refused = Refused(await Ledger().ExchangeAsync(code, Verifier, Redirect, Client, SignerThatFails));
+
+        Assert.Equal(GrantRefusal.Revoked, refused.Kind);
+    }
+
+    [Fact]
+    public async Task A_refresh_token_that_expires_while_signing_is_refused_without_revoking_the_grant()
+    {
+        var token = await GrantAsync(expiresIn: TimeSpan.FromMinutes(1));
+        Task<string> SignSlowly(OAuthUser user, string scope, CancellationToken ct)
+        {
+            _time.Advance(TimeSpan.FromMinutes(1));
+            return Task.FromResult("at");
+        }
+
+        var refused = Refused(await Ledger().RotateAsync(token, Client, SignSlowly));
+
+        Assert.Equal(GrantRefusal.Invalid, refused.Kind);
+        Assert.False(await _store.IsFamilyRevokedAsync(Family));
+        Assert.Equal(Family, (await _store.GetConsentAsync(User.Subject, Client.ConsentKey))!.FamilyId);
+    }
+
     [Fact]
     public async Task Rotating_and_exchanging_sign_an_access_token_for_the_grant()
     {
@@ -749,13 +801,14 @@ public sealed class GrantLedgerTests : IDisposable
         Issued(await Ledger().RotateAsync(fresh, Client));
     }
 
-    /// <summary>Runs two calls on two threads, released together.</summary>
+    /// <summary>Runs two calls on two threads, released together; both finish before either's failure is thrown.</summary>
     private static async Task<(T1, T2)> BothAtOnceAsync<T1, T2>(Func<Task<T1>> first, Func<Task<T2>> second)
     {
         var go = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var a = Task.Run(async () => { await go.Task; return await first(); });
         var b = Task.Run(async () => { await go.Task; return await second(); });
         go.SetResult();
+        await Task.WhenAll(a, b);
         return (await a, await b);
     }
 

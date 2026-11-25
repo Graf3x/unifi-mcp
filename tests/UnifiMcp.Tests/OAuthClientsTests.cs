@@ -112,7 +112,7 @@ public sealed class OAuthClientsTests : IDisposable
     [InlineData("https://claude.ai:8443/cb", "redirect_uri 'https://claude.ai:8443/cb' is not same-origin with the client_id URL.")]
     [InlineData("https://evil.example/cb", "redirect_uri 'https://evil.example/cb' is not same-origin with the client_id URL.")]
     [InlineData("http://claude.ai/cb", "redirect_uri 'http://claude.ai/cb' is not same-origin with the client_id URL.")]
-    [InlineData("https://claude.ai/cb#here", "redirect_uri 'https://claude.ai/cb#here' is not a valid absolute URI.")]
+    [InlineData("https://claude.ai/cb#here", "redirect_uris must not contain a fragment.")]
     [InlineData("not a uri", "redirect_uri 'not a uri' is not a valid absolute URI.")]
     public async Task A_document_s_redirects_must_share_its_origin_or_be_loopback(string redirect, string? problem)
     {
@@ -200,14 +200,19 @@ public sealed class OAuthClientsTests : IDisposable
     }
 
     [Theory]
-    [InlineData("http://user@127.0.0.1/cb")]
-    [InlineData("https://user:pw@claude.ai/cb")]
-    [InlineData("https://claude.ai/cb#")]
-    public async Task A_document_redirect_with_user_info_or_a_fragment_is_refused(string redirect)
+    [InlineData("http://user@127.0.0.1/cb", "redirect_uris must not contain user info.")]
+    [InlineData("https://user:pw@claude.ai/cb", "redirect_uris must not contain user info.")]
+    [InlineData("https://user:pw@claude.ai:99999/cb", "redirect_uris must not contain user info.")]
+    [InlineData("https://claude.ai/cb#", "redirect_uris must not contain a fragment.")]
+    public async Task A_document_redirect_with_user_info_or_a_fragment_is_refused_without_echoing_it(string redirect, string problem)
     {
         _documents.Document = Document(redirect);
 
-        Assert.Equal((null, $"redirect_uri '{redirect}' is not a valid absolute URI."), await Clients().ResolveAsync(DocumentUrl));
+        var (client, refused) = await Clients().ResolveAsync(DocumentUrl);
+
+        Assert.Null(client);
+        Assert.Equal(problem, refused);
+        Assert.DoesNotContain(redirect, refused);
     }
 
     [Theory]
