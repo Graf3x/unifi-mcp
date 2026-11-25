@@ -6,18 +6,24 @@ using static UnifiMcp.ConsoleJson;
 namespace UnifiMcp;
 
 /// <summary>
-/// A page of the console's system log: the window (Unix milliseconds), the page, and the filters the console applies.
-/// A filter left null is not sent.
+/// A page of the console's system log over the last <paramref name="Hours"/>: the page, and the filters the console
+/// applies. A filter left null is not sent. The window's times are set when the console is asked, so the same question
+/// asked again within <see cref="ConsoleReads.CacheFor"/> is the same read.
 /// </summary>
 public sealed record SystemLogQuery(
-    [property: JsonPropertyName("timestampFrom")] long From,
-    [property: JsonPropertyName("timestampTo")] long To,
+    int Hours,
     int PageSize,
     int PageNumber,
     string[]? Categories,
     string[]? Events,
     string[]? Severities,
     string? SearchText);
+
+/// <summary>The span a system-log answer covers: the last <paramref name="Hours"/> up to <paramref name="To"/> (Unix milliseconds).</summary>
+public sealed record LogWindow(int Hours, long From, long To);
+
+/// <summary>A page of the system log and the window the console was asked about.</summary>
+public sealed record SystemLogPage(JsonElement Json, LogWindow Window);
 
 /// <summary>
 /// The console's internal API (the one its own UI uses), read through named reads for one site. That API was not built
@@ -37,10 +43,17 @@ public sealed partial class ConsoleReads(UnifiClient client, TimeProvider time)
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
+    /// <summary>An answer kept for <see cref="CacheFor"/>: when it was read by the steady clock, and by the wall clock (Unix milliseconds).</summary>
+    private sealed record Cached(long Stamp, long SentAt, UnifiResponse Response);
+
+    /// <summary>What goes over the wire for <see cref="SystemLogQuery"/>.</summary>
+    private sealed record SystemLogBody(long TimestampFrom, long TimestampTo, int PageSize, int PageNumber,
+        string[]? Categories, string[]? Events, string[]? Severities, string? SearchText);
+
     private readonly SemaphoreSlim _gate = new(1, 1);
-    private readonly Dictionary<string, (DateTimeOffset At, UnifiResponse Response)> _cache = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Cached> _cache = new(StringComparer.Ordinal);
     private double _tokens = Burst;
-    private DateTimeOffset _refilled = DateTimeOffset.MinValue;
+    private long? _refilled;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (TimeZoneInfo Zone, string Name)> _zones = new(StringComparer.Ordinal);
 
     /// <summary>A site by its id, name or internal name; omitted means the configured site.</summary>
@@ -55,24 +68,28 @@ public sealed partial class ConsoleReads(UnifiClient client, TimeProvider time)
     private static partial Regex SafeReference();
 
     /// <summary>
-    /// Every read ends here: cached, one at a time, and charged against the budget. Private, so the reads
-    /// <see cref="ConsoleSite"/> offers are the only requests that can exist, and their paths are fixed but for the
-    /// site's checked internal name and numbers.
+    /// Every read ends here: cached under <paramref name="cacheKey"/>, one at a time, and charged against the budget.
+    /// The body is made from the wall clock (Unix milliseconds) when the console is asked, which also comes back, so a
+    /// read over "the last hours" is cached by its question, not its times. Cache age and the budget follow the steady
+    /// clock, so setting the wall clock back or forward neither keeps an answer nor spends or refills the budget.
+    /// Private, so the reads <see cref="ConsoleSite"/> offers are the only requests that can exist, and their paths are
+    /// fixed but for the site's checked internal name and numbers.
     /// </summary>
-    private async Task<UnifiResponse> SendAsync(HttpMethod method, string path, string? body, CancellationToken ct)
+    private async Task<(UnifiResponse Response, long SentAt)> SendAsync(HttpMethod method, string path, string cacheKey, Func<long, string?> body, CancellationToken ct)
     {
-        if (client.Settings.Missing().Count > 0) return await client.SendInternalAsync(method, path, body, ct); // throws "not configured"
+        if (client.Settings.Missing().Count > 0) // throws "not configured"
+            return (await client.SendInternalAsync(method, path, body(time.GetUtcNow().ToUnixTimeMilliseconds()), ct), 0);
 
-        var cacheKey = $"{method} {path}\n{body}";
         await _gate.WaitAsync(ct);
         try
         {
-            var now = time.GetUtcNow();
-            if (_cache.TryGetValue(cacheKey, out var hit) && now - hit.At < CacheFor) return hit.Response;
-            foreach (var stale in _cache.Where(c => now - c.Value.At >= CacheFor).Select(c => c.Key).ToList()) _cache.Remove(stale);
+            var now = time.GetTimestamp();
+            bool Fresh(Cached c) => time.GetElapsedTime(c.Stamp, now) < CacheFor;
+            if (_cache.TryGetValue(cacheKey, out var hit) && Fresh(hit)) return (hit.Response, hit.SentAt);
+            foreach (var stale in _cache.Where(c => !Fresh(c.Value)).Select(c => c.Key).ToList()) _cache.Remove(stale);
 
-            if (_refilled != DateTimeOffset.MinValue)
-                _tokens = Math.Min(Burst, _tokens + (now - _refilled).TotalSeconds * PerMinute / 60.0);
+            if (_refilled is { } last)
+                _tokens = Math.Min(Burst, _tokens + time.GetElapsedTime(last, now).TotalSeconds * PerMinute / 60.0);
             _refilled = now;
             if (_tokens < 1)
             {
@@ -81,9 +98,10 @@ public sealed partial class ConsoleReads(UnifiClient client, TimeProvider time)
             }
             _tokens -= 1;
 
-            var response = await client.SendInternalAsync(method, path, body, ct);
-            if (response.Ok) _cache[cacheKey] = (now, response);
-            return response;
+            var sentAt = time.GetUtcNow().ToUnixTimeMilliseconds();
+            var response = await client.SendInternalAsync(method, path, body(sentAt), ct);
+            if (response.Ok) _cache[cacheKey] = new Cached(now, sentAt, response);
+            return (response, sentAt);
         }
         finally
         {
@@ -94,7 +112,25 @@ public sealed partial class ConsoleReads(UnifiClient client, TimeProvider time)
     /// <summary>An answer as JSON; non-2xx and a <c>meta.rc</c> other than ok become a <see cref="UnifiError"/>.</summary>
     internal async Task<JsonElement> JsonAsync(HttpMethod method, string path, object? body, CancellationToken ct)
     {
-        var r = await SendAsync(method, path, body is null ? null : JsonSerializer.Serialize(body, Json), ct);
+        var text = body is null ? null : JsonSerializer.Serialize(body, Json);
+        var (r, _) = await SendAsync(method, path, $"{method} {path}\n{text}", _ => text, ct);
+        return Parse(method, path, r);
+    }
+
+    /// <summary>
+    /// A page of the system log over the last hours up to now. Cached by the question (the site's path, the hours, the
+    /// page and the filters), and the window that comes back is the one its data covers.
+    /// </summary>
+    internal async Task<SystemLogPage> SystemLogAsync(string path, SystemLogQuery q, CancellationToken ct)
+    {
+        var span = q.Hours * 3_600_000L;
+        var (r, to) = await SendAsync(HttpMethod.Post, path, $"{HttpMethod.Post} {path}\nlast {JsonSerializer.Serialize(q, Json)}",
+            now => JsonSerializer.Serialize(new SystemLogBody(now - span, now, q.PageSize, q.PageNumber, q.Categories, q.Events, q.Severities, q.SearchText), Json), ct);
+        return new SystemLogPage(Parse(HttpMethod.Post, path, r), new LogWindow(q.Hours, to - span, to));
+    }
+
+    private static JsonElement Parse(HttpMethod method, string path, UnifiResponse r)
+    {
         var name = $"{method} {path.Split('?')[0]}";
         if (!r.Ok) throw new UnifiError($"The console answered {r.Status} to {name}: {Short(r.Body)}");
         JsonElement json;
@@ -181,9 +217,10 @@ public sealed class ConsoleSite
     /// <summary>Each WAN link's failover state.</summary>
     public Task<JsonElement> WanStatusAsync(CancellationToken ct) => _reads.JsonAsync(HttpMethod.Get, $"{V2}/wan/load-balancing/status", null, ct);
 
-    public Task<JsonElement> SystemLogAsync(SystemLogQuery query, CancellationToken ct) => _reads.JsonAsync(HttpMethod.Post, $"{V2}/system-log/all", query, ct);
+    /// <summary>A page of the system log over the last hours, with the window it covers.</summary>
+    public Task<SystemLogPage> SystemLogAsync(SystemLogQuery query, CancellationToken ct) => _reads.SystemLogAsync($"{V2}/system-log/all", query, ct);
 
-    /// <summary>Event counts per category and event between two times (Unix milliseconds).</summary>
-    public Task<JsonElement> SystemLogCountAsync(long from, long to, CancellationToken ct) =>
-        _reads.JsonAsync(HttpMethod.Post, $"{V2}/system-log/count", new { timestampFrom = from, timestampTo = to }, ct);
+    /// <summary>Event counts per category and event over a window, such as the one a page of the log covered.</summary>
+    public Task<JsonElement> SystemLogCountAsync(LogWindow window, CancellationToken ct) =>
+        _reads.JsonAsync(HttpMethod.Post, $"{V2}/system-log/count", new { timestampFrom = window.From, timestampTo = window.To }, ct);
 }
