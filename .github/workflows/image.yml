@@ -28,6 +28,11 @@ jobs:
         with:
           dotnet-version: "10.0.x"
       - run: dotnet test unifi-mcp.slnx -c Release
+      # The Fleet build checks deploy/SHA256SUMS; a stale or incomplete one breaks it, so CI checks it too.
+      - name: deploy/SHA256SUMS matches the sources
+        run: |
+          sha256sum -c --quiet deploy/SHA256SUMS
+          diff <(git ls-files src/UnifiMcp | LC_ALL=C sort) <(sed 's/^[0-9a-f]* \*//' deploy/SHA256SUMS)
 
   image-check:
     needs: test

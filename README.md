@@ -474,7 +474,7 @@ Note the image by digest, stop the server so SQLite finishes its write-ahead log
 ```sh
 stamp=$(date +%Y%m%d-%H%M%S)
 mkdir -p backups && chmod 700 backups && mkdir -m 700 "backups/$stamp"
-docker image inspect --format '{{index .RepoDigests 0}}' ghcr.io/graf3x/unifi-mcp:latest > "backups/$stamp/image"
+docker image inspect --format '{{index .RepoDigests 0}}' "$(docker compose images -q unifi-mcp)" > "backups/$stamp/image"
 docker compose stop unifi-mcp
 (umask 077 && tar -cf "backups/$stamp/data.tar" data)
 docker compose start unifi-mcp

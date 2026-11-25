@@ -5,6 +5,71 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+Two changes need you to act when you update. With a Cloudflare tunnel, move the public socket to its own folder
+(README, Updating) or the connector stays down. With writes on, a client that cannot show the confirmation form is now
+refused every write unless you set `UNIFI_ALLOW_CONFIRM_FALLBACK=true`.
+
+### Security
+
+- Write tools need a person's approval by default. A client that cannot show the confirmation form (MCP 2026-07-28
+  form elicitation) is refused every write, and `confirm` no longer runs it. The old `confirm` fallback is still there
+  if you set `UNIFI_ALLOW_CONFIRM_FALLBACK=true`; with it, the model approves its own writes on such clients.
+- The confirmation form shows the whole change, every argument and the full body, with nothing cut. A change too big
+  for the form (over 10,000 characters) is refused and nothing is sent.
+- Credentials the console sends back (Wi-Fi passphrases, per-network keys, RADIUS secrets, the internal API's `x_`
+  fields, hotspot voucher codes) are replaced with `[redacted]` in every answer, echoed write and error, writes on or
+  off. Names, ids and other settings still show. An answer that is not JSON is withheld with a short line saying so. A
+  write whose body carries `[redacted]` is refused, so putting back an object read that way cannot set a passphrase to
+  the mark.
+- The public socket has a folder of its own (`./run-public` on the host, `/run/unifi-mcp-public/public.sock` in the
+  container), and both tunnel Compose files mount only that folder into the tunnel container, so it can no longer
+  reach the tailnet socket. The server warns when the two sockets share a folder.
+- At startup the server removes only a stale socket at a configured socket path. An ordinary file, a link or a live
+  listener is left alone and the start stops with a message naming the path. A lock file next to each socket stops a
+  second server on the same folder from unlinking the first one's socket.
+- A site name or internal name that more than one site has is refused, with each candidate's name and id; an id still
+  wins. A write looks a site name up again on every call, so a renamed site whose old name passed to another site
+  cannot receive the change, and a target that changes while the form is open is asked about again.
+- The images run ASP.NET Core 10.0.15 (from 10.0.9) and build with SDK 10.0.404.
+
+### Added
+
+- `UNIFI_REVEAL_SECRETS=voucher-codes` shows hotspot voucher codes, for deployments that hand them out through Claude.
+  Any other value stops the server at startup. Wi-Fi passphrases and keys cannot be revealed.
+- `UNIFI_ALLOW_CONFIRM_FALLBACK`, described above.
+- README: "Backup and rollback" (back up `./data` before an update, keep `UNIFI_MCP_DATA_KEY` apart, record the image
+  digest, roll back image and data together) and "Sharing one server" (one console key for every caller and site, who
+  each way in identifies, how to revoke each credential, separate instances for groups that don't trust each other).
+- CI starts every image through `tools/image-gate.sh` on amd64 and arm64: a healthy start as a non-root user on a
+  read-only filesystem, a setup listener that serves only `/setup`, private sockets, and the public socket in its own
+  folder. A release pushes by digest, gates that digest, and only then tags it. A Linux Compose test checks the tunnel
+  container can neither see nor open the tailnet socket. CI also checks `deploy/SHA256SUMS` against the sources.
+
+### Changed
+
+- `oauth.db` moves to schema version 2. On upgrade, outstanding authorization codes are expired (clients just connect
+  again) and consents of already revoked grants are removed. Registrations, live grants and the signing key are kept.
+- Every console call is bounded: at most 4 requests at the console at once, 30 seconds and 16 MB per request (wait and
+  body included, declared length or not), 5,000 items per paged list. One composite answer makes at most 100 requests
+  and reads at most 32 MB; when it stops early it starts with "Partial answer" and says how to narrow the question. A
+  device view over 256 KB is replaced by a message asking for one device.
+
+### Fixed
+
+- An authorization code mints only into the grant of the consent that issued it, while that consent stands, so a code
+  from before a disconnect and reapproval yields no tokens.
+- Revoking a grant (token reuse, a client's revoke, an owner no longer allowed, disconnect) withdraws its consent too,
+  so the client must be approved again even after the 60-day record of the revocation is swept.
+- A refresh, a code under a standing consent and an approval each commit as one transaction. A failed write leaves the
+  presented refresh token usable, and a disconnect or reapproval at the same moment is no longer overwritten.
+- A loopback redirect must match the declared address exactly apart from its port. Redirects with a fragment or user
+  info are refused at registration, in metadata documents and on authorize.
+- Asking `system_log` the same question again within ten seconds no longer spends the console budget twice, and the
+  counts cover the same window as the events. The internal API's cache and budget follow the steady clock, so setting
+  the system clock neither keeps stale answers nor empties the budget.
+- When a network's details cannot be read, `dhcp_reservation_faq` and `who_is_on_network_faq` say its subnet membership
+  is unknown and name what could not be read, instead of calling a client outside every subnet.
+
 ## 0.10.0
 
 ### Added
