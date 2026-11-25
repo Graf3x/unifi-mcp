@@ -767,6 +767,24 @@ public sealed class GrantLedgerTests : IDisposable
     }
 
     [Fact]
+    public async Task A_refresh_token_swept_away_while_signing_is_refused_without_revoking_the_grant()
+    {
+        var token = await GrantAsync(expiresIn: TimeSpan.FromMinutes(1));
+        async Task<string> SignWhileTheSweepRuns(OAuthUser user, string scope, CancellationToken ct)
+        {
+            _time.Advance(TimeSpan.FromDays(1));
+            await _store.SweepExpiredAsync(ct); // the hourly sweep deletes the expired row before the write
+            return "at";
+        }
+
+        var refused = Refused(await Ledger().RotateAsync(token, Client, SignWhileTheSweepRuns));
+
+        Assert.Equal(GrantRefusal.Invalid, refused.Kind);
+        Assert.False(await _store.IsFamilyRevokedAsync(Family));
+        Assert.Equal(Family, (await _store.GetConsentAsync(User.Subject, Client.ConsentKey))!.FamilyId);
+    }
+
+    [Fact]
     public async Task Rotating_and_exchanging_sign_an_access_token_for_the_grant()
     {
         var code = await CodeAsync();

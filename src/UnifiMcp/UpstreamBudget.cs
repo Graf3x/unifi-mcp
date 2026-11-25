@@ -60,8 +60,11 @@ internal sealed class UpstreamBudget
             throw Spent($"This answer has made its {MaxRequests} requests to the console, so {what} was not sent. {Narrow}");
     }
 
-    /// <summary>Charges what one answer took.</summary>
-    public void Read(long bytes) => Interlocked.Add(ref _bytes, bytes);
+    /// <summary>
+    /// Charges bytes read, and says whether the answer is still within its bytes. Charge and check are one atomic step,
+    /// so reads at once cannot both pass on the same bytes left: each stops at the first chunk that goes past them.
+    /// </summary>
+    public bool Read(long bytes) => Interlocked.Add(ref _bytes, bytes) <= MaxBytes;
 
     /// <summary>The refusal for a request whose answer would go past the bytes left.</summary>
     public UnifiError OutOfBytes(string what) =>

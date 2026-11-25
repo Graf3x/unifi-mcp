@@ -148,10 +148,12 @@ public sealed class Clients(SqliteOAuthStore store, IClientMetadataDocuments doc
         foreach (var raw in document.RedirectUris)
         {
             // An address with user info may carry a password, and problems reach the client and the log: never echo one.
+            // Nor one with a fragment, checked before parsing so an address that does not parse is not echoed either.
             if (raw is not null && Authority(raw) is { } written && written.Contains('@')) return NoUserInfo;
+            if (raw is not null && raw.Contains('#')) return NoFragment;
             if (!Uri.TryCreate(raw, UriKind.Absolute, out var r)) return $"redirect_uri '{raw}' is not a valid absolute URI.";
             if (HasUserInfo(raw, r)) return NoUserInfo;
-            if (!string.IsNullOrEmpty(r.Fragment) || raw.Contains('#')) return NoFragment;
+            if (!string.IsNullOrEmpty(r.Fragment)) return NoFragment;
             if (IsLoopback(r)) continue;
             if (r.Scheme != origin.Scheme || !string.Equals(r.Host, origin.Host, StringComparison.OrdinalIgnoreCase) || r.Port != origin.Port)
                 return $"redirect_uri '{raw}' is not same-origin with the client_id URL.";

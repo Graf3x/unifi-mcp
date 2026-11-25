@@ -224,6 +224,22 @@ public sealed class UpstreamBudgetTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task Reads_at_once_never_accept_more_bytes_than_the_budget_holds()
+    {
+        // Many readers charge chunks at the same moment; the chunks each one is allowed to keep add up to the budget at most.
+        var budget = UpstreamBudget.Open();
+        const long chunk = 64 * 1024;
+        long accepted = 0;
+        await Task.WhenAll(Enumerable.Range(0, 16).Select(_ => Task.Run(() =>
+        {
+            while (budget.Read(chunk)) Interlocked.Add(ref accepted, chunk);
+        })));
+
+        Assert.True(accepted <= UpstreamBudget.MaxBytes, $"{accepted} bytes accepted");
+        Assert.Equal(0, budget.BytesLeft);
+    }
+
     // --- paged lists ----------------------------------------------------------------------------------------------------
 
     /// <summary>A paged list whose total the console reports from <paramref name="total"/>, given the offset asked for.</summary>

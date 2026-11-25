@@ -441,8 +441,9 @@ public sealed class SqliteOAuthStore
     /// Trades the presented refresh token for <paramref name="successor"/> in one transaction: the family must still be
     /// the owner's standing consent and not revoked, the presented token must still be live and unused, then it is
     /// spent, the successor saved and that consent (and only while it is still that family's) marked used. Any failure
-    /// leaves all of it as it was, the presented token included. A token that ran out unused is <see cref="GrantWrite.Expired"/>,
-    /// not <see cref="GrantWrite.Spent"/>: expiry is no sign that anyone else holds it.
+    /// leaves all of it as it was, the presented token included. Only a token that is still there and was already used is
+    /// <see cref="GrantWrite.Spent"/> (reuse); one that ran out unused, or was swept away meanwhile, is
+    /// <see cref="GrantWrite.Expired"/>: neither is a sign that anyone else holds it.
     /// </summary>
     public async Task<GrantWrite> RotateRefreshTokenAsync(string presentedHash, RefreshToken successor, string consentKey, CancellationToken ct = default)
     {
@@ -459,7 +460,7 @@ public sealed class SqliteOAuthStore
         {
             spend.Transaction = tx;
             await using var r = await spend.ExecuteReaderAsync(ct);
-            if (!await r.ReadAsync(ct)) return await ExpiredUnusedAsync(conn, tx, presentedHash, now, ct) ? GrantWrite.Expired : GrantWrite.Spent;
+            if (!await r.ReadAsync(ct)) return await RedeemedAsync(conn, tx, presentedHash, ct) ? GrantWrite.Spent : GrantWrite.Expired;
             while (await r.ReadAsync(ct)) { }
         }
         await InsertRefreshTokenAsync(conn, tx, successor, ct);
@@ -468,12 +469,12 @@ public sealed class SqliteOAuthStore
         return GrantWrite.Done;
     }
 
-    /// <summary>Whether the token is still there, unused and unrevoked, but past its expiry.</summary>
-    private static async Task<bool> ExpiredUnusedAsync(SqliteConnection conn, SqliteTransaction tx, string tokenHash, long now, CancellationToken ct)
+    /// <summary>Whether the token is still there and was already used: the only case that is reuse.</summary>
+    private static async Task<bool> RedeemedAsync(SqliteConnection conn, SqliteTransaction tx, string tokenHash, CancellationToken ct)
     {
         await using var cmd = Cmd(conn, """
-            SELECT 1 FROM refresh_tokens WHERE token_hash = $hash AND redeemed = 0 AND revoked = 0 AND expires_at <= $now
-            """, ("$hash", tokenHash), ("$now", now));
+            SELECT 1 FROM refresh_tokens WHERE token_hash = $hash AND redeemed = 1
+            """, ("$hash", tokenHash));
         cmd.Transaction = tx;
         return await cmd.ExecuteScalarAsync(ct) is not null;
     }

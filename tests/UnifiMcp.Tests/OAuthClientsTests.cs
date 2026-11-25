@@ -204,6 +204,7 @@ public sealed class OAuthClientsTests : IDisposable
     [InlineData("https://user:pw@claude.ai/cb", "redirect_uris must not contain user info.")]
     [InlineData("https://user:pw@claude.ai:99999/cb", "redirect_uris must not contain user info.")]
     [InlineData("https://claude.ai/cb#", "redirect_uris must not contain a fragment.")]
+    [InlineData("https://claude.ai:99999/cb#secret", "redirect_uris must not contain a fragment.")]
     public async Task A_document_redirect_with_user_info_or_a_fragment_is_refused_without_echoing_it(string redirect, string problem)
     {
         _documents.Document = Document(redirect);

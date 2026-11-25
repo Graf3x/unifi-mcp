@@ -149,12 +149,7 @@ public sealed class ConsoleTransport
         {
             for (int n; (n = await stream.ReadAsync(chunk, ct)) > 0;)
             {
-                if (budget is not null)
-                {
-                    var over = n > budget.BytesLeft;
-                    budget.Read(n);
-                    if (over) throw budget.OutOfBytes(what);
-                }
+                if (budget is not null && !budget.Read(n)) throw budget.OutOfBytes(what);
                 if (body.Length + n > MaxResponseBytes) throw TooLarge();
                 body.Write(chunk, 0, n);
             }
