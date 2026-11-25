@@ -31,8 +31,11 @@ jobs:
       # The Fleet build checks deploy/SHA256SUMS; a stale or incomplete one breaks it, so CI checks it too.
       - name: deploy/SHA256SUMS matches the sources
         run: |
+          set -euo pipefail
           sha256sum -c --quiet deploy/SHA256SUMS
-          diff <(git ls-files src/UnifiMcp | LC_ALL=C sort) <(sed 's/^[0-9a-f]* \*//' deploy/SHA256SUMS)
+          tracked=$(git ls-files src/UnifiMcp | LC_ALL=C sort)
+          listed=$(sed 's/^[0-9a-f]* \*//' deploy/SHA256SUMS)
+          diff <(printf '%s\n' "$tracked") <(printf '%s\n' "$listed")
 
   image-check:
     needs: test
@@ -169,5 +172,9 @@ jobs:
             docker buildx imagetools inspect --raw "$1" \
               | jq -r '.manifests[] | select(.annotations["vnd.docker.reference.type"] != "attestation-manifest") | .digest' | sort
           }
-          diff <(platforms "${IMAGE}@${DIGEST}") <(platforms "$version")
+          # Each inspection in an assignment of its own, so a failed one stops the step instead of reading as empty.
+          gated=$(platforms "${IMAGE}@${DIGEST}")
+          tagged=$(platforms "$version")
+          if [ -z "$gated" ]; then echo "no platform images under ${IMAGE}@${DIGEST}" >&2; exit 1; fi
+          diff <(printf '%s\n' "$gated") <(printf '%s\n' "$tagged")
           echo "Tagged ${IMAGE}@${DIGEST}:"; jq -r '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON"

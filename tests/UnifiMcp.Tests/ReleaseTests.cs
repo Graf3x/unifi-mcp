@@ -109,6 +109,21 @@ public sealed partial class ReleaseTests
         Assert.True(p.ExitCode == 0, err);
     }
 
+    [Fact]
+    public void A_failed_command_in_a_check_fails_the_check_instead_of_reading_as_empty()
+    {
+        // Bash drops the exit status of a process substitution and, under pipefail, a grep -q that stops reading early
+        // can fail its writer: either way a failed command reads as "nothing to report" and the check passes. Checks
+        // capture each command's output in an assignment, which set -e checks, and compare only what they captured.
+        foreach (var file in new[] { Path.Combine(".github", "workflows", "image.yml"), Path.Combine("tools", "image-gate.sh") })
+        {
+            var text = File.ReadAllText(Path.Combine(Root, file));
+            foreach (Match m in Regex.Matches(text, @"<\(([^)]*)\)"))
+                Assert.Matches(@"^printf '%s\\n' ""\$\w+""$", m.Groups[1].Value);
+            Assert.DoesNotMatch(@"\|\s*grep\s+-\w*q", text);
+        }
+    }
+
     // ---- Operator docs -----------------------------------------------------------------------------------------------
 
     private static readonly SetupGuide Guide = new(File.ReadAllText(Path.Combine(Root, "README.md")), new Settings());
