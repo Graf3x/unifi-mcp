@@ -5,6 +5,8 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 0.11.0
+
 Two changes need you to act when you update. With a Cloudflare tunnel, move the public socket to its own folder
 (README, Updating) or the connector stays down. With writes on, a client that cannot show the confirmation form is now
 refused every write unless you set `UNIFI_ALLOW_CONFIRM_FALLBACK=true`.
