@@ -23,6 +23,7 @@ unless you prefer otherwise.
 - The setup page: anything that shows it, or the sign-in code, to someone without the link from the server's log, or
   reaches it through the tunnel or the tailnet.
 - Certificate checks being skipped or weakened.
-- Writes happening without `UNIFI_ALLOW_WRITES=true` and a matching `confirm`.
+- Writes happening without `UNIFI_ALLOW_WRITES=true` and the owner's approval: the confirmation form where the client
+  can show one (a write the model approved for itself there is a vulnerability), a matching `confirm` elsewhere.
 
 Weaknesses in UniFi itself belong with Ubiquiti, not here.

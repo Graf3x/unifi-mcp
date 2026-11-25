@@ -39,7 +39,7 @@ real thing: here seven checks pass, and the tunnel check says what is wrong and 
 | Who signed in to the console in the last day? | `system_log` |
 | Which devices are offline or have firmware updates waiting? | `network_health_faq` |
 | What ports are forwarded to the internet? | `list_port_forwards` |
-| With writes on: add a DNS record so `nas.home` points at 192.168.1.20 | `create_dns_policy`, after a preview you confirm |
+| With writes on: add a DNS record so `nas.home` points at 192.168.1.20 | `create_dns_policy`, after you approve it |
 
 Anything else the API offers, Claude finds with `search_operations` and runs with `call_read_operation`.
 
@@ -62,7 +62,9 @@ Anything else the API offers, Claude finds with `search_operations` and runs wit
 ## Safety
 
 - Read-only by default. Write tools exist only when `UNIFI_ALLOW_WRITES` is exactly `true`; each is marked destructive and
-  needs `confirm` set to its own tool name, otherwise it returns a preview and sends nothing.
+  asks you to approve it. A client that can show a confirmation form (MCP 2026-07-28 elicitation, as Claude Code does)
+  shows you the change with Accept or Decline, and the model cannot approve it for you. Any other client needs `confirm`
+  set to the tool's own name, otherwise it returns a preview and sends nothing.
 - TLS to the console is pinned to a SHA-256 fingerprint of its certificate or public key, or, with `UNIFI_CERT_TRUST=ca`,
   checked against a trusted CA. There is no default pin and no way to turn verification off.
 - The API key comes from the `UNIFI_API_KEY` environment variable, falling back to `/config/unifi-api-key` only when the
@@ -421,8 +423,9 @@ To build from your checkout instead of pulling the published image, uncomment `b
 
 ## Writes
 
-With `UNIFI_ALLOW_WRITES=true` the write tools appear; each still previews until called with `confirm` set to its own
-name. Set it back to `false` and restart to make the server read-only.
+With `UNIFI_ALLOW_WRITES=true` the write tools appear. Each asks you first: with a confirmation form where Claude can
+show one, otherwise by previewing until called with `confirm` set to its own name. The audit log says which way each
+change was approved. Set it back to `false` and restart to make the server read-only.
 
 ## Settings reference
 
@@ -472,8 +475,9 @@ All settings come from the environment (`.env` with Docker Compose). After chang
 API key. Claude reaches the server only the way you set up: locally, through your Cloudflare tunnel, over Tailscale, or
 over your LAN with a token.
 
-**Can Claude change my network?** Only if you set `UNIFI_ALLOW_WRITES=true`. Even then each change first comes back as a
-preview, and is sent only when Claude calls the tool again with `confirm`. You see that in the conversation.
+**Can Claude change my network?** Only if you set `UNIFI_ALLOW_WRITES=true`. Even then each change asks you first. Where
+Claude can show a confirmation form, you see the change and click Accept or Decline yourself. Elsewhere it comes back as a
+preview, and is sent only when Claude calls the tool again with `confirm`; you see that in the conversation.
 
 **Will it slow the console down?** The official API is made for this. The diagnostics tools also read the console's
 internal API, which is not, so those calls are limited to 30 a minute and repeats within 10 seconds come from a cache.

@@ -22,7 +22,7 @@ public static class McpHost
         - siteId is optional and takes a UUID or a name; it defaults to the configured site.
         - Tool descriptions are prefixed with their category, e.g. [Firewall]. Lists take offset, limit (max 200) and filter.
         - call_read_operation returns the console's JSON. Answers may be truncated; narrow with filter rather than paging blindly.
-        - Writes are off unless the owner enabled them. A write tool is marked destructive and needs confirm set to its own tool name; without that it returns a preview and sends nothing. Show the owner the preview before confirming.
+        - Writes are off unless the owner enabled them. A write tool is marked destructive. If your client can show the owner a confirmation form, the tool asks the owner itself and ignores confirm; if the owner declines, do not retry unless asked. Otherwise it needs confirm set to its own tool name; without that it returns a preview and sends nothing. Show the owner the preview before confirming.
         """;
 
     /// <param name="listenerOf">Tests only: replaces <see cref="Listeners.Of"/>, because a TestServer has no endpoint.</param>

@@ -5,7 +5,8 @@ using ModelContextProtocol.Server;
 
 namespace UnifiMcp;
 
-/// <summary>One MCP tool generated from one API operation. Writes are only created when the flag is on and need a confirm.</summary>
+/// <summary>One MCP tool generated from one API operation. Writes are only created when the flag is on and need the
+/// owner's approval (<see cref="WriteApproval"/>).</summary>
 public sealed class ApiTool(ApiOperation op, UnifiClient client) : McpServerTool
 {
     public override Tool ProtocolTool { get; } = new()
@@ -26,30 +27,55 @@ public sealed class ApiTool(ApiOperation op, UnifiClient client) : McpServerTool
 
     public override IReadOnlyList<object> Metadata { get; } = [];
 
-    public override ValueTask<CallToolResult> InvokeAsync(RequestContext<CallToolRequestParams> request, CancellationToken cancellationToken = default) =>
-        new(RunAsync(op, client, request.Params?.Arguments ?? new Dictionary<string, JsonElement>(), request, cancellationToken));
+    /// <summary>The arguments the schema names; it allows no others.</summary>
+    private readonly string[] _known = [.. op.InputSchema()["properties"]!.AsObject().Select(p => p.Key)];
 
-    /// <summary>One operation with its arguments: the write confirm, path and query, the call, the audit line.</summary>
+    public override ValueTask<CallToolResult> InvokeAsync(RequestContext<CallToolRequestParams> request, CancellationToken cancellationToken = default)
+    {
+        var args = request.Params?.Arguments ?? new Dictionary<string, JsonElement>();
+        // Refused before anything else: an argument the request never uses would still be shown on the owner's form.
+        var unknown = args.Keys.Where(k => !_known.Contains(k, StringComparer.Ordinal)).ToList();
+        if (unknown.Count > 0)
+            return new(ToolText.Error($"{op.ToolName} has no parameter {string.Join(", ", unknown.Select(u => $"'{u}'"))}. "
+                                      + $"It takes: {string.Join(", ", _known)}."));
+        return new(RunAsync(op, client, args, request, cancellationToken));
+    }
+
+    /// <summary>One operation with its arguments: the write's approval, path and query, the call, the audit line.</summary>
     internal static async Task<CallToolResult> RunAsync(ApiOperation op, UnifiClient client, IDictionary<string, JsonElement> args,
         RequestContext<CallToolRequestParams> request, CancellationToken cancellationToken)
     {
         var body = args.TryGetValue("body", out var b) ? b.GetRawText() : null;
-        if (op.IsWrite && Value(args, "confirm") != op.ToolName)
-            return ToolText.Ok($"Nothing was sent. {op.Method} {op.Path} changes the live network.\n"
-                               + $"Arguments: {JsonSerializer.Serialize(args.Where(a => a.Key != "confirm").ToDictionary())}\n"
-                               + $"To run it, call {op.ToolName} again with confirm set to exactly \"{op.ToolName}\".");
+        string? approval = null;
+        string? path = null;
         try
         {
+            // The request is built and checked first, so the owner approves the path that will be sent, and never a call
+            // that would then be refused for a missing argument.
             if (op.HasBody && body is null) throw new UnifiError("body is required.");
-            var path = await BuildPathAsync(op, client, args, cancellationToken);
+            path = await BuildPathAsync(op, client, args, cancellationToken);
+            if (op.IsWrite)
+                switch (WriteApproval.Decide(op, path, args, request))
+                {
+                    case WriteApproval.Stop stop: return stop.Result;
+                    case WriteApproval.Run run: approval = run.How; break;
+                }
             var response = await client.SendAsync(op.Method, path, op.HasBody ? body : null, cancellationToken);
-            Log(op, request, path, response.Status);
+            Log(op, request, path, response.Status.ToString(System.Globalization.CultureInfo.InvariantCulture), approval);
             if (!response.Ok) return ToolText.Error($"The console answered {response.Status} to {op.Method} {path.Split('?')[0]}: {response.Body}");
             return ToolText.Ok(response.Body.Length == 0 ? $"Done ({response.Status}, no content)." : response.Body);
         }
+        // An approved write that got no answer, or whose caller gave up waiting, may still have reached the console, so it
+        // keeps its approval on record.
         catch (Exception e) when (e is UnifiError or UnifiNotConfigured)
         {
+            if (approval is not null) Log(op, request, path!, "no answer", approval);
             return ToolText.Error(e.Message);
+        }
+        catch (OperationCanceledException) when (approval is not null)
+        {
+            Log(op, request, path!, "cancelled", approval);
+            throw;
         }
     }
 
@@ -86,10 +112,18 @@ public sealed class ApiTool(ApiOperation op, UnifiClient client) : McpServerTool
         : v.ValueKind is JsonValueKind.Number or JsonValueKind.True or JsonValueKind.False ? v.GetRawText()
         : null;
 
-    /// <summary>What was sent to the console: method, path and status only, never the body or arguments. <see cref="Audit.Calls"/> adds the call's outcome.</summary>
-    private static void Log(ApiOperation op, RequestContext<CallToolRequestParams> request, string path, int status) =>
-        Audit.Logger(request.Services)?.Log(Audit.Level(op.IsWrite), "{Login} {Tool} {Method} {Path} -> {Status}",
-            Audit.Login(request.User), op.ToolName, op.Method, path.Split('?')[0], status);
+    /// <summary>What was sent to the console: method, path and status only, never the body or arguments, and for a write
+    /// how it was approved. <see cref="Audit.Calls"/> adds the call's outcome.</summary>
+    private static void Log(ApiOperation op, RequestContext<CallToolRequestParams> request, string path, string status, string? approval)
+    {
+        var logger = Audit.Logger(request.Services);
+        if (approval is null)
+            logger?.Log(Audit.Level(op.IsWrite), "{Login} {Tool} {Method} {Path} -> {Status}",
+                Audit.Login(request.User), op.ToolName, op.Method, path.Split('?')[0], status);
+        else
+            logger?.Log(Audit.Level(op.IsWrite), "{Login} {Tool} {Method} {Path} -> {Status} ({Approval})",
+                Audit.Login(request.User), op.ToolName, op.Method, path.Split('?')[0], status, approval);
+    }
 }
 
 /// <summary>
@@ -109,8 +143,8 @@ public static class Audit
     public static LogLevel Level(bool write) => write ? LogLevel.Information : LogLevel.Debug;
 
     /// <summary>
-    /// The call-tool filter: one line per call of any tool, "{Login} {Tool} -> ok", "error" (isError) or "failed" (it threw).
-    /// A tool not marked read-only counts as a write.
+    /// The call-tool filter: one line per call of any tool, "{Login} {Tool} -> ok", "error" (isError), "asked" (it stopped to
+    /// ask the owner, see <see cref="WriteApproval"/>) or "failed" (it threw). A tool not marked read-only counts as a write.
     /// </summary>
     public static McpRequestHandler<CallToolRequestParams, CallToolResult> Calls(McpRequestHandler<CallToolRequestParams, CallToolResult> next) =>
         async (request, ct) =>
@@ -122,6 +156,11 @@ public static class Audit
                 var result = await next(request, ct);
                 outcome = result.IsError == true ? "error" : "ok";
                 return result;
+            }
+            catch (InputRequiredException)
+            {
+                outcome = "asked";
+                throw;
             }
             finally
             {

@@ -39,12 +39,13 @@ public class CatalogTests
     }
 
     [Fact]
-    public void Write_tools_require_confirm_and_their_body()
+    public void Write_tools_require_their_body_and_offer_confirm_as_the_fallback()
     {
         var schema = Catalog.Find("create_dns_policy")!.InputSchema();
         var required = schema["required"]!.AsArray().Select(n => n!.GetValue<string>()).ToList();
-        Assert.Contains("confirm", required);
+        Assert.DoesNotContain("confirm", required);
         Assert.Contains("body", required);
+        Assert.Contains("cannot show", schema["properties"]!["confirm"]!["description"]!.GetValue<string>());
     }
 
     [Fact]
