@@ -5,6 +5,8 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 0.9.0
+
 ### Added
 
 - Sign-in redirects back to Claude now name this server as their issuer (`iss`, RFC 9207), on success and on error,
