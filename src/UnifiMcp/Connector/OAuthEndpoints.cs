@@ -282,7 +282,11 @@ public static class OAuthEndpoints
     private static IResult CodeRedirect(ITokenIssuer issuer, string redirectUri, string code, string state) =>
         new QuietRedirect(WithQuery(redirectUri, ("code", code), ("state", state), ("iss", issuer.Issuer)));
 
-    /// <summary>Signs the access token for a grant the ledger is about to issue: before it writes, so a failure here changes nothing.</summary>
+    /// <summary>
+    /// Signs the access token for a grant the ledger is about to issue, before it saves the refresh token. If signing
+    /// fails on a refresh, nothing has changed and the client can retry with the same refresh token. On a code exchange
+    /// the code is already spent (it is redeemed before it is checked), so the client has to authorize again.
+    /// </summary>
     private static AccessTokenSigner Signer(ITokenIssuer issuer, Client client) =>
         (user, scope, ct) => issuer.IssueAccessTokenAsync(user, client.ClientId, scope, ct);
 
