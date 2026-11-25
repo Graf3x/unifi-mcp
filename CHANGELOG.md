@@ -5,6 +5,8 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 0.10.0
+
 ### Added
 
 - Write tools ask you to approve each change with a confirmation form (MCP elicitation, 2026-07-28) when the client can
