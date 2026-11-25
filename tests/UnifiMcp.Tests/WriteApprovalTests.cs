@@ -317,6 +317,33 @@ public class WriteApprovalTests
         Assert.False(WriteApproval.Spend(opened, time));
     }
 
+    /// <summary>A clock that notes whether the spent set was locked when it was read.</summary>
+    private sealed class LockProbe(TimeProvider inner) : TimeProvider
+    {
+        public List<bool> LockedOnRead { get; } = [];
+
+        public override DateTimeOffset GetUtcNow()
+        {
+            LockedOnRead.Add(global::System.Threading.Monitor.IsEntered(WriteApproval.Spent));
+            return inner.GetUtcNow();
+        }
+    }
+
+    [Fact]
+    public void Spending_reads_the_clock_inside_the_lock_so_a_paused_retry_cannot_use_a_stale_time()
+    {
+        var time = new FakeTimeProvider(new DateTimeOffset(2026, 11, 25, 8, 0, 0, TimeSpan.Zero));
+        var args = Json("""{"type":"A_RECORD"}""");
+        var opened = WriteApproval.Open(Protector, time, WriteApproval.Seal(Protector, time, Tool, PostPath, args, Harness.Login),
+            Tool, PostPath, args, Harness.Login)!;
+        var probe = new LockProbe(time);
+
+        Assert.True(WriteApproval.Spend(opened, probe));
+
+        Assert.NotEmpty(probe.LockedOnRead);
+        Assert.All(probe.LockedOnRead, Assert.True);
+    }
+
     [Fact]
     public void A_retry_delayed_past_expiry_cannot_spend_a_token_already_spent()
     {
