@@ -218,11 +218,17 @@ public sealed class FaqTools(UnifiClient console, ConsoleReads reads)
         var list = await a.Step("Networks", () => console.GetAllAsync($"/v1/sites/{site}/networks", ct));
         if (list is null) return new Networks(null);
         var result = new List<Net>();
+        var stopped = false;
         foreach (var n in list)
         {
             var name = TextOrNull(n, "name") ?? "?";
             var vlan = n.ValueKind == JsonValueKind.Object && n.TryGetProperty("vlanId", out var vl) && vl.TryGetInt32(out var v) ? v : 0;
-            result.Add(await a.Step($"Network {name}", async () =>
+            if (stopped)
+            {
+                result.Add(new Net(name, vlan, null, 0, null));
+                continue;
+            }
+            var net = await a.Step($"Network {name}", async () =>
             {
                 var d = await console.GetJsonAsync($"/v1/sites/{site}/networks/{TextOrNull(n, "id")}", ct);
                 IPAddress? host = null;
@@ -233,7 +239,11 @@ public sealed class FaqTools(UnifiClient console, ConsoleReads reads)
                     if (v4.TryGetProperty("prefixLength", out var p) && p.TryGetInt32(out var bits)) prefix = bits;
                 }
                 return new Net(name, vlan, host, prefix, d);
-            }) ?? new Net(name, vlan, null, 0, null));
+            });
+            // Once the answer's console budget is spent every further read would fail alike, so the rest stay unread
+            // (subnet unknown) with one failure line, not one each.
+            stopped = net is null && UpstreamBudget.Current?.Exhausted == true;
+            result.Add(net ?? new Net(name, vlan, null, 0, null));
         }
         return new Networks(result);
     }

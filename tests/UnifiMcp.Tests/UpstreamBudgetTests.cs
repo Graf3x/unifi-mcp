@@ -212,7 +212,8 @@ public sealed class UpstreamBudgetTests : IDisposable
         Assert.Equal(UpstreamBudget.MaxRequests, console.Requests);
         Assert.StartsWith("**Partial answer:**", text);
         Assert.Contains($"its {UpstreamBudget.MaxRequests} requests", text);
-        Assert.Contains("**Networks step failed:**", text);
+        // One read is refused; the networks after it are left unread (subnet unknown), not failed one by one.
+        Assert.Single(text.Split('\n'), l => l.StartsWith("**Network ", StringComparison.Ordinal) && l.Contains("step failed:"));
     }
 
     [Fact]

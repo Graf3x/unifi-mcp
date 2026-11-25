@@ -45,6 +45,9 @@ internal sealed class UpstreamBudget
     /// <summary>Bytes the answer may still read.</summary>
     public long BytesLeft => Math.Max(0, MaxBytes - Interlocked.Read(ref _bytes));
 
+    /// <summary>A request was refused or the bytes are used up, so every further read would fail the same way.</summary>
+    public bool Exhausted => Volatile.Read(ref _requests) > MaxRequests || BytesLeft == 0;
+
     /// <summary>Why the answer stopped early, each said once, at most <see cref="MaxNotes"/>.</summary>
     public IReadOnlyList<string> Notes => [.. _notes.Distinct().Take(MaxNotes)];
 

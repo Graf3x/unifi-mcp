@@ -143,7 +143,7 @@ public class SiteResolutionTests
     [Fact]
     public async Task On_the_host_a_write_after_a_rename_goes_to_the_site_that_has_the_name_now()
     {
-        await using var h = await Harness.StartAsync(writes: true);
+        await using var h = await Harness.StartAsync(writes: true, confirmFallback: true);
         h.Unifi.Route("GET", "/v1/sites", Before)
             .Route("GET", $"/v1/sites/{A}/networks", FakeUnifi.Page())
             .Route("POST", PostPath(A), """{"id":"wrong"}""", 201)

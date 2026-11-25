@@ -81,7 +81,7 @@ public sealed class RedactionTests : IDisposable
     [Fact]
     public async Task A_write_that_echoes_the_broadcast_back_is_redacted()
     {
-        await using var h = await Harness.StartAsync(writes: true);
+        await using var h = await Harness.StartAsync(writes: true, confirmFallback: true);
         h.Unifi.WithSite().Route("PUT", BroadcastPath, Broadcast);
 
         var (text, isError) = await h.CallAsync("update_wifi_broadcast", new()
@@ -172,7 +172,7 @@ public sealed class RedactionTests : IDisposable
     [Fact]
     public async Task Created_voucher_codes_are_redacted_by_default()
     {
-        await using var h = await Harness.StartAsync(writes: true);
+        await using var h = await Harness.StartAsync(writes: true, confirmFallback: true);
         h.Unifi.WithSite().Route("POST", $"/v1/sites/{Harness.SiteId}/hotspot/vouchers",
             $$"""{"vouchers":[{"id":"66666666-6666-6666-6666-666666666666","name":"Guest","code":"{{VoucherCode}}"}]}""", 201);
 
