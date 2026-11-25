@@ -50,8 +50,12 @@ public sealed partial class ConsoleReads(UnifiClient client, TimeProvider time)
     private sealed record SystemLogBody(long TimestampFrom, long TimestampTo, int PageSize, int PageNumber,
         string[]? Categories, string[]? Events, string[]? Severities, string? SearchText);
 
+    /// <summary>A window the pages of one question share: when it was opened by the steady clock, and its end (Unix milliseconds).</summary>
+    private sealed record Shared(long Stamp, long SentAt);
+
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Dictionary<string, Cached> _cache = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Shared> _windows = new(StringComparer.Ordinal);
     private double _tokens = Burst;
     private long? _refilled;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (TimeZoneInfo Zone, string Name)> _zones = new(StringComparer.Ordinal);
@@ -70,23 +74,33 @@ public sealed partial class ConsoleReads(UnifiClient client, TimeProvider time)
     /// <summary>
     /// Every read ends here: cached under <paramref name="cacheKey"/>, one at a time, and charged against the budget.
     /// The body is made from the wall clock (Unix milliseconds) when the console is asked, which also comes back, so a
-    /// read over "the last hours" is cached by its question, not its times. Cache age and the budget follow the steady
-    /// clock, so setting the wall clock back or forward neither keeps an answer nor spends or refills the budget.
+    /// read over "the last hours" is cached by its question, not its times. Reads that name a <paramref name="window"/>
+    /// (the pages of one question) share the time the first of them was sent while it is younger than
+    /// <see cref="CacheFor"/>, and are cached under it, so pages read together come from one window and a page cached in
+    /// an older one is never served beside a newer one. Cache age and the budget follow the steady clock, so setting the
+    /// wall clock back or forward neither keeps an answer nor spends or refills the budget.
     /// Private, so the reads <see cref="ConsoleSite"/> offers are the only requests that can exist, and their paths are
     /// fixed but for the site's checked internal name and numbers.
     /// </summary>
-    private async Task<(UnifiResponse Response, long SentAt)> SendAsync(HttpMethod method, string path, string cacheKey, Func<long, string?> body, CancellationToken ct)
+    private async Task<(UnifiResponse Response, long SentAt)> SendAsync(HttpMethod method, string path, string cacheKey, string? window, Func<long, string?> body, CancellationToken ct)
     {
         if (client.Settings.Missing().Count > 0) // throws "not configured"
-            return (await client.SendInternalAsync(method, path, body(time.GetUtcNow().ToUnixTimeMilliseconds()), ct), 0);
+        {
+            var at = time.GetUtcNow().ToUnixTimeMilliseconds();
+            return (await client.SendInternalAsync(method, path, body(at), ct), at);
+        }
 
         await _gate.WaitAsync(ct);
         try
         {
             var now = time.GetTimestamp();
-            bool Fresh(Cached c) => time.GetElapsedTime(c.Stamp, now) < CacheFor;
-            if (_cache.TryGetValue(cacheKey, out var hit) && Fresh(hit)) return (hit.Response, hit.SentAt);
-            foreach (var stale in _cache.Where(c => !Fresh(c.Value)).Select(c => c.Key).ToList()) _cache.Remove(stale);
+            bool Fresh(long stamp) => time.GetElapsedTime(stamp, now) < CacheFor;
+            foreach (var stale in _windows.Where(w => !Fresh(w.Value.Stamp)).Select(w => w.Key).ToList()) _windows.Remove(stale);
+            long? shared = window is not null && _windows.TryGetValue(window, out var open) ? open.SentAt : null;
+            string Key(long at) => window is null ? cacheKey : $"{cacheKey}\n@{at}";
+            if ((window is null || shared is not null) && _cache.TryGetValue(Key(shared ?? 0), out var hit) && Fresh(hit.Stamp))
+                return (hit.Response, hit.SentAt);
+            foreach (var stale in _cache.Where(c => !Fresh(c.Value.Stamp)).Select(c => c.Key).ToList()) _cache.Remove(stale);
 
             if (_refilled is { } last)
                 _tokens = Math.Min(Burst, _tokens + time.GetElapsedTime(last, now).TotalSeconds * PerMinute / 60.0);
@@ -98,9 +112,13 @@ public sealed partial class ConsoleReads(UnifiClient client, TimeProvider time)
             }
             _tokens -= 1;
 
-            var sentAt = time.GetUtcNow().ToUnixTimeMilliseconds();
+            var sentAt = shared ?? time.GetUtcNow().ToUnixTimeMilliseconds();
             var response = await client.SendInternalAsync(method, path, body(sentAt), ct);
-            if (response.Ok) _cache[cacheKey] = new Cached(now, sentAt, response);
+            if (response.Ok)
+            {
+                if (window is not null && shared is null) _windows[window] = new Shared(now, sentAt);
+                _cache[Key(sentAt)] = new Cached(now, sentAt, response);
+            }
             return (response, sentAt);
         }
         finally
@@ -113,18 +131,21 @@ public sealed partial class ConsoleReads(UnifiClient client, TimeProvider time)
     internal async Task<JsonElement> JsonAsync(HttpMethod method, string path, object? body, CancellationToken ct)
     {
         var text = body is null ? null : JsonSerializer.Serialize(body, Json);
-        var (r, _) = await SendAsync(method, path, $"{method} {path}\n{text}", _ => text, ct);
+        var (r, _) = await SendAsync(method, path, $"{method} {path}\n{text}", null, _ => text, ct);
         return Parse(method, path, r);
     }
 
     /// <summary>
     /// A page of the system log over the last hours up to now. Cached by the question (the site's path, the hours, the
-    /// page and the filters), and the window that comes back is the one its data covers.
+    /// page and the filters); every page of one question read within <see cref="CacheFor"/> of the first covers that
+    /// first page's window, so paging does not skip or repeat events that arrive meanwhile. The window that comes back
+    /// is the one its data covers.
     /// </summary>
     internal async Task<SystemLogPage> SystemLogAsync(string path, SystemLogQuery q, CancellationToken ct)
     {
         var span = q.Hours * 3_600_000L;
-        var (r, to) = await SendAsync(HttpMethod.Post, path, $"{HttpMethod.Post} {path}\nlast {JsonSerializer.Serialize(q, Json)}",
+        string Question(SystemLogQuery x) => $"{HttpMethod.Post} {path}\nlast {JsonSerializer.Serialize(x, Json)}";
+        var (r, to) = await SendAsync(HttpMethod.Post, path, Question(q), Question(q with { PageNumber = 0 }),
             now => JsonSerializer.Serialize(new SystemLogBody(now - span, now, q.PageSize, q.PageNumber, q.Categories, q.Events, q.Severities, q.SearchText), Json), ct);
         return new SystemLogPage(Parse(HttpMethod.Post, path, r), new LogWindow(q.Hours, to - span, to));
     }

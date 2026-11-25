@@ -68,6 +68,67 @@ public sealed class ConsoleReadsTests : IDisposable
     }
 
     [Fact]
+    public async Task Pages_of_one_system_log_question_share_one_window_so_paging_neither_skips_nor_mixes_snapshots()
+    {
+        var site = await _reads.SiteAsync(null, default);
+        var one = new SystemLogQuery(24, 1, 1, null, null, null, null);
+        var laterPage = await site.SystemLogAsync(one, default);
+
+        // A new event may have arrived; the first page, asked while the second is still cached, covers the same window.
+        _time.Advance(TimeSpan.FromSeconds(2));
+        var firstPage = await site.SystemLogAsync(one with { PageNumber = 0 }, default);
+        Assert.Equal(laterPage.Window, firstPage.Window);
+        Assert.Equal(2, InternalReads());
+        Assert.All(_fake.Requests.Where(r => r.Path.EndsWith("/system-log/all", StringComparison.Ordinal)),
+            r => Assert.Contains($"\"timestampTo\":{laterPage.Window.To}", r.Body));
+
+        // Asking either page again within the window's life costs nothing.
+        await site.SystemLogAsync(one, default);
+        await site.SystemLogAsync(one with { PageNumber = 0 }, default);
+        Assert.Equal(2, InternalReads());
+
+        // Once the window has aged out, a new first page starts a new window, and the next page is read in it, not from cache.
+        _time.Advance(ConsoleReads.CacheFor);
+        var newFirst = await site.SystemLogAsync(one with { PageNumber = 0 }, default);
+        var newNext = await site.SystemLogAsync(one, default);
+        Assert.Equal(4, InternalReads());
+        Assert.Equal(_time.GetUtcNow().ToUnixTimeMilliseconds(), newFirst.Window.To);
+        Assert.Equal(newFirst.Window, newNext.Window);
+        Assert.Contains($"\"timestampTo\":{newFirst.Window.To}", _fake.Requests[^1].Body);
+    }
+
+    /// <summary>A clock that runs <see cref="OnNow"/> once, the first time the wall clock is read.</summary>
+    private sealed class HookedClock(DateTimeOffset wall) : TimeProvider
+    {
+        public Action? OnNow { get; set; }
+        public override DateTimeOffset GetUtcNow()
+        {
+            var hook = OnNow;
+            OnNow = null;
+            hook?.Invoke();
+            return wall;
+        }
+    }
+
+    [Fact]
+    public async Task A_key_installed_while_a_read_is_being_made_still_gets_the_window_its_body_asked_for()
+    {
+        var clock = new HookedClock(new DateTimeOffset(2025, 3, 1, 12, 0, 0, TimeSpan.Zero));
+        var reads = new ConsoleReads(_client, clock);
+        var site = await reads.SiteAsync(null, default);
+        var keyFile = _client.Settings.ApiKeyFile;
+        var key = File.ReadAllText(keyFile);
+        File.Delete(keyFile);
+        // The key arrives after this server saw it missing but before the transport looks again.
+        clock.OnNow = () => File.WriteAllText(keyFile, key);
+
+        var page = await site.SystemLogAsync(Page(0), default);
+        var at = clock.GetUtcNow().ToUnixTimeMilliseconds();
+        Assert.Equal(new LogWindow(24, at - 24 * 3_600_000L, at), page.Window);
+        Assert.Contains($"\"timestampTo\":{at}", _fake.Requests[^1].Body);
+    }
+
+    [Fact]
     public async Task Reads_beyond_the_burst_are_refused_until_the_budget_refills()
     {
         var site = await _reads.SiteAsync(null, default);
