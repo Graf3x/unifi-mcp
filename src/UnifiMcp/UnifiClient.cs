@@ -47,7 +47,7 @@ public sealed class UnifiClient(Settings settings, ConsoleTransport transport)
     public async Task<JsonElement> GetJsonAsync(string path, CancellationToken ct)
     {
         var r = await SendAsync(HttpMethod.Get, path, null, ct);
-        if (!r.Ok) throw new UnifiError($"The console answered {r.Status} to GET {path.Split('?')[0]}: {Short(r.Body)}");
+        if (!r.Ok) throw new UnifiError($"The console answered {r.Status} to GET {path.Split('?')[0]}: {Short(Redaction.Error(r.Body))}");
         try { return JsonDocument.Parse(r.Body).RootElement; }
         catch (JsonException) { throw new UnifiError($"The console's answer to GET {path.Split('?')[0]} was not JSON."); }
     }

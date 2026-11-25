@@ -37,6 +37,8 @@ public sealed partial record Settings
     public string AllowedLoginsFile { get; init; } = "/config/allowed-logins";
     public string? AllowedLoginsValue { get; init; }
     public bool AllowWrites { get; init; }
+    /// <summary>UNIFI_REVEAL_SECRETS=voucher-codes: hotspot voucher codes reach the client. Off by default; see <see cref="Redaction"/>.</summary>
+    public bool RevealVoucherCodes { get; init; }
     public string Listen { get; init; } = "unix:/run/unifi-mcp/mcp.sock";
     public bool AllowLoopbackTcp { get; init; }
 
@@ -117,6 +119,10 @@ public sealed partial record Settings
         if (accessToken is { Length: < MinAccessTokenLength })
             throw new ArgumentException($"MCP_ACCESS_TOKEN must be at least {MinAccessTokenLength} characters.");
         var lanListen = Blank(env("MCP_LAN_LISTEN"));
+        var reveal = (env("UNIFI_REVEAL_SECRETS") ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        // A name this server does not know must not be guessed at: it could be read as wider than meant.
+        if (reveal.FirstOrDefault(r => r != "voucher-codes") is { } unknown)
+            throw new ArgumentException($"UNIFI_REVEAL_SECRETS takes only voucher-codes, not '{unknown}'. Wi-Fi passphrases and keys are never shown.");
         var lanToken = Blank(env("MCP_LAN_ACCESS_TOKEN"));
         int? lanPort = null;
         if (lanListen is not null)
@@ -148,6 +154,7 @@ public sealed partial record Settings
             AllowedLoginsFile = Blank(env("MCP_ALLOWED_LOGINS_FILE")) ?? d.AllowedLoginsFile,
             AllowedLoginsValue = Blank(env("MCP_ALLOWED_LOGINS")),
             AllowWrites = env("UNIFI_ALLOW_WRITES") == "true", // only the literal: a typo must leave writes off
+            RevealVoucherCodes = reveal.Contains("voucher-codes"),
             Listen = Blank(env("MCP_LISTEN")) ?? d.Listen,
             AllowLoopbackTcp = env("MCP_ALLOW_LOOPBACK_TCP") == "true",
             ApiKeyValue = Blank(env("UNIFI_API_KEY")),
@@ -216,7 +223,7 @@ public sealed partial record Settings
     private bool PrintMembers(System.Text.StringBuilder sb)
     {
         sb.Append($"BaseUrl = {BaseUrl}, Site = {Site}, ApiKeyFile = {ApiKeyFile}, CertPinFile = {CertPinFile}, ")
-          .Append($"AllowedLoginsFile = {AllowedLoginsFile}, AllowWrites = {AllowWrites}, Listen = {Listen}, ")
+          .Append($"AllowedLoginsFile = {AllowedLoginsFile}, AllowWrites = {AllowWrites}, RevealVoucherCodes = {RevealVoucherCodes}, Listen = {Listen}, ")
           .Append($"AllowLoopbackTcp = {AllowLoopbackTcp}, ApiKeyValue = {Mask(ApiKeyValue)}, PublicListen = {PublicListen}, ")
           .Append($"PublicBaseUrl = {PublicBaseUrl}, GoogleClientId = {GoogleClientId}, GoogleClientSecret = {Mask(GoogleClientSecret)}, ")
           .Append($"GoogleAuthority = {GoogleAuthority}, AllowedGoogleEmailsFile = {AllowedGoogleEmailsFile}, ")
