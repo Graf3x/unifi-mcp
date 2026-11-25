@@ -80,6 +80,64 @@ public class SiteResolutionTests
     }
 
     [Fact]
+    public async Task An_id_wins_over_an_earlier_site_whose_name_is_that_id()
+    {
+        _fake.Route("GET", "/v1/sites", FakeUnifi.Page(Site(A, "default", B), Site(B, "b7kq2m1p", "Lodge")));
+        Assert.Equal(B, (await Client().FindSiteAsync(B, default)).Id);
+    }
+
+    [Fact]
+    public async Task An_id_wins_over_an_earlier_site_whose_internal_name_is_that_id()
+    {
+        _fake.Route("GET", "/v1/sites", FakeUnifi.Page(Site(A, B, "Cabin"), Site(B, "b7kq2m1p", "Lodge")));
+        Assert.Equal(B, (await Client().FindSiteAsync(B, default)).Id);
+    }
+
+    // --- a console with more sites than this server reads -----------------------------------------------------------
+
+    /// <summary>
+    /// Pages of the site list for a console with one site more than <see cref="UnifiClient.MaxItems"/>: <paramref name="first"/>
+    /// at the front, then numbered sites. The last site, past what this server reads, is never served.
+    /// </summary>
+    private void ManySites(params string[] first)
+    {
+        const int Total = UnifiClient.MaxItems + 1;
+        for (var offset = 0; offset < UnifiClient.MaxItems; offset += 200)
+        {
+            var items = Enumerable.Range(offset, 200).Select(i => i < first.Length ? first[i] : Site($"00000000-0000-0000-0000-{i:D12}", $"r{i}", $"Site {i}"));
+            _fake.Route("GET", $"/v1/sites?offset={offset}&limit=200",
+                $$"""{"offset":{{offset}},"limit":200,"count":200,"totalCount":{{Total}},"data":[{{string.Join(",", items)}}]}""");
+        }
+    }
+
+    [Fact]
+    public async Task A_name_is_not_resolved_from_a_site_list_cut_short()
+    {
+        // B, past the sites this server reads, has an id that is A's name: a lookup of B's id must not land on A.
+        ManySites(Site(A, "default", B));
+
+        var ex = await Assert.ThrowsAsync<UnifiError>(() => Client(writes: true).FindSiteAsync(B, write: true, default));
+
+        Assert.Contains($"{UnifiClient.MaxItems}", ex.Message);
+        Assert.Contains("id", ex.Message);
+    }
+
+    [Fact]
+    public async Task A_unique_name_in_a_site_list_cut_short_is_refused_too()
+    {
+        // Another site called Cabin may be past the cut, so the name is not known to be unique.
+        ManySites(Site(A, "default", "Cabin"));
+        await Assert.ThrowsAsync<UnifiError>(() => Client().FindSiteAsync("Cabin", default));
+    }
+
+    [Fact]
+    public async Task An_id_found_in_a_site_list_cut_short_is_still_used()
+    {
+        ManySites(Site(B, "b7kq2m1p", "Lodge"), Site(A, "default", B));
+        Assert.Equal(B, (await Client().FindSiteAsync(B, default)).Id);
+    }
+
+    [Fact]
     public async Task A_write_looks_a_name_up_again_and_reads_then_see_the_new_answer()
     {
         _fake.Route("GET", "/v1/sites", Before);
