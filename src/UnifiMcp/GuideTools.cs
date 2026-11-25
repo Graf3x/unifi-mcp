@@ -37,7 +37,7 @@ public sealed class GuideTools(Settings settings, UnifiClient client, OpenApiCat
         sb.AppendLine("## Changes");
         var writes = catalog.Operations.Count(o => o.IsWrite);
         sb.AppendLine(settings.AllowWrites
-            ? $"Writes are on: {writes} write tools are listed. Each is marked destructive and needs `confirm` set to its own tool name; without it you get a preview and nothing is sent."
+            ? $"Writes are on: {writes} write tools are listed. Each is marked destructive and asks the owner to approve it: with a confirmation form where the client can show one, otherwise with `confirm` set to its own tool name (without it you get a preview and nothing is sent)."
             : $"This server is read-only: {writes} write operations exist but are not listed, because UNIFI_ALLOW_WRITES is off. `describe_operation` still shows them.");
         return sb.ToString();
     }
@@ -79,7 +79,7 @@ public sealed class GuideTools(Settings settings, UnifiClient client, OpenApiCat
     }
 
     private string RunWith(ApiOperation o) =>
-        !o.IsWrite ? $"{ReadOperationTool.ToolName}" : settings.AllowWrites ? $"its own tool {o.ToolName} (destructive, needs confirm)" : "disabled (writes off)";
+        !o.IsWrite ? $"{ReadOperationTool.ToolName}" : settings.AllowWrites ? $"its own tool {o.ToolName} (destructive, needs the owner's approval)" : "disabled (writes off)";
 
     [McpServerTool(Name = "describe_operation", Title = "Describe an API operation", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
     [Description("[Start] Full detail for one operation: parameters plus complete request and response schemas with references inlined. Use before composing a write body.")]

@@ -97,12 +97,21 @@ public sealed class Harness : IAsyncDisposable
         return h;
     }
 
-    public Task<McpClient> ConnectAsync() => McpClient.CreateAsync(new HttpClientTransport(new HttpClientTransportOptions
+    /// <param name="elicit">Answers a form the server asks for, with "accept", "decline" or "cancel"; without it the client
+    /// declares no forms.</param>
+    /// <param name="protocolVersion">Pins a revision, e.g. "2025-11-25"; by default the client negotiates the newest.</param>
+    public Task<McpClient> ConnectAsync(Func<ElicitRequestParams, string>? elicit = null, string? protocolVersion = null)
     {
-        Endpoint = new Uri(Http.BaseAddress!, "/mcp"),
-        TransportMode = HttpTransportMode.StreamableHttp,
-        Name = "unifi-mcp-tests",
-    }, Http, loggerFactory: null, ownsHttpClient: false));
+        var options = new McpClientOptions { ProtocolVersion = protocolVersion };
+        if (elicit is not null)
+            options.Handlers.ElicitationHandler = (p, _) => new ValueTask<ElicitResult>(new ElicitResult { Action = elicit(p!) });
+        return McpClient.CreateAsync(new HttpClientTransport(new HttpClientTransportOptions
+        {
+            Endpoint = new Uri(Http.BaseAddress!, "/mcp"),
+            TransportMode = HttpTransportMode.StreamableHttp,
+            Name = "unifi-mcp-tests",
+        }, Http, loggerFactory: null, ownsHttpClient: false), options);
+    }
 
     public async Task<(string Text, bool IsError)> CallAsync(string tool, Dictionary<string, object?>? args = null)
     {

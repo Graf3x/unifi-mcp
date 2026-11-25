@@ -5,6 +5,20 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Added
+
+- Write tools ask you to approve each change with a confirmation form (MCP elicitation, 2026-07-28) when the client can
+  show one, as Claude Code does. The form shows the change, the request and its arguments, with Accept or Decline;
+  `confirm` is ignored there, so the model cannot approve a write for you. Declining sends nothing and tells the model
+  not to retry. The approval is sealed to that tool, those exact arguments and you, and lapses after ten minutes.
+- The audit log says how each write was approved (`approved by form`, `approved by confirm argument`, or
+  `declined by form`), and a call that stopped to ask you logs `asked` instead of `failed`.
+
+### Changed
+
+- `confirm` is optional on write tools: it is the fallback for clients that cannot show the form, and still required
+  there.
+
 ## 0.9.0
 
 ### Added

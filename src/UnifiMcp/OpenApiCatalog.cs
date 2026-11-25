@@ -30,12 +30,14 @@ public sealed record ApiOperation(string ToolName, string OperationId, HttpMetho
         }
         if (IsWrite)
         {
+            // Only for clients that cannot show the owner a form; one that can asks the owner and ignores it (WriteApproval).
             properties["confirm"] = new JsonObject
             {
                 ["type"] = "string",
-                ["description"] = $"Must be exactly \"{ToolName}\" to run this change. Anything else returns a preview and sends nothing.",
+                ["description"] = $"Only for clients that cannot show the owner a confirmation form: set to exactly \"{ToolName}\" "
+                                  + "to run this change; anything else returns a preview and sends nothing. A client that can show "
+                                  + "the form asks the owner instead, and this is ignored.",
             };
-            required.Add("confirm");
         }
         return new JsonObject
         {

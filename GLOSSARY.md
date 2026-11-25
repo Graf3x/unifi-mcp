@@ -42,6 +42,10 @@ _Avoid_: socket, port, side (except "the public side")
 The one person allowed to use the server: a listed Google address, or whoever holds the sign-in code.
 _Avoid_: user, admin, account
 
+**Write approval**:
+The owner's yes to one change to the network, given for that change alone: on a confirmation form where the client can show one, otherwise by the model repeating the call with the tool's own name. It holds for those exact arguments and lapses within minutes. Not the same as consent, which lets a client connect at all.
+_Avoid_: consent, permission, confirmation (except the form itself)
+
 **Admission**:
 The decision that an identity is the owner under the current settings. It is made again each time the identity is used, so changing the allowed addresses or the sign-in method ends access for anyone who no longer qualifies.
 _Avoid_: authorization, allow-listing
@@ -60,7 +64,7 @@ _Avoid_: manifest, client file
 
 **Consent**:
 The owner's standing approval of one client. It is given once and holds until it is withdrawn or its family is revoked.
-_Avoid_: authorization, approval
+_Avoid_: authorization, approval (a write approval is a different thing)
 
 **Family**:
 Every refresh token descended from one consent. A family is revoked as a whole, never token by token.

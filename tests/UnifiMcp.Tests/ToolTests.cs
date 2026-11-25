@@ -25,7 +25,7 @@ public class ToolTests
     }
 
     [Fact]
-    public async Task With_writes_on_every_write_tool_is_destructive_and_needs_confirm()
+    public async Task With_writes_on_every_write_tool_is_destructive_and_offers_confirm()
     {
         await using var h = await Harness.StartAsync(writes: true);
         var tools = await h.Client.ListToolsAsync();
@@ -35,7 +35,9 @@ public class ToolTests
         Assert.All(writes, t =>
         {
             Assert.True(t.ProtocolTool.Annotations?.DestructiveHint, t.Name);
-            Assert.Contains("confirm", t.ProtocolTool.InputSchema.GetProperty("required").EnumerateArray().Select(e => e.GetString()));
+            // confirm is the fallback for clients that cannot show a form, so it is offered but not required.
+            Assert.True(t.ProtocolTool.InputSchema.GetProperty("properties").TryGetProperty("confirm", out _), t.Name);
+            Assert.DoesNotContain("confirm", t.ProtocolTool.InputSchema.GetProperty("required").EnumerateArray().Select(e => e.GetString()));
         });
     }
 
@@ -91,7 +93,7 @@ public class ToolTests
         var audit = h.Logs.Entries.Where(e => e.Line.StartsWith($"{Harness.Login} create_dns_policy ", StringComparison.Ordinal)).ToList();
         Assert.All(audit, e => Assert.Equal(Microsoft.Extensions.Logging.LogLevel.Information, e.Level));
         // The request the tool sent (method, path, status) and the call's outcome.
-        Assert.Single(audit, e => e.Line == $"{Harness.Login} create_dns_policy POST /v1/sites/{Harness.SiteId}/dns/policies -> 201");
+        Assert.Single(audit, e => e.Line == $"{Harness.Login} create_dns_policy POST /v1/sites/{Harness.SiteId}/dns/policies -> 201 (approved by confirm argument)");
         Assert.Single(audit, e => e.Line == $"{Harness.Login} create_dns_policy -> ok");
         Assert.DoesNotContain(h.Logs.Lines, l => l.Contains(Secret, StringComparison.Ordinal));
     }
