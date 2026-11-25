@@ -455,11 +455,13 @@ you move it, the connector is down (the log says `Public socket not bound`) and 
 2. Take the new `docker-compose.yml`, or change yours: add `- ./run-public:/run/unifi-mcp-public` under the
    `unifi-mcp` service's `volumes`, and replace `- ./run:/run/unifi-mcp` under `cloudflared` with
    `- ./run-public:/run/unifi-mcp-public`. Don't keep `./run` in the tunnel container, not even read-only.
-3. In Cloudflare Zero Trust, Networks, Tunnels, edit the route's Service URL to
+3. If you set `MCP_PUBLIC_LISTEN` in `.env`, remove it or point it into `/run/unifi-mcp-public`. Do this before the
+   next step, which recreates the containers with whatever `.env` says.
+4. In Cloudflare Zero Trust, Networks, Tunnels, edit the route's Service URL to
    `unix:/run/unifi-mcp-public/public.sock`.
-4. `docker compose pull && docker compose up -d`, then open the setup page: the Cloudflare tunnel check should pass.
-   You may delete the old `run/public.sock`. If you set `MCP_PUBLIC_LISTEN` in `.env`, remove it or point it into
-   `/run/unifi-mcp-public`.
+5. `docker compose pull && docker compose up -d`, then open the setup page: the Cloudflare tunnel check should pass.
+   Once it does, you may delete the old `run/public.sock`.
+
 ### Backup and rollback
 
 Do this before every update. `./data` holds the connector's state: `oauth.db` (clients, consents, refresh tokens as
