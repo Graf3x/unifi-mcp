@@ -495,6 +495,27 @@ public sealed partial class OAuthFlowTests
     }
 
     [Fact]
+    public async Task Tokens_are_answered_even_when_recording_the_clients_use_fails()
+    {
+        await using var h = await PublicHarness.StartAsync();
+        var clientId = await RegisterAsync(h);
+        var code = await AuthorizeAsync(h, clientId);
+        using (var conn = new SqliteConnection($"Data Source={Path.Combine(h.Settings.DataDir, "oauth.db")}"))
+        {
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "CREATE TRIGGER fail_touch BEFORE UPDATE ON clients BEGIN SELECT RAISE(ABORT, 'disk full'); END";
+            cmd.ExecuteNonQuery();
+        }
+
+        var tokens = await ExchangeAsync(h, clientId, code);
+        var refreshed = await RefreshOkAsync(h, clientId, tokens.Refresh);
+
+        Assert.Equal(HttpStatusCode.OK, await InitializeAsync(h, refreshed.Access));
+        Assert.Equal(2, h.Logs.Entries.Count(e => e.Level == LogLevel.Warning && e.Line.Contains("could not record the use of client", StringComparison.Ordinal)));
+    }
+
+    [Fact]
     public async Task Removed_address_fails_the_next_refresh()
     {
         await using var h = await PublicHarness.StartAsync();
