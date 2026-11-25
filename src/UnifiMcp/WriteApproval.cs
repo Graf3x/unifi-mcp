@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -37,7 +36,9 @@ public static class WriteApproval
     private const int MaxBody = 2_000;
     private const int MaxValue = 200;
     private static readonly IDataProtector Protector = new EphemeralDataProtectionProvider().CreateProtector("UnifiMcp.WriteApproval.v2");
-    private static readonly ConcurrentDictionary<string, DateTimeOffset> Spent = new(StringComparer.Ordinal);
+    /// <summary>Spent token ids and when each expires (Unix milliseconds). Guarded by locking on itself.</summary>
+    private static readonly Dictionary<string, long> Spent = new(StringComparer.Ordinal);
+    private const long Keep = 60_000;
     private static readonly JsonSerializerOptions Indented = new() { WriteIndented = true };
 
     /// <summary>
@@ -131,13 +132,21 @@ public static class WriteApproval
             : null;
     }
 
-    /// <summary>Marks an opened token used; false when it already was. Spent ids are dropped once they would have expired.</summary>
+    /// <summary>
+    /// Marks an opened token used; false when it already was or has expired. The check, the clean-up and the mark happen
+    /// under one lock and in the token's own unit (milliseconds), so a token can never be spent after expiry, and a spent
+    /// id is only dropped once it can no longer be spent (kept a minute longer, in case the clock steps back).
+    /// </summary>
     internal static bool Spend(string opened, TimeProvider time)
     {
-        var now = time.GetUtcNow();
-        foreach (var old in Spent.Where(s => s.Value < now)) Spent.TryRemove(old.Key, out _);
-        var expires = DateTimeOffset.FromUnixTimeMilliseconds(long.Parse(opened[(opened.IndexOf('\n') + 1)..], CultureInfo.InvariantCulture));
-        return Spent.TryAdd(opened, expires);
+        var expires = long.Parse(opened[(opened.IndexOf('\n') + 1)..], CultureInfo.InvariantCulture);
+        var now = time.GetUtcNow().ToUnixTimeMilliseconds();
+        lock (Spent)
+        {
+            if (now > expires) return false;
+            foreach (var old in Spent.Where(s => s.Value < now - Keep).Select(s => s.Key).ToList()) Spent.Remove(old);
+            return Spent.TryAdd(opened, expires);
+        }
     }
 
     /// <summary>The arguments the owner approves: everything but <c>confirm</c>, by name.</summary>

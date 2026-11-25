@@ -301,4 +301,33 @@ public class WriteApprovalTests
         Assert.NotEqual(opened, again);
         Assert.True(WriteApproval.Spend(again, time));
     }
+
+    [Fact]
+    public void A_token_spent_in_its_last_millisecond_cannot_be_spent_again_in_it()
+    {
+        var time = new FakeTimeProvider(new DateTimeOffset(2026, 11, 25, 8, 0, 0, TimeSpan.Zero));
+        var args = Json("""{"type":"A_RECORD"}""");
+        var token = WriteApproval.Seal(Protector, time, Tool, PostPath, args, Harness.Login);
+        time.Advance(WriteApproval.Lifetime);
+        var opened = WriteApproval.Open(Protector, time, token, Tool, PostPath, args, Harness.Login)!;
+        Assert.True(WriteApproval.Spend(opened, time));
+
+        time.Advance(TimeSpan.FromTicks(5_000)); // half a millisecond: still the token's last millisecond
+        Assert.NotNull(WriteApproval.Open(Protector, time, token, Tool, PostPath, args, Harness.Login));
+        Assert.False(WriteApproval.Spend(opened, time));
+    }
+
+    [Fact]
+    public void A_retry_delayed_past_expiry_cannot_spend_a_token_already_spent()
+    {
+        var time = new FakeTimeProvider(new DateTimeOffset(2026, 11, 25, 8, 0, 0, TimeSpan.Zero));
+        var args = Json("""{"type":"A_RECORD"}""");
+        var token = WriteApproval.Seal(Protector, time, Tool, PostPath, args, Harness.Login);
+        var first = WriteApproval.Open(Protector, time, token, Tool, PostPath, args, Harness.Login)!;
+        var delayed = WriteApproval.Open(Protector, time, token, Tool, PostPath, args, Harness.Login)!;
+        Assert.True(WriteApproval.Spend(first, time));
+
+        time.Advance(WriteApproval.Lifetime + TimeSpan.FromSeconds(1)); // the second retry stalls until after expiry
+        Assert.False(WriteApproval.Spend(delayed, time));
+    }
 }
