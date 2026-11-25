@@ -4,8 +4,8 @@ using System.Text.RegularExpressions;
 namespace UnifiMcp.Tests;
 
 /// <summary>
-/// The release around the code: which runtime the images run, and the gate an image passes before it is published.
-/// These read the repository's files; nothing here builds an image.
+/// The release around the code: which runtime the images run, the gate an image passes before it is published, and the
+/// operator docs for upgrades and for sharing one server. These read the repository's files; nothing here builds an image.
 /// </summary>
 public sealed partial class ReleaseTests
 {
@@ -95,6 +95,31 @@ public sealed partial class ReleaseTests
         var err = p.StandardError.ReadToEnd();
         p.WaitForExit();
         Assert.True(p.ExitCode == 0, err);
+    }
+
+    // ---- Operator docs -----------------------------------------------------------------------------------------------
+
+    private static readonly SetupGuide Guide = new(File.ReadAllText(Path.Combine(Root, "README.md")), new Settings());
+
+    private static string PartText(string id) =>
+        Regex.Replace(Guide.Parts.SingleOrDefault(p => p.Id == id)?.Html ?? throw new Xunit.Sdk.XunitException($"no setup part #{id}"), "<[^>]+>", "");
+
+    [Fact]
+    public void The_upgrade_path_backs_up_state_and_keeps_the_digest_for_rollback()
+    {
+        var backup = PartText("backup-and-rollback");
+        foreach (var needed in new[] { "oauth.db", "oauth.db-wal", "keys", "UNIFI_MCP_DATA_KEY", "docker compose stop", "RepoDigests", "@sha256:", "chmod 700" })
+            Assert.Contains(needed, backup);
+        Assert.Contains("href=\"#backup-and-rollback\"", Guide.Parts.Single(p => p.Id == "updating").Html);
+    }
+
+    [Fact]
+    public void The_shared_server_trust_model_sits_next_to_the_setup_guides()
+    {
+        var sharing = PartText("sharing-one-server");
+        foreach (var needed in new[] { "UNIFI_SITE", "siteId", "MCP_ACCESS_TOKEN", "MCP_LAN_ACCESS_TOKEN", "MCP_ALLOWED_LOGINS",
+                     "MCP_ALLOWED_GOOGLE_EMAILS", "Disconnect", "UnifiMcp.Audit", "separate instance" })
+            Assert.Contains(needed, sharing);
     }
 
     // ---- Helpers -----------------------------------------------------------------------------------------------------
