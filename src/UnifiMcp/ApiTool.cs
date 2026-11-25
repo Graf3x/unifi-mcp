@@ -53,6 +53,10 @@ public sealed class ApiTool(ApiOperation op, UnifiClient client) : McpServerTool
             // The request is built and checked first, so the owner approves the path that will be sent, and never a call
             // that would then be refused for a missing argument.
             if (op.HasBody && body is null) throw new UnifiError("body is required.");
+            if (op.HasBody && Redaction.Carries(b))
+                throw new UnifiError($"Nothing was sent: the body carries {Redaction.Mark}, a secret hidden from you when it was read, and "
+                                     + "sending it would set that secret to the mark itself. Give the real value, or ask the owner to make "
+                                     + "this change in the UniFi app.");
             path = await BuildPathAsync(op, client, args, cancellationToken);
             if (op.IsWrite)
                 switch (WriteApproval.Decide(op, path, args, request))
@@ -62,8 +66,11 @@ public sealed class ApiTool(ApiOperation op, UnifiClient client) : McpServerTool
                 }
             var response = await client.SendAsync(op.Method, path, op.HasBody ? body : null, cancellationToken);
             Log(op, request, path, response.Status.ToString(System.Globalization.CultureInfo.InvariantCulture), approval);
-            if (!response.Ok) return ToolText.Error($"The console answered {response.Status} to {op.Method} {path.Split('?')[0]}: {response.Body}");
-            return ToolText.Ok(response.Body.Length == 0 ? $"Done ({response.Status}, no content)." : response.Body);
+            // Secrets in the answer are redacted before it leaves (Redaction), errors and echoed writes alike.
+            if (!response.Ok) return ToolText.Error($"The console answered {response.Status} to {op.Method} {path.Split('?')[0]}: {Redaction.Error(response.Body)}");
+            if (response.Body.Length == 0) return ToolText.Ok($"Done ({response.Status}, no content).");
+            return Redaction.Answer(op, response.Body, client.Settings) is { } shown ? ToolText.Ok(shown)
+                : ToolText.Error($"The console answered {response.Status} to {op.Method} {path.Split('?')[0]}, but its answer was not JSON, so it is not shown.");
         }
         // An approved write that got no answer, or whose caller gave up waiting, may still have reached the console, so it
         // keeps its approval on record.
@@ -88,7 +95,7 @@ public sealed class ApiTool(ApiOperation op, UnifiClient client) : McpServerTool
             var value = Value(args, p.Name);
             if (p.In == "path")
             {
-                if (p.Name == "siteId") value = (await client.FindSiteAsync(value, ct)).Id;
+                if (p.Name == "siteId") value = (await client.FindSiteAsync(value, op.IsWrite, ct)).Id;
                 if (string.IsNullOrWhiteSpace(value)) throw new UnifiError($"{p.Name} is required.");
                 // EscapeDataString leaves dots alone, and "." or ".." would change which resource the path names.
                 if (value is "." or "..") throw new UnifiError($"{p.Name} is not a valid value.");

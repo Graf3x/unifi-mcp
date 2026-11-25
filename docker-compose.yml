@@ -1,11 +1,13 @@
 # unifi-mcp with a Cloudflare tunnel, for running it yourself. See README, guide 2 (code sign-in) or guide 3 (Google).
 #   cp .env.example .env    # then fill it in
-#   mkdir -p data run       # create these as you, so the container (PUID:PGID) can write to them
+#   mkdir -p data run run-public   # create these as you, so the containers (PUID:PGID) can write to them
 #   docker compose up -d
 #
-# The server listens on two Unix sockets in ./run:
-#   public.sock  the Claude connector (Google sign-in + OAuth), reached only by the cloudflared sidecar below;
-#   mcp.sock     optional tailnet access through `tailscale serve` on the host (see README).
+# The server listens on two Unix sockets, each in a folder of its own:
+#   run-public/public.sock  the Claude connector (Google sign-in + OAuth), reached only by the cloudflared sidecar
+#                           below, which mounts this folder and nothing else;
+#   run/mcp.sock            optional tailnet access through `tailscale serve` on the host (see README). The sidecar never
+#                           sees it: this socket trusts the login its caller names, so only the host may reach it.
 # Optionally also a token-only LAN listener on port 7420 (README, guide 4): uncomment its two lines below.
 # and serves the setup page on port 5198, published on the host's 127.0.0.1 only. Its link (with a key that changes on
 # every start) is in `docker compose logs unifi-mcp`. MCP_SETUP_PAGE=off in .env turns it off.
@@ -13,6 +15,8 @@
 services:
   unifi-mcp:
     # The image is published by this repo's GitHub workflow. Pin a version (e.g. :0.2.1) if you prefer.
+    # Each release is started and checked on amd64 and arm64 before it is tagged. Before you pull a new one, back up ./data
+    # and note this image's digest, so you can roll back (README, "Backup and rollback").
     image: ghcr.io/graf3x/unifi-mcp:latest
     # To build from this checkout instead of pulling, uncomment these two lines:
     # build: .
@@ -34,6 +38,7 @@ services:
     volumes:
       - ./data:/data
       - ./run:/run/unifi-mcp
+      - ./run-public:/run/unifi-mcp-public
 
   cloudflared:
     # 2026.11.0 (multi-arch index digest).
@@ -45,7 +50,9 @@ services:
     # Only the tunnel token; the sidecar never sees the UniFi or Google values.
     environment:
       TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set TUNNEL_TOKEN in .env}
+    # The public socket's folder only, never ./run (not even read-only): the tunnel's route is
+    # unix:/run/unifi-mcp-public/public.sock.
     volumes:
-      - ./run:/run/unifi-mcp
+      - ./run-public:/run/unifi-mcp-public
     depends_on:
       - unifi-mcp

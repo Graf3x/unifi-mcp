@@ -5,7 +5,7 @@ An MCP server that lets Claude read, and with the owner's leave change, one home
 ## Console
 
 **Site**:
-One network managed by the console. It can be named by its id, its name, or its internal name.
+One network managed by the console. It can be named by its id, its name, or its internal name. An id always wins; a name or internal name that more than one site has names none of them. A write looks a name up again each time, since a renamed site's old name can pass to another.
 _Avoid_: network (a site holds many networks), location
 
 **Integration API**:
@@ -32,6 +32,10 @@ _Avoid_: alert, warning
 One part of a composite tool's answer that reads from the console. When a step fails the answer says so and the rest still runs; when a read the tool cannot do without fails, there is no answer, only the reason.
 _Avoid_: stage, check (a check is the setup page's)
 
+**Budget**:
+What one answer may ask of the console: a number of requests and bytes over all its steps, and a number of items per list. When it runs out the answer is a partial answer: it says so first, and how to narrow the question.
+_Avoid_: quota, rate limit (the internal API's rate limit is a different thing)
+
 ## Access
 
 **Listener**:
@@ -43,8 +47,12 @@ The one person allowed to use the server: a listed Google address, or whoever ho
 _Avoid_: user, admin, account
 
 **Write approval**:
-The owner's yes to one change to the network, given for that change alone: on a confirmation form where the client can show one, otherwise by the model repeating the call with the tool's own name. A yes on the form holds once, for that exact request and arguments, and lapses within minutes; the fallback has no such binding, since the model gives it in the same call it makes. Not the same as consent, which lets a client connect at all.
+The owner's yes to one change to the network, given for that change alone on a confirmation form that shows the whole change. A yes holds once, for that exact request and arguments, and lapses within minutes. A change too big to show whole is refused, and so is any write from a client that cannot show the form. Not the same as consent, which lets a client connect at all.
 _Avoid_: consent, permission, confirmation (except the form itself)
+
+**Confirm fallback**:
+The owner's opt-in (UNIFI_ALLOW_CONFIRM_FALLBACK) that lets a client without the form write when the model repeats the call with the tool's own name in `confirm`. It is not a write approval: the model gives it in the same call it makes, so the model approves its own writes. Without the opt-in, such a client is refused every write.
+_Avoid_: preview approval, confirm approval
 
 **Admission**:
 The decision that an identity is the owner under the current settings. It is made again each time the identity is used, so changing the allowed addresses or the sign-in method ends access for anyone who no longer qualifies.
@@ -78,7 +86,7 @@ _Avoid_: connection, session
 The record of every grant, and the rules that decide whether a grant still stands.
 
 **Authorization code**:
-A single-use proof that the owner just approved a client. The client exchanges it for its first tokens.
+A single-use proof that the owner just approved a client. The client exchanges it for its first tokens, which start in the family of the consent that issued the code, and only while that consent stands.
 
 **Refresh token**:
 A secret the client trades for a new access token and a new refresh token. Each one can be used once.

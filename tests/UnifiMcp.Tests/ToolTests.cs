@@ -51,9 +51,20 @@ public class ToolTests
     }
 
     [Fact]
-    public async Task A_write_without_confirm_previews_and_sends_nothing()
+    public async Task By_default_a_confirmed_write_from_a_client_without_a_form_sends_nothing()
     {
         await using var h = await Harness.StartAsync(writes: true);
+        h.Unifi.WithSite().Route("POST", $"/v1/sites/{Harness.SiteId}/dns/policies", """{"id":"new"}""", 201);
+        var (text, isError) = await h.CallAsync("create_dns_policy", new() { ["body"] = new { type = "A_RECORD" }, ["confirm"] = "create_dns_policy" });
+        Assert.True(isError, text);
+        Assert.Contains("Nothing was sent", text);
+        Assert.DoesNotContain(h.Unifi.Requests, r => r.Method != "GET");
+    }
+
+    [Fact]
+    public async Task With_the_fallback_on_a_write_without_confirm_previews_and_sends_nothing()
+    {
+        await using var h = await Harness.StartAsync(writes: true, confirmFallback: true);
         h.Unifi.WithSite(); // the preview shows the path that would be sent, with the site resolved
         var (text, _) = await h.CallAsync("create_dns_policy", new() { ["body"] = new { type = "A_RECORD" }, ["confirm"] = "" });
         Assert.Contains("Nothing was sent", text);
@@ -63,9 +74,9 @@ public class ToolTests
     }
 
     [Fact]
-    public async Task A_write_with_the_wrong_confirm_sends_nothing()
+    public async Task With_the_fallback_on_a_write_with_the_wrong_confirm_sends_nothing()
     {
-        await using var h = await Harness.StartAsync(writes: true);
+        await using var h = await Harness.StartAsync(writes: true, confirmFallback: true);
         await h.CallAsync("create_dns_policy", new() { ["body"] = new { type = "A_RECORD" }, ["confirm"] = "true" });
         Assert.DoesNotContain(h.Unifi.Requests, r => r.Method != "GET");
     }
@@ -73,7 +84,7 @@ public class ToolTests
     [Fact]
     public async Task A_confirmed_write_posts_the_body_to_the_resolved_site()
     {
-        await using var h = await Harness.StartAsync(writes: true);
+        await using var h = await Harness.StartAsync(writes: true, confirmFallback: true);
         h.Unifi.WithSite().Route("POST", $"/v1/sites/{Harness.SiteId}/dns/policies", """{"id":"new"}""", 201);
         var (text, isError) = await h.CallAsync("create_dns_policy", new() { ["body"] = new { type = "A_RECORD", domain = "x.test" }, ["confirm"] = "create_dns_policy" });
         Assert.False(isError, text);
@@ -86,7 +97,7 @@ public class ToolTests
     [Fact]
     public async Task A_confirmed_write_is_audited_at_information_with_its_request_but_never_its_body()
     {
-        await using var h = await Harness.StartAsync(writes: true);
+        await using var h = await Harness.StartAsync(writes: true, confirmFallback: true);
         h.Unifi.WithSite().Route("POST", $"/v1/sites/{Harness.SiteId}/dns/policies", """{"id":"new"}""", 201);
         const string Secret = "body-value-must-not-be-logged";
         await h.CallAsync("create_dns_policy", new() { ["body"] = new { type = "A_RECORD", domain = Secret }, ["confirm"] = "create_dns_policy" });
@@ -206,6 +217,17 @@ public class GuideToolTests
         Assert.Contains("API key", text);
         Assert.Contains("read-only", text, StringComparison.OrdinalIgnoreCase);
         Assert.Empty(h.Unifi.Requests);
+    }
+
+    [Theory]
+    [InlineData(false, "refused every write")]
+    [InlineData(true, "UNIFI_ALLOW_CONFIRM_FALLBACK is on")]
+    public async Task Getting_started_says_how_writes_are_approved(bool confirmFallback, string expected)
+    {
+        await using var h = await Harness.StartAsync(writes: true, confirmFallback: confirmFallback);
+        var (text, _) = await h.CallAsync("getting_started");
+        Assert.Contains("confirmation form", text);
+        Assert.Contains(expected, text);
     }
 
     [Fact]

@@ -420,7 +420,7 @@ public sealed class GrantLedgerTests : IDisposable
         await _store.SaveCodeAsync(new AuthorizationCode
         {
             CodeHash = TokenIssuer.Hash(code), ClientId = Client.ClientId, RedirectUri = Redirect, CodeChallenge = Challenge(Verifier),
-            Scope = "mcp:tools", User = User, ExpiresAt = _time.GetUtcNow().Add(expiresIn ?? TimeSpan.FromMinutes(5)),
+            Scope = "mcp:tools", User = User, FamilyId = family, ExpiresAt = _time.GetUtcNow().Add(expiresIn ?? TimeSpan.FromMinutes(5)),
         });
         return code;
     }
@@ -572,5 +572,308 @@ public sealed class GrantLedgerTests : IDisposable
 
         Assert.Equal(GrantRefusal.ConsentWithdrawn, refused.Kind);
         Assert.False(await _store.IsFamilyRevokedAsync("old-family"));
+    }
+
+    // ---- a code belongs to the consent that issued it --------------------------------------------------------------
+
+    private async Task<int> RefreshTokenCountAsync()
+    {
+        await using var conn = new SqliteConnection($"Data Source={_path}");
+        await conn.OpenAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT COUNT(*) FROM refresh_tokens";
+        return (int)(long)(await cmd.ExecuteScalarAsync())!;
+    }
+
+    [Fact]
+    public async Task A_code_from_before_a_disconnect_yields_nothing_after_the_owner_approves_again()
+    {
+        var old = await Ledger().ApproveAsync(User, Client, Request);
+        Assert.True(await Ledger().DisconnectAsync(User, Client.ConsentKey));
+        _time.Advance(TimeSpan.FromMinutes(1));
+        var fresh = await Ledger().ApproveAsync(User, Client, Request);
+
+        var refused = Refused(await Ledger().ExchangeAsync(old, Verifier, Redirect, Client));
+
+        Assert.Equal(GrantRefusal.Revoked, refused.Kind);
+        Assert.Equal(0, await RefreshTokenCountAsync());
+        var issued = Issued(await Ledger().ExchangeAsync(fresh, Verifier, Redirect, Client));
+        var family = (await _store.GetConsentAsync(User.Subject, Client.ConsentKey))!.FamilyId;
+        Assert.Equal(family, (await _store.GetRefreshTokenAsync(TokenIssuer.Hash(issued.RefreshToken)))!.FamilyId);
+    }
+
+    [Fact]
+    public async Task A_code_from_a_consent_replaced_since_yields_nothing()
+    {
+        await Ledger().ApproveAsync(User, Client, Request);
+        var old = (await Ledger().AuthorizeAsync(User, Client, Request))!;
+        var fresh = await Ledger().ApproveAsync(User, Client, Request);
+
+        var refused = Refused(await Ledger().ExchangeAsync(old, Verifier, Redirect, Client));
+
+        Assert.Equal(GrantRefusal.ConsentWithdrawn, refused.Kind);
+        Assert.Equal(0, await RefreshTokenCountAsync());
+        Issued(await Ledger().ExchangeAsync(fresh, Verifier, Redirect, Client));
+    }
+
+    // ---- a revoked family's consent is withdrawn with it -----------------------------------------------------------
+
+    public enum Revocation { ClientRevoke, Reuse, NotAdmitted, Disconnect }
+
+    /// <summary>Revokes the standing grant <paramref name="token"/> belongs to, the way <paramref name="how"/> says.</summary>
+    private async Task RevokeAsync(Revocation how, string token)
+    {
+        switch (how)
+        {
+            case Revocation.ClientRevoke:
+                Assert.NotNull(await Ledger().RevokeAsync(token));
+                break;
+            case Revocation.Reuse:
+                Issued(await Ledger().RotateAsync(token, Client));
+                Assert.Equal(GrantRefusal.Reuse, Refused(await Ledger().RotateAsync(token, Client)).Kind);
+                break;
+            case Revocation.NotAdmitted:
+                var allowed = _settings;
+                _settings = _settings with { AllowedGoogleEmailsValue = "someone-else@example.test" };
+                Assert.Equal(GrantRefusal.NotAdmitted, Refused(await Ledger().RotateAsync(token, Client)).Kind);
+                _settings = allowed;
+                break;
+            case Revocation.Disconnect:
+                Assert.True(await Ledger().DisconnectAsync(User, Client.ConsentKey));
+                break;
+        }
+    }
+
+    [Theory]
+    [InlineData(Revocation.ClientRevoke)]
+    [InlineData(Revocation.Reuse)]
+    [InlineData(Revocation.NotAdmitted)]
+    [InlineData(Revocation.Disconnect)]
+    public async Task A_revoked_family_still_needs_the_owners_approval_once_its_tombstone_is_swept(Revocation how)
+    {
+        var code = await Ledger().ApproveAsync(User, Client, Request);
+        var token = Issued(await Ledger().ExchangeAsync(code, Verifier, Redirect, Client)).RefreshToken;
+
+        await RevokeAsync(how, token);
+
+        Assert.Empty(await Ledger().ListConsentsAsync(User));
+        _time.Advance(SqliteOAuthStore.FamilyTombstoneRetention + TimeSpan.FromDays(1));
+        await Ledger().SweepAsync();
+        Assert.Null(await Ledger().AuthorizeAsync(User, Client, Request));
+    }
+
+    [Fact]
+    public async Task A_token_of_an_old_family_cannot_withdraw_a_newer_consent()
+    {
+        var old = await GrantAsync("old-family");
+        Issued(await Ledger().RotateAsync(old, Client));
+        var code = await Ledger().ApproveAsync(User, Client, Request);
+
+        Assert.Equal(GrantRefusal.Reuse, Refused(await Ledger().RotateAsync(old, Client)).Kind);
+        Assert.NotNull(await Ledger().RevokeAsync(old));
+
+        Assert.NotEqual("old-family", (await _store.GetConsentAsync(User.Subject, Client.ConsentKey))!.FamilyId);
+        Issued(await Ledger().ExchangeAsync(code, Verifier, Redirect, Client));
+        Assert.NotNull(await Ledger().AuthorizeAsync(User, Client, Request));
+    }
+
+    // ---- rotation and consent updates commit whole -----------------------------------------------------------------
+
+    private void Sql(string sql)
+    {
+        using var conn = new SqliteConnection($"Data Source={_path}");
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.ExecuteNonQuery();
+    }
+
+    [Fact]
+    public async Task A_storage_failure_while_saving_the_successor_leaves_the_presented_token_usable()
+    {
+        var token = await GrantAsync();
+        Sql("CREATE TRIGGER fail_insert BEFORE INSERT ON refresh_tokens BEGIN SELECT RAISE(ABORT, 'disk full'); END");
+
+        await Assert.ThrowsAsync<SqliteException>(() => Ledger().RotateAsync(token, Client));
+
+        Sql("DROP TRIGGER fail_insert");
+        Assert.False((await _store.GetRefreshTokenAsync(TokenIssuer.Hash(token)))!.Redeemed);
+        Issued(await Ledger().RotateAsync(token, Client));
+        Assert.False(await _store.IsFamilyRevokedAsync(Family));
+    }
+
+    [Fact]
+    public async Task A_failure_signing_the_access_token_leaves_the_presented_token_usable()
+    {
+        var token = await GrantAsync();
+
+        await Assert.ThrowsAsync<System.Security.Cryptography.CryptographicException>(() =>
+            Ledger().RotateAsync(token, Client, (_, _, _) => throw new System.Security.Cryptography.CryptographicException("keyring lost")));
+
+        Assert.False((await _store.GetRefreshTokenAsync(TokenIssuer.Hash(token)))!.Redeemed);
+        Issued(await Ledger().RotateAsync(token, Client));
+    }
+
+    private static Task<string> SignerThatFails(OAuthUser user, string scope, CancellationToken ct) =>
+        throw new System.Security.Cryptography.CryptographicException("keyring lost");
+
+    [Fact]
+    public async Task A_refresh_whose_consent_is_already_withdrawn_is_refused_without_signing()
+    {
+        var token = await GrantAsync();
+        await _store.DeleteConsentAsync(User.Subject, Client.ConsentKey);
+
+        var refused = Refused(await Ledger().RotateAsync(token, Client, SignerThatFails));
+
+        Assert.Equal(GrantRefusal.ConsentWithdrawn, refused.Kind);
+    }
+
+    [Fact]
+    public async Task A_code_whose_consent_is_already_withdrawn_is_refused_without_signing()
+    {
+        var code = await CodeAsync(withConsent: false);
+
+        var refused = Refused(await Ledger().ExchangeAsync(code, Verifier, Redirect, Client, SignerThatFails));
+
+        Assert.Equal(GrantRefusal.ConsentWithdrawn, refused.Kind);
+    }
+
+    [Fact]
+    public async Task A_code_whose_family_is_already_revoked_is_refused_without_signing()
+    {
+        var code = await CodeAsync();
+        await _store.RevokeFamilyAsync(Family);
+
+        var refused = Refused(await Ledger().ExchangeAsync(code, Verifier, Redirect, Client, SignerThatFails));
+
+        Assert.Equal(GrantRefusal.Revoked, refused.Kind);
+    }
+
+    [Fact]
+    public async Task A_refresh_token_that_expires_while_signing_is_refused_without_revoking_the_grant()
+    {
+        var token = await GrantAsync(expiresIn: TimeSpan.FromMinutes(1));
+        Task<string> SignSlowly(OAuthUser user, string scope, CancellationToken ct)
+        {
+            _time.Advance(TimeSpan.FromMinutes(1));
+            return Task.FromResult("at");
+        }
+
+        var refused = Refused(await Ledger().RotateAsync(token, Client, SignSlowly));
+
+        Assert.Equal(GrantRefusal.Invalid, refused.Kind);
+        Assert.False(await _store.IsFamilyRevokedAsync(Family));
+        Assert.Equal(Family, (await _store.GetConsentAsync(User.Subject, Client.ConsentKey))!.FamilyId);
+    }
+
+    [Fact]
+    public async Task A_refresh_token_swept_away_while_signing_is_refused_without_revoking_the_grant()
+    {
+        var token = await GrantAsync(expiresIn: TimeSpan.FromMinutes(1));
+        async Task<string> SignWhileTheSweepRuns(OAuthUser user, string scope, CancellationToken ct)
+        {
+            _time.Advance(TimeSpan.FromDays(1));
+            await _store.SweepExpiredAsync(ct); // the hourly sweep deletes the expired row before the write
+            return "at";
+        }
+
+        var refused = Refused(await Ledger().RotateAsync(token, Client, SignWhileTheSweepRuns));
+
+        Assert.Equal(GrantRefusal.Invalid, refused.Kind);
+        Assert.False(await _store.IsFamilyRevokedAsync(Family));
+        Assert.Equal(Family, (await _store.GetConsentAsync(User.Subject, Client.ConsentKey))!.FamilyId);
+    }
+
+    [Fact]
+    public async Task Rotating_and_exchanging_sign_an_access_token_for_the_grant()
+    {
+        var code = await CodeAsync();
+        static Task<string> Sign(OAuthUser user, string scope, CancellationToken _) => Task.FromResult($"at:{user.Email}:{scope}");
+
+        var exchanged = Issued(await Ledger().ExchangeAsync(code, Verifier, Redirect, Client, Sign));
+        var rotated = Issued(await Ledger().RotateAsync(exchanged.RefreshToken, Client, Sign));
+
+        Assert.Equal($"at:{Owner}:mcp:tools", exchanged.AccessToken);
+        Assert.Equal($"at:{Owner}:mcp:tools", rotated.AccessToken);
+    }
+
+    [Fact]
+    public async Task A_disconnect_and_reapproval_while_a_refresh_is_signing_stand()
+    {
+        var token = await GrantAsync();
+        string? code = null;
+        // The signing step runs after the ledger's checks and before it commits: the owner's decisions made meanwhile win.
+        async Task<string> SignWhileTheOwnerReconnects(OAuthUser user, string scope, CancellationToken ct)
+        {
+            Assert.True(await Ledger().DisconnectAsync(User, Client.ConsentKey, ct));
+            code = await Ledger().ApproveAsync(User, Client, Request, ct);
+            return "at";
+        }
+
+        var refused = Refused(await Ledger().RotateAsync(token, Client, SignWhileTheOwnerReconnects));
+
+        Assert.Equal(GrantRefusal.Revoked, refused.Kind);
+        var consent = (await _store.GetConsentAsync(User.Subject, Client.ConsentKey))!;
+        Assert.NotEqual(Family, consent.FamilyId);
+        var fresh = Issued(await Ledger().ExchangeAsync(code!, Verifier, Redirect, Client)).RefreshToken;
+        Issued(await Ledger().RotateAsync(fresh, Client));
+    }
+
+    /// <summary>Runs two calls on two threads, released together; both finish before either's failure is thrown.</summary>
+    private static async Task<(T1, T2)> BothAtOnceAsync<T1, T2>(Func<Task<T1>> first, Func<Task<T2>> second)
+    {
+        var go = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var a = Task.Run(async () => { await go.Task; return await first(); });
+        var b = Task.Run(async () => { await go.Task; return await second(); });
+        go.SetResult();
+        await Task.WhenAll(a, b);
+        return (await a, await b);
+    }
+
+    [Fact]
+    public async Task A_refresh_racing_a_disconnect_and_reapproval_leaves_the_reapproval_standing()
+    {
+        for (var round = 0; round < Rounds; round++)
+        {
+            var family = $"family-{round}";
+            var token = await GrantAsync(family);
+            var ledger = Ledger();
+
+            var (_, code) = await BothAtOnceAsync(
+                () => ledger.RotateAsync(token, Client),
+                async () => { await ledger.DisconnectAsync(User, Client.ConsentKey); return await ledger.ApproveAsync(User, Client, Request); });
+
+            Assert.NotEqual(family, (await _store.GetConsentAsync(User.Subject, Client.ConsentKey))!.FamilyId);
+            Issued(await ledger.ExchangeAsync(code, Verifier, Redirect, Client));
+        }
+    }
+
+    [Fact]
+    public async Task An_authorize_racing_a_disconnect_and_reapproval_leaves_the_reapproval_standing()
+    {
+        for (var round = 0; round < Rounds; round++)
+        {
+            await Ledger().ApproveAsync(User, Client, Request);
+            var family = (await _store.GetConsentAsync(User.Subject, Client.ConsentKey))!.FamilyId;
+            var ledger = Ledger();
+
+            var (_, code) = await BothAtOnceAsync(
+                () => ledger.AuthorizeAsync(User, Client, Request),
+                async () => { await ledger.DisconnectAsync(User, Client.ConsentKey); return await ledger.ApproveAsync(User, Client, Request); });
+
+            Assert.NotEqual(family, (await _store.GetConsentAsync(User.Subject, Client.ConsentKey))!.FamilyId);
+            Issued(await ledger.ExchangeAsync(code, Verifier, Redirect, Client));
+        }
+    }
+
+    [Fact]
+    public async Task Authorizing_after_a_disconnect_never_brings_the_consent_back()
+    {
+        await Ledger().ApproveAsync(User, Client, Request);
+        Assert.True(await Ledger().DisconnectAsync(User, Client.ConsentKey));
+
+        Assert.Null(await Ledger().AuthorizeAsync(User, Client, Request));
+
+        Assert.Null(await _store.GetConsentAsync(User.Subject, Client.ConsentKey));
     }
 }

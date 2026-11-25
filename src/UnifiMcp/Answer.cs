@@ -21,6 +21,9 @@ internal sealed class Answer
 {
     private static readonly JsonSerializerOptions ViewJson = new(JsonSerializerDefaults.Web) { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull };
 
+    /// <summary>The most a view's data may take in <c>_meta</c>, as UTF-8 JSON (256 KiB).</summary>
+    public const int ViewLimit = 256 * 1024;
+
     private readonly StringBuilder _text = new();
 
     private Answer() { }
@@ -32,9 +35,15 @@ internal sealed class Answer
     /// Runs <paramref name="body"/>: one text block, capped at <see cref="ToolText.Limit"/>, and the view if one was set.
     /// When the answer ends early the view is <paramref name="onFatal"/>'s, given the reason.
     /// </summary>
+    /// <remarks>
+    /// Every read the body makes is charged to one <see cref="UpstreamBudget"/>. When a read was cut short the text starts
+    /// with a "Partial answer" line that says why and how to narrow the question, ahead of the cap so it is never cut off.
+    /// A view larger than <see cref="ViewLimit"/> is replaced by <paramref name="onFatal"/>'s, given why, or left out.
+    /// </remarks>
     public static async Task<CallToolResult> RunAsync(Func<Answer, Task> body, Func<string, object>? onFatal = null)
     {
         var answer = new Answer();
+        var budget = UpstreamBudget.Open();
         var fatal = false;
         try
         {
@@ -46,24 +55,54 @@ internal sealed class Answer
             answer.Line(e.Message);
             answer.View = onFatal?.Invoke(e.Message);
         }
+
+        var meta = ViewMeta(answer.View, onFatal, budget);
+        var notes = budget.Notes;
+        var text = answer._text.ToString();
+        if (notes.Count > 0) text = $"**Partial answer:** {string.Join(" ", notes)}\n\n{text}";
         return new CallToolResult
         {
             IsError = fatal,
-            Content = [new TextContentBlock { Text = ToolText.Cap(answer._text.ToString()) }],
-            Meta = answer.View is { } view ? new JsonObject { [ViewResources.ViewMetaKey] = JsonSerializer.SerializeToNode(view, view.GetType(), ViewJson) } : null,
+            Content = [new TextContentBlock { Text = ToolText.Cap(text) }],
+            Meta = meta is null ? null : new JsonObject { [ViewResources.ViewMetaKey] = meta },
         };
+    }
+
+    /// <summary>The view's data for <c>_meta</c>, held to <see cref="ViewLimit"/>: past it the fallback view, given why, or none.</summary>
+    private static JsonNode? ViewMeta(object? view, Func<string, object>? fallback, UpstreamBudget budget)
+    {
+        if (view is null) return null;
+        var json = JsonSerializer.SerializeToUtf8Bytes(view, view.GetType(), ViewJson);
+        if (json.Length <= ViewLimit) return JsonNode.Parse(json);
+
+        var why = $"The view's data was too large to send ({json.Length / 1024} KB, at most {ViewLimit / 1024} KB). Ask about one device, client or network to see it.";
+        budget.Note(why);
+        if (fallback?.Invoke(why) is not { } small) return null;
+        var smaller = JsonSerializer.SerializeToUtf8Bytes(small, small.GetType(), ViewJson);
+        return smaller.Length <= ViewLimit ? JsonNode.Parse(smaller) : null;
     }
 
     public Answer Write(string text)
     {
-        _text.Append(text);
+        Keep(text);
         return this;
     }
 
     public Answer Line(string text = "")
     {
-        _text.AppendLine(text);
+        Keep(text);
+        Keep(Environment.NewLine);
         return this;
+    }
+
+    /// <summary>
+    /// Appends what fits in <see cref="ToolText.Limit"/> and one character more: text past the cap is cut off anyway, so
+    /// it is not kept, even from one large write, and the one character over is what makes the cap add its marker.
+    /// </summary>
+    private void Keep(string text)
+    {
+        var room = ToolText.Limit + 1 - _text.Length;
+        if (room > 0) _text.Append(text, 0, Math.Min(room, text.Length));
     }
 
     /// <summary>

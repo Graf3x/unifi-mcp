@@ -112,7 +112,7 @@ public sealed class OAuthClientsTests : IDisposable
     [InlineData("https://claude.ai:8443/cb", "redirect_uri 'https://claude.ai:8443/cb' is not same-origin with the client_id URL.")]
     [InlineData("https://evil.example/cb", "redirect_uri 'https://evil.example/cb' is not same-origin with the client_id URL.")]
     [InlineData("http://claude.ai/cb", "redirect_uri 'http://claude.ai/cb' is not same-origin with the client_id URL.")]
-    [InlineData("https://claude.ai/cb#here", "redirect_uri 'https://claude.ai/cb#here' is not a valid absolute URI.")]
+    [InlineData("https://claude.ai/cb#here", "redirect_uris must not contain a fragment.")]
     [InlineData("not a uri", "redirect_uri 'not a uri' is not a valid absolute URI.")]
     public async Task A_document_s_redirects_must_share_its_origin_or_be_loopback(string redirect, string? problem)
     {
@@ -157,6 +157,72 @@ public sealed class OAuthClientsTests : IDisposable
         Assert.False(web.Allows("https://claude.ai:444/cb"));
         Assert.False(web.Allows(""));
     }
+
+    [Theory]
+    [InlineData("http://127.0.0.1:5555/cb?app=code", true)] // unchanged query, different port
+    [InlineData("http://127.0.0.1/cb?app=code", true)]
+    [InlineData("http://127.0.0.1:5555/cb?app=other", false)] // changed query
+    [InlineData("http://127.0.0.1:5555/cb?app=code&code=x", false)] // added query parameter
+    [InlineData("http://127.0.0.1:5555/cb", false)] // query dropped
+    [InlineData("http://127.0.0.1:5555/other?app=code", false)] // changed path
+    [InlineData("http://127.0.0.1:5555/cb/../cb?app=code", false)] // the same path once normalized is still not the declared one
+    [InlineData("http://127.0.0.1:5555/cb?app=code#here", false)] // fragment
+    [InlineData("http://127.0.0.1:5555/cb?app=code#", false)]
+    [InlineData("http://user@127.0.0.1:5555/cb?app=code", false)] // user info
+    [InlineData("http://@127.0.0.1:5555/cb?app=code", false)]
+    [InlineData("http://localhost:5555/cb?app=code", false)] // another loopback host
+    public void A_loopback_redirect_must_match_the_declared_one_exactly_apart_from_its_port(string requested, bool allowed)
+    {
+        var client = new Client(DocumentUrl, Client.ConsentKeyFor(DocumentUrl), "claude.ai", ["http://127.0.0.1/cb?app=code"], true);
+
+        Assert.Equal(allowed, client.Allows(requested));
+    }
+
+    [Theory]
+    [InlineData("http://[::1]:5555/cb", true)]
+    [InlineData("http://[::1]/cb", true)]
+    [InlineData("http://[::1]:5555/cb#x", false)]
+    public void An_ipv6_loopback_redirect_matches_on_any_port(string requested, bool allowed)
+    {
+        var client = new Client(DocumentUrl, Client.ConsentKeyFor(DocumentUrl), "claude.ai", ["http://[::1]/cb"], true);
+
+        Assert.Equal(allowed, client.Allows(requested));
+    }
+
+    [Fact]
+    public void A_web_redirect_with_a_fragment_or_user_info_is_never_allowed()
+    {
+        // Even a registration that somehow holds such an address (an older database) cannot send the owner there.
+        var web = new Client("mcp_abc", "mcp_abc", "Claude", ["https://claude.ai/cb#x", "https://user@claude.ai/cb"], false);
+
+        Assert.False(web.Allows("https://claude.ai/cb#x"));
+        Assert.False(web.Allows("https://user@claude.ai/cb"));
+    }
+
+    [Theory]
+    [InlineData("http://user@127.0.0.1/cb", "redirect_uris must not contain user info.")]
+    [InlineData("https://user:pw@claude.ai/cb", "redirect_uris must not contain user info.")]
+    [InlineData("https://user:pw@claude.ai:99999/cb", "redirect_uris must not contain user info.")]
+    [InlineData("https://claude.ai/cb#", "redirect_uris must not contain a fragment.")]
+    [InlineData("https://claude.ai:99999/cb#secret", "redirect_uris must not contain a fragment.")]
+    public async Task A_document_redirect_with_user_info_or_a_fragment_is_refused_without_echoing_it(string redirect, string problem)
+    {
+        _documents.Document = Document(redirect);
+
+        var (client, refused) = await Clients().ResolveAsync(DocumentUrl);
+
+        Assert.Null(client);
+        Assert.Equal(problem, refused);
+        Assert.DoesNotContain(redirect, refused);
+    }
+
+    [Theory]
+    [InlineData("https://user@claude.ai/cb", "redirect_uris must not contain user info.")]
+    [InlineData("com.example.app:/oauth", "redirect_uri 'com.example.app:/oauth' must use https.")]
+    [InlineData("https://user:pw@claude.ai/cb", "redirect_uris must not contain user info.")]
+    [InlineData("https://claude.ai/cb#", "redirect_uris must not contain a fragment.")]
+    public async Task A_registered_redirect_with_user_info_or_a_fragment_is_refused(string redirect, string problem) =>
+        Assert.Equal(new RegistrationRefused("invalid_redirect_uri", problem), await RefusedAsync(Asking(redirect)));
 
     // ---- registering ----------------------------------------------------------------------------------------------
 

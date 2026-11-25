@@ -812,4 +812,55 @@ public class DiagnosticTests
             Assert.Equal(now - 6 * 3_600_000L, body.GetProperty("timestampFrom").GetInt64());
         }
     }
+
+    [Fact]
+    public async Task The_same_system_log_question_a_second_later_costs_no_console_call()
+    {
+        var (h, time) = await StartWithClockAsync();
+        await using var _ = h;
+        var (first, _) = await h.CallAsync("system_log");
+        var sent = h.Unifi.Requests.Count;
+
+        time.Advance(TimeSpan.FromSeconds(1));
+        var (second, isError) = await h.CallAsync("system_log");
+        Assert.False(isError, second);
+        Assert.Equal(sent, h.Unifi.Requests.Count);
+        Assert.Equal(first, second);
+    }
+
+    [Fact]
+    public async Task Other_filters_or_an_expired_cache_ask_the_console_again_over_a_new_window()
+    {
+        var (h, time) = await StartWithClockAsync();
+        await using var _ = h;
+        int LogReads() => h.Unifi.Requests.Count(r => r.Path.EndsWith("/system-log/all", StringComparison.Ordinal));
+
+        await h.CallAsync("system_log");
+        time.Advance(TimeSpan.FromSeconds(1));
+        await h.CallAsync("system_log", new() { ["severity"] = "high" });
+        Assert.Equal(2, LogReads());
+        Assert.Equal(time.GetUtcNow().ToUnixTimeMilliseconds(), LastBody(h, "/system-log/all").GetProperty("timestampTo").GetInt64());
+
+        time.Advance(ConsoleReads.CacheFor + TimeSpan.FromSeconds(1));
+        await h.CallAsync("system_log");
+        Assert.Equal(3, LogReads());
+        Assert.Equal(time.GetUtcNow().ToUnixTimeMilliseconds(), LastBody(h, "/system-log/all").GetProperty("timestampTo").GetInt64());
+    }
+
+    [Fact]
+    public async Task Counts_fetched_after_cached_events_cover_the_same_window_as_the_events()
+    {
+        var (h, time) = await StartWithClockAsync();
+        await using var _ = h;
+        h.Unifi.Route("POST", $"{V2}/system-log/count", "{}", status: 500);
+        await h.CallAsync("system_log");
+        var observed = LastBody(h, "/system-log/all").GetProperty("timestampTo").GetInt64();
+
+        h.Unifi.Route("POST", $"{V2}/system-log/count", LogCount);
+        time.Advance(TimeSpan.FromSeconds(1));
+        var (text, _) = await h.CallAsync("system_log");
+        Assert.Contains("CLIENT_ROAMED 376", text);
+        Assert.Single(h.Unifi.Requests, r => r.Path.EndsWith("/system-log/all", StringComparison.Ordinal));
+        Assert.Equal(observed, LastBody(h, "/system-log/count").GetProperty("timestampTo").GetInt64());
+    }
 }

@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Net.Security;
 using System.Security.Authentication;
 using System.Security.Cryptography;
@@ -13,7 +14,7 @@ public enum CertificateVerdict { Refused, KeyPin, CertificatePin, Ca }
 /// How a request reaches the console: nothing is sent until the key and pin exist, the key travels only in its header
 /// and only to a console whose certificate passed, redirects are handed back rather than followed, and the key is
 /// scrubbed from everything returned. A refused certificate comes back as an error that says what the console
-/// presented and where to change the pin.
+/// presented and where to change the pin. What one request may cost is bounded here: its turn, its deadline, its bytes.
 /// </summary>
 /// <remarks>
 /// The console's certificate is usually self-signed, so by default it is pinned: a pin is the SHA-256 of the
@@ -26,8 +27,19 @@ public sealed class ConsoleTransport
     /// <summary>A certificate the console presented and this server refused: its fingerprints and the TLS stack's view.</summary>
     private sealed record Refused(string Certificate, string Key, SslPolicyErrors Errors);
 
+    /// <summary>The most this server reads of one answer, declared or not (16 MiB).</summary>
+    public const long MaxResponseBytes = 16 * 1024 * 1024;
+
+    /// <summary>How many requests may be at the console at once, from every tool call together.</summary>
+    public const int MaxInFlight = 4;
+
+    /// <summary>How long one request may take, from waiting for its turn to the last byte of its answer.</summary>
+    public static readonly TimeSpan Deadline = TimeSpan.FromSeconds(30);
+
     private readonly Settings _settings;
     private readonly HttpClient _http;
+    private readonly TimeSpan _deadline;
+    private readonly SemaphoreSlim _slots = new(MaxInFlight, MaxInFlight);
 
     /// <summary>
     /// The certificate most recently refused. Every request goes to the one console, so a refused handshake is explained
@@ -37,18 +49,31 @@ public sealed class ConsoleTransport
     private volatile Refused? _refused;
 
     /// <param name="handler">Tests only: stands in for the console, skipping TLS. Otherwise the pinned handler is built here.</param>
-    public ConsoleTransport(Settings settings, HttpMessageHandler? handler = null)
+    /// <param name="deadline">Tests only: in place of <see cref="Deadline"/>.</param>
+    public ConsoleTransport(Settings settings, HttpMessageHandler? handler = null, TimeSpan? deadline = null)
     {
         _settings = settings;
-        _http = new HttpClient(handler ?? PinnedHandler(), disposeHandler: handler is null) { Timeout = TimeSpan.FromSeconds(30) };
+        _deadline = deadline ?? Deadline;
+        // The deadline below covers the whole request, the body included, so the client's own timeout is not needed.
+        _http = new HttpClient(handler ?? PinnedHandler(), disposeHandler: handler is null) { Timeout = Timeout.InfiniteTimeSpan };
     }
 
-    /// <summary>A request to <paramref name="path"/>, from the console's root (/proxy/network/…).</summary>
+    /// <summary>
+    /// A request to <paramref name="path"/>, from the console's root (/proxy/network/…). It waits for one of
+    /// <see cref="MaxInFlight"/> turns, and has <see cref="Deadline"/> in all, that wait and the body included. The answer is read as it
+    /// streams in and refused past <see cref="MaxResponseBytes"/>, or past what the current answer's
+    /// <see cref="UpstreamBudget"/> has left, whether or not the console declared a length; its bytes are charged to that
+    /// budget as they arrive.
+    /// </summary>
     public async Task<UnifiResponse> SendAsync(HttpMethod method, string path, string? body, CancellationToken ct)
     {
         var missing = _settings.Missing();
         if (missing.Count > 0)
             throw new UnifiNotConfigured("UniFi MCP is not configured, so nothing was sent. Still needed: " + string.Join("; ", missing) + ".");
+
+        var what = $"{method} {path.Split('?')[0]}";
+        var budget = UpstreamBudget.Current;
+        budget?.Request(what);
 
         var key = _settings.ApiKey()!;
         using var req = new HttpRequestMessage(method, _settings.BaseUrl.GetLeftPart(UriPartial.Authority) + path);
@@ -56,10 +81,22 @@ public sealed class ConsoleTransport
         req.Headers.Accept.ParseAdd("application/json");
         if (body is not null) req.Content = new StringContent(body, Encoding.UTF8, "application/json");
 
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(_deadline);
         try
         {
-            using var resp = await _http.SendAsync(req, ct);
-            return new UnifiResponse((int)resp.StatusCode, Scrub(await resp.Content.ReadAsStringAsync(ct), key));
+            await _slots.WaitAsync(deadline.Token);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            throw new UnifiError($"The console is busy with this server's other requests, so {what} was not sent. Try again in a moment.");
+        }
+
+        try
+        {
+            using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, deadline.Token);
+            var text = await ReadAsync(resp.Content, what, budget, deadline.Token);
+            return new UnifiResponse((int)resp.StatusCode, Scrub(text, key));
         }
         catch (HttpRequestException ex)
         {
@@ -67,10 +104,95 @@ public sealed class ConsoleTransport
             var refused = ex.HttpRequestError == HttpRequestError.SecureConnectionError && ex.InnerException is AuthenticationException ? _refused : null;
             throw new UnifiError(refused is null ? Scrub($"Could not reach the console: {ex.Message}", key) : Refusal(refused));
         }
-        catch (TaskCanceledException) when (!ct.IsCancellationRequested)
+        catch (IOException ex)
+        {
+            // The connection broke while the answer was being read.
+            throw new UnifiError(Scrub($"Could not reach the console: {ex.Message}", key));
+        }
+        // The deadline, or the client's own timeout; a cancellation from the caller is the caller's to see.
+        catch (OperationCanceledException e) when (!ct.IsCancellationRequested && (deadline.IsCancellationRequested || e is TaskCanceledException))
         {
             throw new UnifiError("The console did not answer in time.");
         }
+        finally
+        {
+            _slots.Release();
+        }
+    }
+
+    /// <summary>
+    /// The body of the answer to <paramref name="what"/> as text, read as it arrives: refused before reading when the
+    /// console declares more than <see cref="MaxResponseBytes"/> or than <paramref name="budget"/> has left, and stopped
+    /// as soon as more than that arrives when it does not (a chunked answer). Each chunk is charged to the budget as it
+    /// arrives, the one that goes over included, so reads made at once in one answer see each other's bytes and stop
+    /// within a chunk of the budget. An answer too large for one read is noted in the budget, so the answer says it is
+    /// partial.
+    /// </summary>
+    private static async Task<string> ReadAsync(HttpContent content, string what, UpstreamBudget? budget, CancellationToken ct)
+    {
+        UnifiError TooLarge()
+        {
+            var message = $"The console's answer to {what} is larger than {UpstreamBudget.Megabytes(MaxResponseBytes)}, so this server stopped reading it. "
+                          + "Ask for less: a filter or a smaller limit on list tools, or one device, client or shorter window on the others.";
+            budget?.Note(message);
+            return new UnifiError(message);
+        }
+
+        var left = budget?.BytesLeft ?? long.MaxValue;
+        if (content.Headers.ContentLength is { } declared && declared > Math.Min(MaxResponseBytes, left))
+            throw left < MaxResponseBytes ? budget!.OutOfBytes(what) : TooLarge();
+
+        await using var stream = await content.ReadAsStreamAsync(ct);
+        using var body = new MemoryStream();
+        var chunk = ArrayPool<byte>.Shared.Rent(64 * 1024);
+        try
+        {
+            for (int n; (n = await stream.ReadAsync(chunk, ct)) > 0;)
+            {
+                if (budget is not null && !budget.Read(n)) throw budget.OutOfBytes(what);
+                if (body.Length + n > MaxResponseBytes) throw TooLarge();
+                body.Write(chunk, 0, n);
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(chunk);
+        }
+
+        return Decode(body.GetBuffer().AsSpan(0, (int)body.Length), content.Headers.ContentType?.CharSet);
+    }
+
+    /// <summary>Encodings an answer without a charset is recognised by, from its byte order mark; UTF-32LE before the UTF-16LE mark it starts with.</summary>
+    private static readonly Encoding[] Marked = [Encoding.UTF8, Encoding.UTF32, new UTF32Encoding(bigEndian: true, byteOrderMark: true), Encoding.Unicode, Encoding.BigEndianUnicode];
+
+    /// <summary>
+    /// The text of <paramref name="bytes"/>, as HttpContent reads it: in the declared charset, less its byte order mark;
+    /// with no charset (or one unknown), in the encoding its byte order mark names, else UTF-8, which JSON is.
+    /// </summary>
+    private static string Decode(ReadOnlySpan<byte> bytes, string? charset)
+    {
+        Encoding? encoding = null;
+        try
+        {
+            if (charset is { Length: > 0 }) encoding = Encoding.GetEncoding(charset.Trim('"'));
+        }
+        catch (ArgumentException)
+        {
+            // An unknown charset: read as if none were declared.
+        }
+        if (encoding is null)
+        {
+            foreach (var marked in Marked)
+            {
+                if (!bytes.StartsWith(marked.Preamble)) continue;
+                encoding = marked;
+                break;
+            }
+        }
+        encoding ??= Encoding.UTF8;
+        var preamble = encoding.Preamble;
+        if (preamble.Length > 0 && bytes.StartsWith(preamble)) bytes = bytes[preamble.Length..];
+        return encoding.GetString(bytes);
     }
 
     /// <summary>

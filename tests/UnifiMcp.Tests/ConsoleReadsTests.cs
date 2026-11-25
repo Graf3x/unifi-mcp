@@ -31,7 +31,7 @@ public sealed class ConsoleReadsTests : IDisposable
 
     private int InternalReads() => _fake.Requests.Count(r => r.Path.StartsWith("/proxy/network/", StringComparison.Ordinal));
 
-    private static SystemLogQuery Page(int page) => new(0, 1, 50, page, null, null, null, null);
+    private static SystemLogQuery Page(int page) => new(24, 50, page, null, null, null, null);
 
     [Fact]
     public async Task The_same_read_within_a_few_seconds_is_answered_from_cache()
@@ -44,6 +44,88 @@ public sealed class ConsoleReadsTests : IDisposable
         _time.Advance(ConsoleReads.CacheFor + TimeSpan.FromSeconds(1));
         await site.HealthAsync(default);
         Assert.Equal(2, InternalReads());
+    }
+
+    [Fact]
+    public async Task The_same_system_log_question_is_cached_by_the_question_and_keeps_its_window()
+    {
+        var site = await _reads.SiteAsync(null, default);
+        var first = await site.SystemLogAsync(Page(0), default);
+        _time.Advance(TimeSpan.FromSeconds(1));
+        var again = await site.SystemLogAsync(Page(0), default);
+        Assert.Equal(1, InternalReads());
+        Assert.Equal(first.Window, again.Window);
+        Assert.Equal(24 * 3_600_000L, again.Window.To - again.Window.From);
+
+        await site.SystemLogAsync(Page(0) with { Severities = ["HIGH"] }, default);
+        await site.SystemLogAsync(Page(0) with { Hours = 6 }, default);
+        Assert.Equal(3, InternalReads());
+
+        _time.Advance(ConsoleReads.CacheFor);
+        var later = await site.SystemLogAsync(Page(0), default);
+        Assert.Equal(4, InternalReads());
+        Assert.Equal(_time.GetUtcNow().ToUnixTimeMilliseconds(), later.Window.To);
+    }
+
+    [Fact]
+    public async Task Pages_of_one_system_log_question_share_one_window_so_paging_neither_skips_nor_mixes_snapshots()
+    {
+        var site = await _reads.SiteAsync(null, default);
+        var one = new SystemLogQuery(24, 1, 1, null, null, null, null);
+        var laterPage = await site.SystemLogAsync(one, default);
+
+        // A new event may have arrived; the first page, asked while the second is still cached, covers the same window.
+        _time.Advance(TimeSpan.FromSeconds(2));
+        var firstPage = await site.SystemLogAsync(one with { PageNumber = 0 }, default);
+        Assert.Equal(laterPage.Window, firstPage.Window);
+        Assert.Equal(2, InternalReads());
+        Assert.All(_fake.Requests.Where(r => r.Path.EndsWith("/system-log/all", StringComparison.Ordinal)),
+            r => Assert.Contains($"\"timestampTo\":{laterPage.Window.To}", r.Body));
+
+        // Asking either page again within the window's life costs nothing.
+        await site.SystemLogAsync(one, default);
+        await site.SystemLogAsync(one with { PageNumber = 0 }, default);
+        Assert.Equal(2, InternalReads());
+
+        // Once the window has aged out, a new first page starts a new window, and the next page is read in it, not from cache.
+        _time.Advance(ConsoleReads.CacheFor);
+        var newFirst = await site.SystemLogAsync(one with { PageNumber = 0 }, default);
+        var newNext = await site.SystemLogAsync(one, default);
+        Assert.Equal(4, InternalReads());
+        Assert.Equal(_time.GetUtcNow().ToUnixTimeMilliseconds(), newFirst.Window.To);
+        Assert.Equal(newFirst.Window, newNext.Window);
+        Assert.Contains($"\"timestampTo\":{newFirst.Window.To}", _fake.Requests[^1].Body);
+    }
+
+    /// <summary>A clock that runs <see cref="OnNow"/> once, the first time the wall clock is read.</summary>
+    private sealed class HookedClock(DateTimeOffset wall) : TimeProvider
+    {
+        public Action? OnNow { get; set; }
+        public override DateTimeOffset GetUtcNow()
+        {
+            var hook = OnNow;
+            OnNow = null;
+            hook?.Invoke();
+            return wall;
+        }
+    }
+
+    [Fact]
+    public async Task A_key_installed_while_a_read_is_being_made_still_gets_the_window_its_body_asked_for()
+    {
+        var clock = new HookedClock(new DateTimeOffset(2025, 3, 1, 12, 0, 0, TimeSpan.Zero));
+        var reads = new ConsoleReads(_client, clock);
+        var site = await reads.SiteAsync(null, default);
+        var keyFile = _client.Settings.ApiKeyFile;
+        var key = File.ReadAllText(keyFile);
+        File.Delete(keyFile);
+        // The key arrives after this server saw it missing but before the transport looks again.
+        clock.OnNow = () => File.WriteAllText(keyFile, key);
+
+        var page = await site.SystemLogAsync(Page(0), default);
+        var at = clock.GetUtcNow().ToUnixTimeMilliseconds();
+        Assert.Equal(new LogWindow(24, at - 24 * 3_600_000L, at), page.Window);
+        Assert.Contains($"\"timestampTo\":{at}", _fake.Requests[^1].Body);
     }
 
     [Fact]
@@ -116,6 +198,58 @@ public sealed class ConsoleReadsTests : IDisposable
         Assert.Equal(["hint"], Parameters(typeof(ConsoleReads)).Where(p => p.ParameterType == typeof(string)).Select(p => p.Name));
         Assert.DoesNotContain(Parameters(typeof(ConsoleSite)), p => p.ParameterType == typeof(string) || p.ParameterType == typeof(HttpMethod));
         Assert.DoesNotContain(Parameters(typeof(ConsoleReads)), p => p.ParameterType == typeof(HttpMethod));
+    }
+
+    /// <summary>A wall clock that can be set anywhere, and a steady clock that only moves forward with real time.</summary>
+    private sealed class SplitClock : TimeProvider
+    {
+        public DateTimeOffset Wall { get; set; } = new(2025, 3, 1, 12, 0, 0, TimeSpan.Zero);
+        private long _ticks;
+        public override DateTimeOffset GetUtcNow() => Wall;
+        public override long GetTimestamp() => _ticks;
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+        public void Elapse(TimeSpan d) => (Wall, _ticks) = (Wall + d, _ticks + d.Ticks);
+    }
+
+    private (ConsoleReads Reads, SplitClock Clock) WithSplitClock()
+    {
+        var clock = new SplitClock();
+        return (new ConsoleReads(_client, clock), clock);
+    }
+
+    [Fact]
+    public async Task A_wall_clock_set_back_does_not_keep_a_cached_answer()
+    {
+        var (reads, clock) = WithSplitClock();
+        var site = await reads.SiteAsync(null, default);
+        await site.HealthAsync(default);
+        clock.Wall -= TimeSpan.FromHours(1);
+        clock.Elapse(ConsoleReads.CacheFor + TimeSpan.FromSeconds(1));
+        await site.HealthAsync(default);
+        Assert.Equal(2, InternalReads());
+    }
+
+    [Fact]
+    public async Task A_wall_clock_set_back_does_not_empty_the_budget()
+    {
+        var (reads, clock) = WithSplitClock();
+        var site = await reads.SiteAsync(null, default);
+        for (var i = 0; i < ConsoleReads.Burst; i++) await site.SystemLogAsync(Page(i), default);
+        clock.Wall -= TimeSpan.FromHours(1);
+        clock.Elapse(TimeSpan.FromSeconds(60.0 / ConsoleReads.PerMinute + 0.1));
+        await site.SystemLogAsync(Page(99), default);
+        Assert.Equal(ConsoleReads.Burst + 1, InternalReads());
+    }
+
+    [Fact]
+    public async Task A_wall_clock_set_forward_does_not_refill_the_budget()
+    {
+        var (reads, clock) = WithSplitClock();
+        var site = await reads.SiteAsync(null, default);
+        for (var i = 0; i < ConsoleReads.Burst; i++) await site.SystemLogAsync(Page(i), default);
+        clock.Wall += TimeSpan.FromHours(1);
+        await Assert.ThrowsAsync<UnifiError>(() => site.SystemLogAsync(Page(99), default));
+        Assert.Equal(ConsoleReads.Burst, InternalReads());
     }
 
     [Fact]

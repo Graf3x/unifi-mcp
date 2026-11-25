@@ -63,17 +63,26 @@ Anything else the API offers, Claude finds with `search_operations` and runs wit
 
 - Read-only by default. Write tools exist only when `UNIFI_ALLOW_WRITES` is exactly `true`; each is marked destructive and
   asks you to approve it. A client that can show a confirmation form (MCP 2026-07-28 elicitation, as Claude Code does)
-  shows you the change with Accept or Decline, and the model cannot approve it for you. Any other client needs `confirm`
-  set to the tool's own name, otherwise it returns a preview and sends nothing.
+  shows you the whole change with Accept or Decline, and the model cannot approve it for you. A change too big to show
+  whole is refused. Any other client is refused every write, unless you turn on the confirm fallback (see
+  [Writes](#writes)).
 - TLS to the console is pinned to a SHA-256 fingerprint of its certificate or public key, or, with `UNIFI_CERT_TRUST=ca`,
   checked against a trusted CA. There is no default pin and no way to turn verification off.
 - The API key comes from the `UNIFI_API_KEY` environment variable, falling back to `/config/unifi-api-key` only when the
   variable is unset or empty. It is never logged or returned, and is scrubbed from console errors.
-- No published ports unless you add the LAN listener. The server listens on two Unix sockets:
-  - `public.sock`, the Claude connector, reached through a Cloudflare tunnel. It takes OAuth bearer tokens, issued only
+- Credentials the console sends back (Wi-Fi passphrases, per-network keys, hotspot voucher codes) are replaced with
+  `[redacted]` in every answer and error before it reaches Claude, writes on or off. Names, ids and other settings stay.
+  An answer that is not JSON can't be checked, so it isn't shown. Voucher codes are what the voucher tools are for: if
+  you hand them out through Claude, set `UNIFI_REVEAL_SECRETS=voucher-codes`. Nothing shows a Wi-Fi passphrase or key;
+  read those in the UniFi app.
+- No published ports unless you add the LAN listener. The server listens on two Unix sockets, each in a folder of its own:
+  - `run-public/public.sock`, the Claude connector, reached through a Cloudflare tunnel. It takes OAuth bearer tokens, issued only
     after the owner signs in (see [guide 2](#guide-2-claudeai-with-a-sign-in-code) and [guide 3](#guide-3-full-setup-with-google-sign-in)), and, if you set one, the fixed `MCP_ACCESS_TOKEN`.
-  - `mcp.sock`, optional tailnet access: reached through `tailscale serve`, which stamps `Tailscale-User-Login`; the server
-    checks it against an allow-list. The public socket ignores that header.
+  - `run/mcp.sock`, optional tailnet access: reached through `tailscale serve`, which stamps `Tailscale-User-Login`; the server
+    checks it against an allow-list. The public socket ignores that header. The tunnel container mounts only
+    `run-public`, so it can't reach this socket and send a login of its choosing.
+- At startup the server removes only a stale socket at either path. A file, a link or a socket someone still listens
+  on is left alone and the server stops with a message naming the path; so does a second server on the same folders.
 - The LAN listener ([guide 4](#guide-4-claude-code-across-your-lan)) is off unless `MCP_LAN_LISTEN` is set. It serves only
   `/mcp` and `/healthz`, accepts only `MCP_LAN_ACCESS_TOKEN` (never the public token, the sign-in or the Tailscale
   header), and the server won't start with it on and no token. It is plain HTTP; the startup log says so.
@@ -215,12 +224,12 @@ Each value in `.env` comes from one place. The striped ones are only for [guide 
 ```sh
 git clone https://github.com/Graf3x/unifi-mcp && cd unifi-mcp
 cp .env.example .env
-mkdir -p data run
+mkdir -p data run run-public
 ```
 
 Only `docker-compose.yml` and `.env.example` are needed at run time if you would rather copy those two files. Create
-`data` and `run` as yourself: the containers run as `PUID:PGID` from `.env` (your `id -u` / `id -g`) and must be able to
-write there.
+`data`, `run` and `run-public` as yourself: the containers run as `PUID:PGID` from `.env` (your `id -u` / `id -g`) and
+must be able to write there.
 
 #### Step 2: Console values
 
@@ -234,7 +243,7 @@ In Cloudflare Zero Trust, Networks, Tunnels: create a Cloudflared tunnel and cop
 leave it and come back under Networks, Tunnels.
 
 On the tunnel, add a published application route (public hostname): `unifi.example.com`, Path empty, Service URL
-`unix:/run/unifi-mcp/public.sock`, defaults otherwise.
+`unix:/run/unifi-mcp-public/public.sock`, defaults otherwise.
 
 Make sure nothing on that hostname asks for a login or a challenge: no Access application (watch for a wildcard such as
 `*.example.com`), no WAF, bot-fight or challenge rule. Claude's servers cannot pass one.
@@ -387,7 +396,44 @@ Already running guide 2 or 3? Add the listener to `docker-compose.yml` instead: 
 uncomment the `MCP_LAN_LISTEN` and `7420:7420` lines. Its token must differ from `MCP_ACCESS_TOKEN`, so the one that
 crosses your network in plain HTTP never opens the internet-facing connector.
 
+### Sharing one server
+
+Read this before you let more than one person, or a client you don't run yourself, use the same server.
+
+**One console key, every site it reaches.** The server makes every call to the console with its one `UNIFI_API_KEY`.
+`UNIFI_SITE` is only the default: any caller can name another site in `siteId` and read every site that key can reach,
+and change it too when writes are on. The console sees one API client, so its own logs cannot tell your callers apart.
+
+**One identity per way in.** Each way in gives the server one caller, and the audit log names that caller:
+
+| Way in | Who the server sees | Name in the audit log | To end that access |
+|---|---|---|---|
+| Code sign-in (guide 2) | One owner: whoever can read the server's log or open the setup page | `owner` | Disconnect each client on `/connections`. To end every grant at once, stop the server and delete `./data` (every client signs in again). |
+| Google sign-in (guide 3) | Each address in `MCP_ALLOWED_GOOGLE_EMAILS` | The Google address | Remove the address and run `docker compose up -d`, or Disconnect its clients on `/connections`. |
+| `MCP_ACCESS_TOKEN` | Everyone who holds the token, as one caller | `access token` | Change or clear it and run `docker compose up -d`. |
+| `MCP_LAN_ACCESS_TOKEN` (guide 4) | Everyone who holds the token, as one caller | `LAN access token` | Change it and run `docker compose -f docker-compose.lan.yml up -d`. |
+| Tailnet (`mcp.sock`) | Each login in `MCP_ALLOWED_LOGINS` | The Tailscale login | Remove the login and run `docker compose up -d`. |
+| The console key itself | Not a caller: what the server uses for everyone | | Delete it in UniFi Network under Settings > Control Plane > Integrations. The server then reaches nothing until you give it a new key. |
+
+A sign-in grant ends at the client's next refresh: the access token it already holds works until it expires, within
+the hour. Stopping the server and deleting `./data` ends them all at once, since the tokens were signed with a key kept
+there. The two tokens and the tailnet logins end as soon as the server restarts with the new values.
+
+**What the audit can tell you.** The log category `UnifiMcp.Audit` has one line per tool call: the name above, the tool
+and how it ended. A call to the Integration API also logs its method and path (the path names the site) and, for a write,
+how it was approved; arguments are never logged. Writes are logged by default. Reads are logged at Debug only; to keep
+them too, set `Logging__LogLevel__UnifiMcp.Audit=Debug` in `.env`. The audit cannot tell apart two people who share a
+token, a Tailscale login or the sign-in code, and a write approval comes from whoever made the call, in their own client,
+so it does not protect one caller from another.
+
+**Groups that don't trust each other** each need a separate instance: its own folder, `.env`, `./data`,
+`UNIFI_MCP_DATA_KEY`, tokens and public hostname, and its own console key. A key can do what the console lets it do, and
+this server cannot narrow it. If your console can make a key with less access (for example under an admin limited to
+some sites, or to viewing only), give each group such a key; check what your UniFi Network version offers.
+
 ### Updating
+
+Before you update, note the image you run and back up `./data`: see [Backup and rollback](#backup-and-rollback).
 
 For guides 2, 3 and 4 (add `-f docker-compose.lan.yml` to both commands for guide 4):
 
@@ -398,12 +444,77 @@ docker compose pull && docker compose up -d
 To build from your checkout instead of pulling the published image, uncomment `build: .` and `pull_policy: build` in
 `docker-compose.yml`, then `docker compose up -d --build`. For guide 1, `git pull` and run `dotnet run` again.
 
+#### Moving the public socket to its own folder
+
+Guides 2 and 3 set up before this change put both sockets in `./run` and mounted all of it into the tunnel container,
+so that container could also reach `mcp.sock`, which trusts the login its caller names. The public socket now lives in
+`./run-public`, and the tunnel container mounts only that folder. A new image looks for the public socket there; until
+you move it, the connector is down (the log says `Public socket not bound`) and the tailnet side keeps working.
+
+1. Create the folder as yourself: `mkdir -p run-public`.
+2. Take the new `docker-compose.yml`, or change yours: add `- ./run-public:/run/unifi-mcp-public` under the
+   `unifi-mcp` service's `volumes`, and replace `- ./run:/run/unifi-mcp` under `cloudflared` with
+   `- ./run-public:/run/unifi-mcp-public`. Don't keep `./run` in the tunnel container, not even read-only.
+3. If you set `MCP_PUBLIC_LISTEN` in `.env`, remove it or point it into `/run/unifi-mcp-public`. Do this before the
+   next step, which recreates the containers with whatever `.env` says.
+4. In Cloudflare Zero Trust, Networks, Tunnels, edit the route's Service URL to
+   `unix:/run/unifi-mcp-public/public.sock`.
+5. `docker compose pull && docker compose up -d`, then open the setup page: the Cloudflare tunnel check should pass.
+   Once it does, you may delete the old `run/public.sock`.
+
+### Backup and rollback
+
+Do this before every update. `./data` holds the connector's state: `oauth.db` (clients, consents, refresh tokens as
+hashes, revoked grants and the signing key) and `keys/` (the keyring that seals the signing key under
+`UNIFI_MCP_DATA_KEY`). A new version may change the layout of `oauth.db`, and an older image is not promised to read
+the newer one, so a rollback is the old image together with the data from before the update. Guide 4 without the
+connector keeps nothing there; noting the image is enough.
+
+Note the image by digest, stop the server so SQLite finishes its write-ahead log, copy the whole folder (with
+`oauth.db-wal` and `oauth.db-shm` if they are there), and start it again (add `-f docker-compose.lan.yml` for guide 4):
+
+```sh
+stamp=$(date +%Y%m%d-%H%M%S)
+mkdir -p backups && chmod 700 backups && mkdir -m 700 "backups/$stamp"
+docker image inspect --format '{{index .RepoDigests 0}}' "$(docker compose images -q unifi-mcp)" > "backups/$stamp/image"
+docker compose stop unifi-mcp
+(umask 077 && tar -cf "backups/$stamp/data.tar" data)
+docker compose start unifi-mcp
+```
+
+`backups/<stamp>/image` now reads `ghcr.io/graf3x/unifi-mcp@sha256:…`, the exact image you ran. An image you built
+yourself has no digest; write down the commit you built (`git rev-parse HEAD`) instead.
+
+**Keep the data key apart.** The backup does not hold `UNIFI_MCP_DATA_KEY` (it lives in `.env`); keep a copy of it
+somewhere else, such as a password manager, and never next to the backup. Without it a backup opens nothing: the
+connector answers 503. With it, a backup can sign tokens this server accepts, so anyone who has both has your access.
+
+**Roll back** with the data key unchanged:
+
+```sh
+docker compose stop unifi-mcp
+mv data data.before-rollback
+tar -xf backups/<stamp>/data.tar
+```
+
+Then set `image:` in `docker-compose.yml` to the line in `backups/<stamp>/image` and run `docker compose up -d`. Delete
+`data.before-rollback` once you are sure.
+
+**A backup is old authorization state.** Restoring it brings back every client and grant that existed when it was made,
+including ones you disconnected since, and forgets clients that connected later (they sign in again). After a restore,
+open `/connections` and Disconnect anything that should not be there. Keep backups readable only by you, as above, off
+shared drives, and delete the ones you no longer need. If the data key ever leaks, stop the server, delete `./data` and
+every backup made under that key, and set a new key: every client signs in again.
+
 ### Troubleshooting
 
 - Guide 1, 403 from `http://127.0.0.1:5199/mcp`: the `Tailscale-User-Login` header is missing, or its value is not in
   `MCP_ALLOWED_LOGINS`.
 - 503 from `https://unifi.example.com/mcp`: the connector is not configured or its keys cannot be opened; the startup log
   line says why.
+- 502 from `https://unifi.example.com/mcp`: the tunnel can't reach the public socket. The route's Service URL must be
+  `unix:/run/unifi-mcp-public/public.sock`, and `./run-public` must be mounted in both containers (see
+  [Moving the public socket to its own folder](#moving-the-public-socket-to-its-own-folder)).
 - Guide 4, 401 from `http://192.168.1.20:7420/mcp`: the header is missing, or its token isn't `MCP_LAN_ACCESS_TOKEN`
   (`MCP_ACCESS_TOKEN` is not accepted there). No answer at all: the port isn't published, or a firewall is in the way.
 - `docker ps` shows the container as unhealthy: the server doesn't answer `/healthz` on `mcp.sock`. The image checks it
@@ -423,9 +534,19 @@ To build from your checkout instead of pulling the published image, uncomment `b
 
 ## Writes
 
-With `UNIFI_ALLOW_WRITES=true` the write tools appear. Each asks you first: with a confirmation form where Claude can
-show one, otherwise by previewing until called with `confirm` set to its own name. The audit log says which way each
-change was approved. Set it back to `false` and restart to make the server read-only.
+With `UNIFI_ALLOW_WRITES=true` the write tools appear. Each asks you first, on a confirmation form that shows the whole
+change: the request and every field of its body. You click Accept or Decline; the model cannot answer for you. A change
+too big for the form (over 10,000 characters) is refused and nothing is sent, so Claude has to make it in smaller steps.
+
+The form needs a client on MCP revision 2026-07-28 that declares form elicitation. A client without it is refused every
+write. If yours cannot show the form and you still want writes there, set `UNIFI_ALLOW_CONFIRM_FALLBACK=true`. Then such a
+client gets a preview, and the write is sent when the model calls the tool again with `confirm` set to the tool's own name.
+Know what that means: the model sets `confirm` itself, so on that client the model approves its own writes. Nothing
+checks that you saw the preview or said yes. Turn it on only if you trust the model, and what it reads, with your network.
+Clients that can show the form still get it, and ignore `confirm`.
+
+The audit log says how each change was approved, or why it was refused. Set `UNIFI_ALLOW_WRITES` back to `false` and
+restart to make the server read-only.
 
 ## Settings reference
 
@@ -439,6 +560,8 @@ All settings come from the environment (`.env` with Docker Compose). After chang
 | `UNIFI_CERT_SHA256` | none | Pinned fingerprints of the console's public key or certificate, comma separated. |
 | `UNIFI_CERT_TRUST` | `pin` | `ca` checks a CA-issued certificate instead of a pin. |
 | `UNIFI_ALLOW_WRITES` | `false` | Exactly `true` lists the write tools; see [Writes](#writes). |
+| `UNIFI_REVEAL_SECRETS` | none | `voucher-codes` shows hotspot voucher codes in answers; see [Safety](#safety). Any other value stops the server. |
+| `UNIFI_ALLOW_CONFIRM_FALLBACK` | `false` | Exactly `true` lets a client that cannot show the confirmation form write with `confirm`, so the model approves its own writes there; see [Writes](#writes). |
 | `MCP_PUBLIC_BASE_URL` | none | The connector's public origin, e.g. `https://unifi.example.com`. |
 | `MCP_SIGNIN` | `google` | `code` or `google`; `.env.example` sets `code`. |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | none | Google OAuth web client, for `google` sign-in. |
@@ -461,7 +584,7 @@ All settings come from the environment (`.env` with Docker Compose). After chang
 | `MCP_ALLOWED_LOGINS_FILE` | `/config/allowed-logins` | Read when `MCP_ALLOWED_LOGINS` is empty. |
 | `MCP_ALLOWED_GOOGLE_EMAILS_FILE` | `/config/allowed-google-emails` | Read when `MCP_ALLOWED_GOOGLE_EMAILS` is empty. |
 | `MCP_LISTEN` | `unix:/run/unifi-mcp/mcp.sock` | The tailnet listener. A TCP address is refused unless it is loopback and `MCP_ALLOW_LOOPBACK_TCP=true`. |
-| `MCP_PUBLIC_LISTEN` | `unix:/run/unifi-mcp/public.sock` | The connector's listener. |
+| `MCP_PUBLIC_LISTEN` | `unix:/run/unifi-mcp-public/public.sock` | The connector's listener. Keep it in a folder of its own: that folder is all the tunnel container mounts. |
 | `MCP_ALLOW_LOOPBACK_TCP` | `false` | Allows a loopback `MCP_LISTEN`, as in guide 1. |
 | `MCP_DATA_DIR` | `/data` | Where the connector keeps its sign-in store and keys. |
 | `MCP_LAN_LISTEN` | off | The token-only LAN listener: an IP address and a port, e.g. `http://0.0.0.0:7420`. Serves `/mcp` and `/healthz` over plain HTTP; needs `MCP_LAN_ACCESS_TOKEN`. `docker-compose.lan.yml` sets it. |
@@ -475,18 +598,22 @@ All settings come from the environment (`.env` with Docker Compose). After chang
 API key. Claude reaches the server only the way you set up: locally, through your Cloudflare tunnel, over Tailscale, or
 over your LAN with a token.
 
-**Can Claude change my network?** Only if you set `UNIFI_ALLOW_WRITES=true`. Even then each change asks you first. Where
-Claude can show a confirmation form, you see the change and click Accept or Decline yourself. Elsewhere it comes back as a
-preview, and is sent only when Claude calls the tool again with `confirm`; you see that in the conversation.
+**Can Claude change my network?** Only if you set `UNIFI_ALLOW_WRITES=true`. Even then each change asks you first, on a
+confirmation form where you see the whole change and click Accept or Decline yourself. A client that cannot show the form
+cannot write at all, unless you also set `UNIFI_ALLOW_CONFIRM_FALLBACK=true`; then Claude approves its own writes there
+with `confirm`, as [Writes](#writes) explains.
 
 **Will it slow the console down?** The official API is made for this. The diagnostics tools also read the console's
 internal API, which is not, so those calls are limited to 30 a minute and repeats within 10 seconds come from a cache.
+Every call is bounded too: at most 4 requests are at the console at once, each gets 30 seconds and 16 MB, and a list is
+read to 5,000 items. One composite answer makes at most 100 requests and reads at most 32 MB. When it stops early it
+starts with "Partial answer" and says how to narrow the question.
 
 **Does it keep my network data?** No. `./data` holds only the connector's sign-in records and keys, the keys wrapped with
 `UNIFI_MCP_DATA_KEY`. Console answers go to Claude in the conversation; the diagnostics tools leave out the secrets the
 internal API returns, such as device keys.
 
-**I have several sites.** Every tool takes `siteId` (a UUID or a site name); `UNIFI_SITE` sets the default.
+**I have several sites.** Every tool takes `siteId` (a UUID or a site name); `UNIFI_SITE` sets the default. If two sites share a name, use the UUID: the server refuses a name that fits more than one site.
 
 **Which UniFi versions work?** It is built against UniFi Network's Integration API 11.0.97 and tested on UniFi Network 11.
 The diagnostics use internal endpoints Ubiquiti can change without notice; if one moves, that tool says so and the rest
@@ -543,7 +670,8 @@ sudo tailscale serve --bg --https=7420 unix:/srv/fleet/apps/unifi-mcp/run/mcp.so
 Then, for Claude Code: `claude mcp add --transport http unifi https://fleet-mini.<tailnet>.ts.net:7420/mcp`.
 
 Files are read on each use, so no restart is needed. Writes are on in `deploy/compose.yaml` (`UNIFI_ALLOW_WRITES: "true"`);
-set it to `"false"` and redeploy to make the server read-only.
+set it to `"false"` and redeploy to make the server read-only. `UNIFI_ALLOW_CONFIRM_FALLBACK` is not set there, so only a
+client that can show the confirmation form can write.
 
 ### Runbook: two stages
 
@@ -568,7 +696,7 @@ deploy an app that declares a key that is unset or not granted to it). `<host>` 
    `https://<host>/signin-google`. Store the client ID and secret with `fleet-key set GOOGLE_CLIENT_ID` and
    `fleet-key set GOOGLE_CLIENT_SECRET`, then `fleet-key allow` each for `unifi-mcp`.
 2. Owner, Cloudflare Zero Trust: as in [guide 2 step 3](#step-3-cloudflare-tunnel), route `<host>` to
-   `unix:/run/unifi-mcp/public.sock`. Store the token with `fleet-key set UNIFI_MCP_TUNNEL_TOKEN` and `fleet-key allow` it.
+   `unix:/run/unifi-mcp-public/public.sock`. Store the token with `fleet-key set UNIFI_MCP_TUNNEL_TOKEN` and `fleet-key allow` it.
 3. Owner: put your Google address in `config/allowed-google-emails`, one per line:
    `echo 'you@example.com' | sudo tee allowed-google-emails >/dev/null`.
 4. Owner, only if the tunnel will not connect: fleet-mini may be blocked from Cloudflare on outbound port 7844. Opening it
@@ -577,6 +705,20 @@ deploy an app that declares a key that is unset or not granted to it). `<host>` 
    generates it), `MCP_PUBLIC_BASE_URL`, `./data:/data` and the `cloudflared` sidecar. No ports are published.
 6. In Claude: Settings, Connectors, Add custom connector, URL `https://<host>/mcp`. Sign in with Google, approve,
    and ask Claude to call `getting_started`.
+
+#### Migration: the public socket's own folder
+
+The release that moves the public socket out of `./run` changes the live tunnel's origin. The connector is down from the
+deploy until step 3 is done; the tailnet side keeps working throughout.
+
+1. Owner, on fleet-mini, before the deploy: create `run-public` next to `run`, with the same owner, unless Fleet has
+   already made it:
+   `cd /srv/fleet/apps/unifi-mcp && sudo install -d -o "$(stat -c %u run)" -g "$(stat -c %g run)" -m 700 run-public`.
+2. Deploy (the owner merges the release). `deploy/compose.yaml` mounts `./run-public` into both containers and no longer
+   mounts `./run` into `cloudflared`.
+3. Owner, Cloudflare Zero Trust: edit the route for `<host>`, Service URL `unix:/run/unifi-mcp-public/public.sock`.
+4. Check: the logs have no `Public socket not bound` line, and `https://<host>/healthz` answers `ok`. The tailnet route
+   (`tailscale serve` on `run/mcp.sock`) needs no change. The old `run/public.sock` can be deleted.
 
 #### Allow-list behaviour
 

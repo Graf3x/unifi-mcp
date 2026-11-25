@@ -119,7 +119,8 @@ public sealed class Clients(SqliteOAuthStore store, IClientMetadataDocuments doc
         {
             if (raw is { Length: > MaxRedirectUriLength }) return $"Each redirect_uri must be at most {MaxRedirectUriLength} characters.";
             if (!Uri.TryCreate(raw?.Trim(), UriKind.Absolute, out var uri)) return $"redirect_uri '{Truncate(raw)}' is not an absolute URI.";
-            if (!string.IsNullOrEmpty(uri.Fragment)) return "redirect_uris must not contain a fragment.";
+            if (!string.IsNullOrEmpty(uri.Fragment) || raw!.Contains('#')) return NoFragment;
+            if (HasUserInfo(raw!.Trim(), uri)) return NoUserInfo;
             if (uri.Scheme != Uri.UriSchemeHttps) return $"redirect_uri '{Truncate(raw)}' must use https.";
         }
         if (!IsPublic(request.TokenEndpointAuthMethod)) return "Only public clients (token_endpoint_auth_method=none, PKCE) are supported.";
@@ -130,6 +131,8 @@ public sealed class Clients(SqliteOAuthStore store, IClientMetadataDocuments doc
     }
 
     internal const int MaxDocumentRedirectUris = 10;
+    private const string NoFragment = "redirect_uris must not contain a fragment.";
+    private const string NoUserInfo = "redirect_uris must not contain user info.";
 
     /// <summary>
     /// What is wrong with a metadata document's redirects and client type, or null. Every redirect must be same-origin
@@ -144,7 +147,13 @@ public sealed class Clients(SqliteOAuthStore store, IClientMetadataDocuments doc
         var origin = new Uri(clientIdUrl);
         foreach (var raw in document.RedirectUris)
         {
-            if (!Uri.TryCreate(raw, UriKind.Absolute, out var r) || !string.IsNullOrEmpty(r.Fragment)) return $"redirect_uri '{raw}' is not a valid absolute URI.";
+            // An address with user info may carry a password, and problems reach the client and the log: never echo one.
+            // Nor one with a fragment, checked before parsing so an address that does not parse is not echoed either.
+            if (raw is not null && Authority(raw) is { } written && written.Contains('@')) return NoUserInfo;
+            if (raw is not null && raw.Contains('#')) return NoFragment;
+            if (!Uri.TryCreate(raw, UriKind.Absolute, out var r)) return $"redirect_uri '{raw}' is not a valid absolute URI.";
+            if (HasUserInfo(raw, r)) return NoUserInfo;
+            if (!string.IsNullOrEmpty(r.Fragment)) return NoFragment;
             if (IsLoopback(r)) continue;
             if (r.Scheme != origin.Scheme || !string.Equals(r.Host, origin.Host, StringComparison.OrdinalIgnoreCase) || r.Port != origin.Port)
                 return $"redirect_uri '{raw}' is not same-origin with the client_id URL.";
@@ -160,22 +169,51 @@ public sealed class Clients(SqliteOAuthStore store, IClientMetadataDocuments doc
         u.Scheme == Uri.UriSchemeHttp && (u.IsLoopback || u.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
-    /// Exact match for web redirects; port-agnostic for loopback ones (RFC 8252 §7.3, applied to localhost too
-    /// because Claude Code declares it).
+    /// Exact match, except that a loopback redirect may name any port (RFC 8252 §7.3, applied to localhost too because
+    /// Claude Code declares it). Everything else, the query included, must be the string the client declared (RFC 9700
+    /// §2.1). A requested address with a fragment or user info never matches.
     /// </summary>
     internal static bool RedirectAllowed(IEnumerable<string> registered, string requested)
     {
-        if (!Uri.TryCreate(requested, UriKind.Absolute, out var req)) return false;
+        if (!Uri.TryCreate(requested, UriKind.Absolute, out var req) || HasFragmentOrUserInfo(requested, req)) return false;
         foreach (var raw in registered)
         {
+            if (!Uri.TryCreate(raw, UriKind.Absolute, out var reg) || HasFragmentOrUserInfo(raw, reg)) continue;
             if (string.Equals(raw, requested, StringComparison.Ordinal)) return true;
-            if (!Uri.TryCreate(raw, UriKind.Absolute, out var reg)) continue;
-            if (IsLoopback(reg) && IsLoopback(req) &&
-                string.Equals(reg.Host, req.Host, StringComparison.OrdinalIgnoreCase) &&
-                string.Equals(reg.AbsolutePath, req.AbsolutePath, StringComparison.Ordinal))
+            if (IsLoopback(reg) && IsLoopback(req) && WithoutPort(raw) is { } declared &&
+                string.Equals(declared, WithoutPort(requested), StringComparison.Ordinal))
                 return true;
         }
         return false;
+    }
+
+    /// <summary>A fragment (even an empty one) or user info: neither belongs in a redirect address.</summary>
+    private static bool HasFragmentOrUserInfo(string raw, Uri parsed) =>
+        !string.IsNullOrEmpty(parsed.Fragment) || raw.Contains('#') || HasUserInfo(raw, parsed);
+
+    /// <summary>User info as parsed, or an '@' in the authority as written (an empty one parses to nothing). An address with
+    /// no authority, such as a private-use "com.example.app:/cb", has none.</summary>
+    private static bool HasUserInfo(string raw, Uri parsed) =>
+        !string.IsNullOrEmpty(parsed.UserInfo) || Authority(raw) is { } authority && authority.Contains('@');
+
+    /// <summary>The authority as written: between "://" and the first '/', '?' or '#'. Null when there is no "://".</summary>
+    private static string? Authority(string uri)
+    {
+        var start = uri.IndexOf("://", StringComparison.Ordinal);
+        if (start < 0) return null;
+        start += 3;
+        var end = uri.IndexOfAny(['/', '?', '#'], start);
+        return uri[start..(end < 0 ? uri.Length : end)];
+    }
+
+    /// <summary>The address as written with its port, if it names one, taken out of the authority. Null when it has no authority.</summary>
+    private static string? WithoutPort(string uri)
+    {
+        if (Authority(uri) is not { } authority) return null;
+        var start = uri.IndexOf("://", StringComparison.Ordinal) + 3;
+        var colon = authority.LastIndexOf(':');
+        var host = colon > authority.LastIndexOf(']') && authority[(colon + 1)..].All(char.IsAsciiDigit) ? authority[..colon] : authority;
+        return uri[..start] + host + uri[(start + authority.Length)..];
     }
 
     private static string? Trim(string? value, int max) =>

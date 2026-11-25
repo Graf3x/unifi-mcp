@@ -205,27 +205,27 @@ public static class OAuthEndpoints
                         var verifier = form["code_verifier"].ToString();
                         if (string.IsNullOrEmpty(code) || string.IsNullOrEmpty(verifier)) return Refuse(400, "invalid_request", "code and code_verifier are required.");
 
-                        var outcome = await ledger.ExchangeAsync(code, verifier, form["redirect_uri"].ToString(), client, ct);
+                        var outcome = await ledger.ExchangeAsync(code, verifier, form["redirect_uri"].ToString(), client, Signer(issuer, client), ct);
                         if (outcome is GrantRefused refused)
                             return Refuse(400, "invalid_grant", refused.Description, refused.Label, refused.Reason);
                         var issued = (GrantIssued)outcome;
-                        await clients.RecordUseAsync(client, ct);
+                        await RecordUseAsync(clients, client, log, ct);
                         log.LogInformation("OAuth: issued tokens to {Email} for client {ClientId} from {Ip}", LogText.Clean(issued.User.Label),
                             LogText.Clean(client.ClientId), ClientIp(http));
-                        return await TokenResponseAsync(issuer, issued.User, client.ClientId, issued.Scope, issued.RefreshToken, ct);
+                        return TokenResponse(issuer, issued);
                     }
                     case "refresh_token":
                     {
                         var presented = form["refresh_token"].ToString();
                         if (string.IsNullOrEmpty(presented)) return Refuse(400, "invalid_request", "refresh_token is required.");
-                        var outcome = await ledger.RotateAsync(presented, client, ct);
+                        var outcome = await ledger.RotateAsync(presented, client, Signer(issuer, client), ct);
                         if (outcome is GrantRefused refused)
                             return Refuse(400, "invalid_grant", refused.Description, refused.Label, refused.Reason);
                         var issued = (GrantIssued)outcome;
-                        await clients.RecordUseAsync(client, ct);
+                        await RecordUseAsync(clients, client, log, ct);
                         log.LogInformation("OAuth: refreshed tokens for {Email} client {ClientId} from {Ip}", LogText.Clean(issued.User.Label),
                             LogText.Clean(client.ClientId), ClientIp(http));
-                        return await TokenResponseAsync(issuer, issued.User, client.ClientId, issued.Scope, issued.RefreshToken, ct);
+                        return TokenResponse(issuer, issued);
                     }
                     default:
                         return Refuse(400, "unsupported_grant_type", "Supported: authorization_code, refresh_token.");
@@ -282,18 +282,36 @@ public static class OAuthEndpoints
     private static IResult CodeRedirect(ITokenIssuer issuer, string redirectUri, string code, string state) =>
         new QuietRedirect(WithQuery(redirectUri, ("code", code), ("state", state), ("iss", issuer.Issuer)));
 
-    private static async Task<IResult> TokenResponseAsync(ITokenIssuer issuer, OAuthUser user, string clientId, string scope, string refreshToken, CancellationToken ct)
+    /// <summary>
+    /// Signs the access token for a grant the ledger is about to issue, before it saves the refresh token. If signing
+    /// fails on a refresh, nothing has changed and the client can retry with the same refresh token. On a code exchange
+    /// the code is already spent (it is redeemed before it is checked), so the client has to authorize again.
+    /// </summary>
+    private static AccessTokenSigner Signer(ITokenIssuer issuer, Client client) =>
+        (user, scope, ct) => issuer.IssueAccessTokenAsync(user, client.ClientId, scope, ct);
+
+    /// <summary>
+    /// Marks the registration used. The grant has already changed by now, so a failure here is logged and the client
+    /// still gets its tokens: otherwise it would hold a spent refresh token and nothing to replace it.
+    /// </summary>
+    private static async Task RecordUseAsync(Clients clients, Client client, ILogger log, CancellationToken ct)
     {
-        var access = await issuer.IssueAccessTokenAsync(user, clientId, scope, ct);
-        return Results.Json(new
+        try { await clients.RecordUseAsync(client, ct); }
+        catch (Exception e) when (e is not OperationCanceledException)
         {
-            access_token = access,
+            log.LogWarning("OAuth: could not record the use of client {ClientId} ({Error})", LogText.Clean(client.ClientId), e.GetType().Name);
+        }
+    }
+
+    private static IResult TokenResponse(ITokenIssuer issuer, GrantIssued issued) =>
+        Results.Json(new
+        {
+            access_token = issued.AccessToken,
             token_type = "Bearer",
             expires_in = (int)issuer.AccessTokenLifetime.TotalSeconds,
-            refresh_token = refreshToken,
-            scope,
+            refresh_token = issued.RefreshToken,
+            scope = issued.Scope,
         }, Json);
-    }
 
     internal static string? NormalizeScope(string requested)
     {

@@ -171,6 +171,37 @@ public class AnswerTests
     }
 
     [Fact]
+    public async Task Text_past_the_cap_is_not_kept_even_from_one_large_write()
+    {
+        var kept = new List<int>();
+        var text = await TextOf(a =>
+        {
+            a.Write(new string('x', 3 * ToolText.Limit));
+            kept.Add(a.ToString().Length);
+            a.Line(new string('y', 3 * ToolText.Limit)).Line("more");
+            kept.Add(a.ToString().Length);
+            return Task.CompletedTask;
+        });
+
+        Assert.All(kept, n => Assert.Equal(ToolText.Limit + 1, n));
+        Assert.Contains("[truncated:", text);
+
+        // One character past the cap is enough for the marker; a text exactly at the cap has none.
+        var line = await TextOf(a =>
+        {
+            a.Write(new string('x', ToolText.Limit - 1)).Line("abc");
+            return Task.CompletedTask;
+        });
+        Assert.Contains("[truncated:", line);
+        var exact = await TextOf(a =>
+        {
+            a.Write(new string('x', ToolText.Limit));
+            return Task.CompletedTask;
+        });
+        Assert.DoesNotContain("[truncated:", exact);
+    }
+
+    [Fact]
     public async Task Write_and_line_build_the_text_in_order()
     {
         var text = await TextOf(a =>

@@ -1,5 +1,6 @@
 # No published ports. The tailnet side listens on ./run/mcp.sock, reached through `tailscale serve` on the host; the public
-# side listens on ./run/public.sock, reached only by the cloudflared sidecar (route unifi.example.com -> unix:/run/unifi-mcp/public.sock).
+# side listens on ./run-public/public.sock, reached only by the cloudflared sidecar (route unifi.example.com ->
+# unix:/run/unifi-mcp-public/public.sock). The sidecar mounts ./run-public only, so it never sees the tailnet socket.
 # The public hostname below is a placeholder: set MCP_PUBLIC_BASE_URL to your real host when deploying.
 # Owner-supplied files live in ./config (see README). Write tools are on (UNIFI_ALLOW_WRITES); each still needs your approval.
 # Owner keys (fleet-key, declared in fleet.yaml): UNIFI_API_KEY, UNIFI_CERT_SHA256, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, UNIFI_MCP_TUNNEL_TOKEN.
@@ -29,6 +30,7 @@ services:
     volumes:
       - ./config:/config:ro
       - ./run:/run/unifi-mcp
+      - ./run-public:/run/unifi-mcp-public
       - ./data:/data
 
   cloudflared:
@@ -41,6 +43,6 @@ services:
     environment:
       TUNNEL_TOKEN: ${UNIFI_MCP_TUNNEL_TOKEN}
     volumes:
-      - ./run:/run/unifi-mcp
+      - ./run-public:/run/unifi-mcp-public
     depends_on:
       - unifi-mcp
