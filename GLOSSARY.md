@@ -32,6 +32,10 @@ _Avoid_: alert, warning
 One part of a composite tool's answer that reads from the console. When a step fails the answer says so and the rest still runs; when a read the tool cannot do without fails, there is no answer, only the reason.
 _Avoid_: stage, check (a check is the setup page's)
 
+**Budget**:
+What one answer may ask of the console: a number of requests and bytes over all its steps, and a number of items per list. When it runs out the answer is a partial answer: it says so first, and how to narrow the question.
+_Avoid_: quota, rate limit (the internal API's rate limit is a different thing)
+
 ## Access
 
 **Listener**:

@@ -481,6 +481,9 @@ preview, and is sent only when Claude calls the tool again with `confirm`; you s
 
 **Will it slow the console down?** The official API is made for this. The diagnostics tools also read the console's
 internal API, which is not, so those calls are limited to 30 a minute and repeats within 10 seconds come from a cache.
+Every call is bounded too: at most 4 requests are at the console at once, each gets 30 seconds and 16 MB, and a list is
+read to 5,000 items. One composite answer makes at most 100 requests and reads at most 32 MB. When it stops early it
+starts with "Partial answer" and says how to narrow the question.
 
 **Does it keep my network data?** No. `./data` holds only the connector's sign-in records and keys, the keys wrapped with
 `UNIFI_MCP_DATA_KEY`. Console answers go to Claude in the conversation; the diagnostics tools leave out the secrets the
