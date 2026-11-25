@@ -324,9 +324,36 @@ public class WriteApprovalTests
 
         public override DateTimeOffset GetUtcNow()
         {
-            LockedOnRead.Add(global::System.Threading.Monitor.IsEntered(WriteApproval.Spent));
+            LockedOnRead.Add(global::System.Threading.Monitor.IsEntered(WriteApproval.LedgerFor(this)));
             return inner.GetUtcNow();
         }
+    }
+
+    /// <summary>A clock that can be set anywhere, backwards too, as a system clock can be.</summary>
+    private sealed class SettableClock(DateTimeOffset now) : TimeProvider
+    {
+        public DateTimeOffset Now { get; set; } = now;
+        public override DateTimeOffset GetUtcNow() => Now;
+    }
+
+    [Fact]
+    public void A_spent_token_stays_spent_when_the_clock_steps_back_after_a_clean_up()
+    {
+        var start = new DateTimeOffset(2026, 11, 25, 8, 0, 0, TimeSpan.Zero);
+        var clock = new SettableClock(start);
+        var args = Json("""{"type":"A_RECORD"}""");
+        var token = WriteApproval.Seal(Protector, clock, Tool, PostPath, args, Harness.Login);
+        Assert.True(WriteApproval.Spend(WriteApproval.Open(Protector, clock, token, Tool, PostPath, args, Harness.Login)!, clock));
+
+        // Well past expiry another call spends its own token, which cleans up; then the clock is set back.
+        clock.Now = start + WriteApproval.Lifetime + TimeSpan.FromMinutes(5);
+        var later = WriteApproval.Seal(Protector, clock, Tool, PostPath, args, Harness.Login);
+        Assert.True(WriteApproval.Spend(WriteApproval.Open(Protector, clock, later, Tool, PostPath, args, Harness.Login)!, clock));
+        clock.Now = start + TimeSpan.FromMinutes(1);
+
+        var reopened = WriteApproval.Open(Protector, clock, token, Tool, PostPath, args, Harness.Login);
+        Assert.NotNull(reopened); // the token itself looks unexpired to the stepped-back clock
+        Assert.False(WriteApproval.Spend(reopened, clock));
     }
 
     [Fact]

@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -36,9 +37,7 @@ public static class WriteApproval
     private const int MaxBody = 2_000;
     private const int MaxValue = 200;
     private static readonly IDataProtector Protector = new EphemeralDataProtectionProvider().CreateProtector("UnifiMcp.WriteApproval.v2");
-    /// <summary>Spent token ids and when each expires (Unix milliseconds). Guarded by locking on itself.</summary>
-    internal static readonly Dictionary<string, long> Spent = new(StringComparer.Ordinal);
-    private const long Keep = 60_000;
+    private static readonly ConditionalWeakTable<TimeProvider, Ledger> Ledgers = new();
     private static readonly JsonSerializerOptions Indented = new() { WriteIndented = true };
 
     /// <summary>
@@ -133,20 +132,34 @@ public static class WriteApproval
     }
 
     /// <summary>
-    /// Marks an opened token used; false when it already was or has expired. The check, the clean-up and the mark happen
-    /// under one lock and in the token's own unit (milliseconds), so a token can never be spent after expiry, and a spent
-    /// id is only dropped once it can no longer be spent (kept a minute longer, in case the clock steps back). The clock is
-    /// read inside the lock, so a call that stalls before it cannot act on a time older than a clean-up that ran meanwhile.
+    /// The spent token ids of one clock, and the latest time it has shown. That time never goes back, so once it has
+    /// passed a token's expiry the token cannot be spent again, whatever the clock does next; a spent id is dropped only
+    /// then. Each clock has its own (the host has one), so a fake clock in one test cannot move another's.
+    /// </summary>
+    private sealed class Ledger
+    {
+        public readonly Dictionary<string, long> Spent = new(StringComparer.Ordinal);
+        public long Latest = long.MinValue;
+    }
+
+    /// <summary>The ledger <see cref="Spend"/> locks for this clock.</summary>
+    internal static object LedgerFor(TimeProvider time) => Ledgers.GetValue(time, _ => new Ledger());
+
+    /// <summary>
+    /// Marks an opened token used; false when it already was or has expired. The clock read, the expiry check, the clean-up
+    /// and the mark happen under one lock, in the token's own unit (milliseconds), against a time that never goes back. So a
+    /// call that stalls cannot act on an old time, and a clock set back cannot revive a token whose spent id was dropped.
     /// </summary>
     internal static bool Spend(string opened, TimeProvider time)
     {
         var expires = long.Parse(opened[(opened.IndexOf('\n') + 1)..], CultureInfo.InvariantCulture);
-        lock (Spent)
+        var ledger = (Ledger)LedgerFor(time);
+        lock (ledger)
         {
-            var now = time.GetUtcNow().ToUnixTimeMilliseconds();
+            var now = ledger.Latest = Math.Max(ledger.Latest, time.GetUtcNow().ToUnixTimeMilliseconds());
             if (now > expires) return false;
-            foreach (var old in Spent.Where(s => s.Value < now - Keep).Select(s => s.Key).ToList()) Spent.Remove(old);
-            return Spent.TryAdd(opened, expires);
+            foreach (var old in ledger.Spent.Where(s => s.Value < now).Select(s => s.Key).ToList()) ledger.Spent.Remove(old);
+            return ledger.Spent.TryAdd(opened, expires);
         }
     }
 
