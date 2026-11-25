@@ -24,7 +24,10 @@ public sealed class SocketClaims : IDisposable
     public string? SharedFolder =>
         Bound.Count == 2 && Path.GetDirectoryName(Bound[0]) is { } folder && folder == Path.GetDirectoryName(Bound[1]) ? folder : null;
 
-    /// <summary>Claims both sockets. The tailnet one must succeed; the public one is skipped when its folder is missing or not writable.</summary>
+    /// <summary>
+    /// Claims both sockets. The tailnet one must succeed; the public one is skipped when its folder is missing, or this user
+    /// may not look in it or create the socket there.
+    /// </summary>
     public IReadOnlyList<string> Claim(Settings settings)
     {
         try
@@ -37,7 +40,7 @@ public sealed class SocketClaims : IDisposable
                 else
                 {
                     try { Take(pub); }
-                    catch (UnauthorizedAccessException) { PublicSkipped = $"this user may not write in the folder of {pub}"; }
+                    catch (UnauthorizedAccessException) { PublicSkipped = $"this user may not look in or write in the folder of {pub}"; }
                 }
             }
             return Bound;
@@ -71,6 +74,7 @@ public static class SocketFiles
 {
     /// <summary>Takes the path's lock and clears a stale socket there. The lock holds until the result is disposed.</summary>
     /// <exception cref="IOException">The path is taken: another server holds its lock, or something other than a stale socket is there.</exception>
+    /// <exception cref="UnauthorizedAccessException">This user may not look in the path's folder, or create the socket there.</exception>
     public static IDisposable Claim(string path)
     {
         if (!Path.IsPathFullyQualified(path))
@@ -86,6 +90,9 @@ public static class SocketFiles
         }
         try
         {
+            // A lock file left by an earlier run opens in a folder that no longer takes new entries; the bind would fail.
+            if (!AcceptsEntries(Path.GetDirectoryName(path)!))
+                throw new UnauthorizedAccessException($"This user may not create {path} in its folder.");
             switch (KindOf(path))
             {
                 case EntryKind.Missing:
@@ -108,15 +115,29 @@ public static class SocketFiles
     }
 
     /// <summary>The kind of entry at <paramref name="path"/>, without following a link. Missing when nothing is there.</summary>
+    /// <exception cref="UnauthorizedAccessException">This user may not look in the folder of <paramref name="path"/>.</exception>
     public static EntryKind KindOf(string path) => OperatingSystem.IsWindows() ? WindowsKindOf(path) : UnixKindOf(path);
+
+    /// <summary>Whether this user may create an entry (the socket) in <paramref name="folder"/>.</summary>
+    private static bool AcceptsEntries(string folder)
+    {
+        if (!OperatingSystem.IsWindows()) return Access(folder, AccessWrite | AccessSearch) == 0;
+        try
+        {
+            File.Create(Path.Combine(folder, $".{Guid.NewGuid():N}.probe"), 1, FileOptions.DeleteOnClose).Dispose();
+            return true;
+        }
+        catch (UnauthorizedAccessException) { return false; }
+    }
 
     /// <summary>
     /// False only when a connection is refused outright, which is what a socket nobody listens on does. Anything else
-    /// (a connection, no permission) counts as answering, so the socket is kept.
+    /// (a connection, no permission, a connection left waiting) counts as answering, so the socket is kept.
     /// </summary>
     private static bool Answers(string path)
     {
-        using var s = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+        // Nonblocking: a live listener whose backlog is full would otherwise keep this start waiting, holding the lock.
+        using var s = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified) { Blocking = false };
         try
         {
             s.Connect(new UnixDomainSocketEndPoint(path));
@@ -128,16 +149,25 @@ public static class SocketFiles
 
     // ---- Unix: lstat through the runtime's own native shim, whose FileStatus starts { int Flags; int Mode; ... } ----
 
-    private const int SIfMt = 0xF000, SIfSock = 0xC000, SIfLnk = 0xA000, SIfReg = 0x8000, ENoEnt = 2;
+    private const int SIfMt = 0xF000, SIfSock = 0xC000, SIfLnk = 0xA000, SIfReg = 0x8000, ENoEnt = 2, EAcces = 13;
+    private const int AccessSearch = 1, AccessWrite = 2; // the shim's own X_OK and W_OK
 
     [DllImport("libSystem.Native", EntryPoint = "SystemNative_LStat", SetLastError = true)]
     private static extern int LStat([MarshalAs(UnmanagedType.LPUTF8Str)] string path, byte[] status);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_Access", SetLastError = true)]
+    private static extern int Access([MarshalAs(UnmanagedType.LPUTF8Str)] string path, int mode);
 
     private static EntryKind UnixKindOf(string path)
     {
         var status = new byte[512]; // larger than FileStatus on every runtime
         if (LStat(path, status) != 0)
-            return Marshal.GetLastPInvokeError() == ENoEnt ? EntryKind.Missing : EntryKind.Other;
+            return Marshal.GetLastPInvokeError() switch
+            {
+                ENoEnt => EntryKind.Missing,
+                EAcces => throw new UnauthorizedAccessException($"This user may not look in the folder of {path}."),
+                _ => EntryKind.Other,
+            };
         return (BitConverter.ToInt32(status, 4) & SIfMt) switch
         {
             SIfSock => EntryKind.Socket,
@@ -151,7 +181,7 @@ public static class SocketFiles
 
     private const uint AttrDirectory = 0x10, AttrReparsePoint = 0x400;
     private const uint TagAfUnix = 0x80000023, TagSymlink = 0xA000000C, TagMountPoint = 0xA0000003;
-    private const int ErrorFileNotFound = 2, ErrorPathNotFound = 3;
+    private const int ErrorFileNotFound = 2, ErrorPathNotFound = 3, ErrorAccessDenied = 5;
 
     [DllImport("kernel32.dll", EntryPoint = "FindFirstFileW", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern IntPtr FindFirstFile(string name, byte[] findData);
@@ -166,7 +196,12 @@ public static class SocketFiles
         var data = new byte[1024]; // WIN32_FIND_DATAW is 592 bytes: attributes at 0, the reparse tag (dwReserved0) at 36
         var handle = FindFirstFile(path, data);
         if (handle == new IntPtr(-1))
-            return Marshal.GetLastPInvokeError() is ErrorFileNotFound or ErrorPathNotFound ? EntryKind.Missing : EntryKind.Other;
+            return Marshal.GetLastPInvokeError() switch
+            {
+                ErrorFileNotFound or ErrorPathNotFound => EntryKind.Missing,
+                ErrorAccessDenied => throw new UnauthorizedAccessException($"This user may not look in the folder of {path}."),
+                _ => EntryKind.Other,
+            };
         FindClose(handle);
         var attributes = BitConverter.ToUInt32(data, 0);
         if ((attributes & AttrReparsePoint) != 0)

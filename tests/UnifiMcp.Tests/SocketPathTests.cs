@@ -1,5 +1,8 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.Versioning;
+using System.Security.AccessControl;
+using System.Security.Principal;
 
 namespace UnifiMcp.Tests;
 
@@ -28,6 +31,15 @@ public sealed class SymlinkFactAttribute : FactAttribute
         catch (IOException) { return false; }
         catch (UnauthorizedAccessException) { return false; }
         finally { Directory.Delete(dir, recursive: true); }
+    }
+}
+
+/// <summary>A fact about how Linux treats Unix sockets, which Windows does not share; skipped on Windows.</summary>
+public sealed class UnixFactAttribute : FactAttribute
+{
+    public UnixFactAttribute()
+    {
+        if (OperatingSystem.IsWindows()) Skip = "Unix sockets behave this way on Unix only.";
     }
 }
 
@@ -148,6 +160,133 @@ public sealed class SocketPathTests : IDisposable
         LeaveStaleSocket(Tail);
         using (SocketFiles.Claim(Tail))
             Assert.Equal(EntryKind.Missing, SocketFiles.KindOf(Tail));
+    }
+
+    [UnixFact]
+    public async Task A_live_listener_with_a_full_backlog_is_left_alone_without_waiting()
+    {
+        using var other = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+        other.Bind(new UnixDomainSocketEndPoint(Tail));
+        other.Listen(1);
+        var waiting = new List<Socket>();
+        try
+        {
+            // Connect without accepting until the listener's backlog takes no more.
+            var full = false;
+            for (var i = 0; i < 64 && !full; i++)
+            {
+                var client = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified) { Blocking = false };
+                waiting.Add(client);
+                try { client.Connect(new UnixDomainSocketEndPoint(Tail)); }
+                catch (SocketException) { full = true; }
+            }
+            Assert.True(full, "the listener's backlog never filled");
+
+            var claim = Task.Run(() => SocketFiles.Claim(Tail));
+            var e = await Assert.ThrowsAsync<IOException>(() => claim.WaitAsync(TimeSpan.FromSeconds(10)));
+            Assert.Contains("Something is listening", e.Message);
+            Assert.Equal(EntryKind.Socket, SocketFiles.KindOf(Tail));
+        }
+        finally
+        {
+            foreach (var client in waiting) client.Dispose();
+        }
+    }
+
+    // ---- A public folder this user may not use: the public socket is skipped and the tailnet one still claimed ----
+
+    private SocketClaims ClaimBoth(string pub, out IReadOnlyList<string> bound)
+    {
+        var claims = new SocketClaims();
+        bound = claims.Claim(Harness.NewSettings(_dir) with { Listen = "unix:" + Tail, PublicListen = "unix:" + pub });
+        return claims;
+    }
+
+    [Fact]
+    public void A_public_folder_this_user_may_not_search_skips_the_public_socket()
+    {
+        var folder = Directory.CreateDirectory(Path.Combine(_dir, "public")).FullName;
+        var pub = Path.Combine(folder, "p.sock");
+        using var denied = FolderDenial.Of(folder, search: true);
+        if (!denied.Took) return; // root, or an ACL that does not take: nothing to test on this machine
+
+        using var claims = ClaimBoth(pub, out var bound);
+
+        Assert.Equal([Tail], bound);
+        Assert.Contains(pub, claims.PublicSkipped);
+    }
+
+    [Fact]
+    public void A_public_folder_that_takes_no_new_entries_skips_the_public_socket_though_its_lock_file_exists()
+    {
+        var folder = Directory.CreateDirectory(Path.Combine(_dir, "public")).FullName;
+        var pub = Path.Combine(folder, "p.sock");
+        File.WriteAllText(pub + ".lock", ""); // left by an earlier run, before the folder's permissions changed
+        using var denied = FolderDenial.Of(folder, search: false);
+        if (!denied.Took) return;
+
+        using var claims = ClaimBoth(pub, out var bound);
+
+        Assert.Equal([Tail], bound);
+        Assert.Contains(pub, claims.PublicSkipped);
+        using (new FileStream(pub + ".lock", FileMode.Open, FileAccess.ReadWrite, FileShare.None)) { } // not held
+    }
+
+    /// <summary>
+    /// Takes search (listing) or creating entries in a folder away from this user, until disposed. Unix: the folder's mode;
+    /// Windows: a deny rule. <see cref="Took"/> is false when this user can still do it (root, say).
+    /// </summary>
+    private sealed class FolderDenial : IDisposable
+    {
+        private readonly string _folder;
+        private readonly bool _search;
+
+        private FolderDenial(string folder, bool search)
+        {
+            _folder = folder;
+            _search = search;
+        }
+
+        public bool Took { get; private init; }
+
+        public static FolderDenial Of(string folder, bool search)
+        {
+            if (OperatingSystem.IsWindows()) SetDenied(folder, Rights(search), true);
+            else File.SetUnixFileMode(folder, search ? UnixFileMode.None : UnixFileMode.UserRead | UnixFileMode.UserExecute);
+            return new FolderDenial(folder, search) { Took = !Can(folder, search) };
+        }
+
+        private static bool Can(string folder, bool search)
+        {
+            try
+            {
+                if (search) _ = Directory.EnumerateFileSystemEntries(folder).ToList();
+                else File.Create(Path.Combine(folder, "probe"), 1, FileOptions.DeleteOnClose).Dispose();
+                return true;
+            }
+            catch (UnauthorizedAccessException) { return false; }
+            catch (IOException) { return false; }
+        }
+
+        [SupportedOSPlatform("windows")]
+        private static FileSystemRights Rights(bool search) => search ? FileSystemRights.ListDirectory : FileSystemRights.CreateFiles;
+
+        [SupportedOSPlatform("windows")]
+        private static void SetDenied(string folder, FileSystemRights rights, bool denied)
+        {
+            var info = new DirectoryInfo(folder);
+            var acl = info.GetAccessControl();
+            var rule = new FileSystemAccessRule(WindowsIdentity.GetCurrent().User!, rights, AccessControlType.Deny);
+            if (denied) acl.AddAccessRule(rule);
+            else acl.RemoveAccessRule(rule);
+            info.SetAccessControl(acl);
+        }
+
+        public void Dispose()
+        {
+            if (OperatingSystem.IsWindows()) SetDenied(_folder, Rights(_search), false);
+            else File.SetUnixFileMode(_folder, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
     }
 
     // ---- The real server -----------------------------------------------------------------------------------------
