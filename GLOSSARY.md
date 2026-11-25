@@ -43,7 +43,7 @@ The one person allowed to use the server: a listed Google address, or whoever ho
 _Avoid_: user, admin, account
 
 **Write approval**:
-The owner's yes to one change to the network, given for that change alone: on a confirmation form where the client can show one, otherwise by the model repeating the call with the tool's own name. It holds for those exact arguments and lapses within minutes. Not the same as consent, which lets a client connect at all.
+The owner's yes to one change to the network, given for that change alone: on a confirmation form where the client can show one, otherwise by the model repeating the call with the tool's own name. A yes on the form holds once, for that exact request and arguments, and lapses within minutes; the fallback has no such binding, since the model gives it in the same call it makes. Not the same as consent, which lets a client connect at all.
 _Avoid_: consent, permission, confirmation (except the form itself)
 
 **Admission**:
