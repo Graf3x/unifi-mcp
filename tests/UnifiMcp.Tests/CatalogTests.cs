@@ -45,7 +45,10 @@ public class CatalogTests
         var required = schema["required"]!.AsArray().Select(n => n!.GetValue<string>()).ToList();
         Assert.DoesNotContain("confirm", required);
         Assert.Contains("body", required);
-        Assert.Contains("cannot show", schema["properties"]!["confirm"]!["description"]!.GetValue<string>());
+        var confirm = schema["properties"]!["confirm"]!["description"]!.GetValue<string>();
+        Assert.Contains("cannot show", confirm);
+        // It works only where the owner allowed it, and says so, so the model does not take it for a way around the form.
+        Assert.Contains("UNIFI_ALLOW_CONFIRM_FALLBACK", confirm);
     }
 
     [Fact]

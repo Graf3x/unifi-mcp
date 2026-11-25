@@ -37,6 +37,12 @@ public sealed partial record Settings
     public string AllowedLoginsFile { get; init; } = "/config/allowed-logins";
     public string? AllowedLoginsValue { get; init; }
     public bool AllowWrites { get; init; }
+    /// <summary>
+    /// UNIFI_ALLOW_CONFIRM_FALLBACK: a client that cannot show the owner a confirmation form may still write, with
+    /// <c>confirm</c> set to the tool's own name. The model sets that argument, so on such a client the model approves its
+    /// own writes. Off (the default), such a client is refused every write.
+    /// </summary>
+    public bool AllowConfirmFallback { get; init; }
     public string Listen { get; init; } = "unix:/run/unifi-mcp/mcp.sock";
     public bool AllowLoopbackTcp { get; init; }
 
@@ -148,6 +154,7 @@ public sealed partial record Settings
             AllowedLoginsFile = Blank(env("MCP_ALLOWED_LOGINS_FILE")) ?? d.AllowedLoginsFile,
             AllowedLoginsValue = Blank(env("MCP_ALLOWED_LOGINS")),
             AllowWrites = env("UNIFI_ALLOW_WRITES") == "true", // only the literal: a typo must leave writes off
+            AllowConfirmFallback = env("UNIFI_ALLOW_CONFIRM_FALLBACK") == "true", // likewise: a typo leaves it off
             Listen = Blank(env("MCP_LISTEN")) ?? d.Listen,
             AllowLoopbackTcp = env("MCP_ALLOW_LOOPBACK_TCP") == "true",
             ApiKeyValue = Blank(env("UNIFI_API_KEY")),
@@ -216,7 +223,7 @@ public sealed partial record Settings
     private bool PrintMembers(System.Text.StringBuilder sb)
     {
         sb.Append($"BaseUrl = {BaseUrl}, Site = {Site}, ApiKeyFile = {ApiKeyFile}, CertPinFile = {CertPinFile}, ")
-          .Append($"AllowedLoginsFile = {AllowedLoginsFile}, AllowWrites = {AllowWrites}, Listen = {Listen}, ")
+          .Append($"AllowedLoginsFile = {AllowedLoginsFile}, AllowWrites = {AllowWrites}, AllowConfirmFallback = {AllowConfirmFallback}, Listen = {Listen}, ")
           .Append($"AllowLoopbackTcp = {AllowLoopbackTcp}, ApiKeyValue = {Mask(ApiKeyValue)}, PublicListen = {PublicListen}, ")
           .Append($"PublicBaseUrl = {PublicBaseUrl}, GoogleClientId = {GoogleClientId}, GoogleClientSecret = {Mask(GoogleClientSecret)}, ")
           .Append($"GoogleAuthority = {GoogleAuthority}, AllowedGoogleEmailsFile = {AllowedGoogleEmailsFile}, ")

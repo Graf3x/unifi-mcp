@@ -30,13 +30,15 @@ public sealed record ApiOperation(string ToolName, string OperationId, HttpMetho
         }
         if (IsWrite)
         {
-            // Only for clients that cannot show the owner a form; one that can asks the owner and ignores it (WriteApproval).
+            // Only for clients that cannot show the owner a form, and only where the owner allowed that; a client that can
+            // show one asks the owner and ignores it (WriteApproval).
             properties["confirm"] = new JsonObject
             {
                 ["type"] = "string",
-                ["description"] = $"Only for clients that cannot show the owner a confirmation form: set to exactly \"{ToolName}\" "
-                                  + "to run this change; anything else returns a preview and sends nothing. A client that can show "
-                                  + "the form asks the owner instead, and this is ignored.",
+                ["description"] = "Usually ignored: the server asks the owner on a confirmation form. Only when the client cannot show "
+                                  + "that form and the owner set UNIFI_ALLOW_CONFIRM_FALLBACK=true: set to exactly "
+                                  + $"\"{ToolName}\" to run this change; anything else returns a preview and sends nothing. "
+                                  + "Without that setting, such a client is refused every write.",
             };
         }
         return new JsonObject

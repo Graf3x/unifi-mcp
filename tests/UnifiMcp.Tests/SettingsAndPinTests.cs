@@ -26,6 +26,15 @@ public class SettingsTests
     public void Writes_are_on_only_for_the_literal_true(string value, bool expected) =>
         Assert.Equal(expected, Settings.FromEnvironment(k => k == "UNIFI_ALLOW_WRITES" ? value : null).AllowWrites);
 
+    [Theory]
+    [InlineData("true", true)]
+    [InlineData("TRUE", false)]
+    [InlineData("1", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void The_confirm_fallback_is_on_only_for_the_literal_true(string? value, bool expected) =>
+        Assert.Equal(expected, Settings.FromEnvironment(k => k == "UNIFI_ALLOW_CONFIRM_FALLBACK" ? value : null).AllowConfirmFallback);
+
     [Fact]
     public void A_plain_http_console_url_is_refused() =>
         Assert.Throws<ArgumentException>(() => Settings.FromEnvironment(k => k == "UNIFI_URL" ? "http://192.168.1.1" : null));
