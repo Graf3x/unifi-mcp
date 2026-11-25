@@ -63,8 +63,9 @@ Anything else the API offers, Claude finds with `search_operations` and runs wit
 
 - Read-only by default. Write tools exist only when `UNIFI_ALLOW_WRITES` is exactly `true`; each is marked destructive and
   asks you to approve it. A client that can show a confirmation form (MCP 2026-07-28 elicitation, as Claude Code does)
-  shows you the change with Accept or Decline, and the model cannot approve it for you. Any other client needs `confirm`
-  set to the tool's own name, otherwise it returns a preview and sends nothing.
+  shows you the whole change with Accept or Decline, and the model cannot approve it for you. A change too big to show
+  whole is refused. Any other client is refused every write, unless you turn on the confirm fallback (see
+  [Writes](#writes)).
 - TLS to the console is pinned to a SHA-256 fingerprint of its certificate or public key, or, with `UNIFI_CERT_TRUST=ca`,
   checked against a trusted CA. There is no default pin and no way to turn verification off.
 - The API key comes from the `UNIFI_API_KEY` environment variable, falling back to `/config/unifi-api-key` only when the
@@ -423,9 +424,19 @@ To build from your checkout instead of pulling the published image, uncomment `b
 
 ## Writes
 
-With `UNIFI_ALLOW_WRITES=true` the write tools appear. Each asks you first: with a confirmation form where Claude can
-show one, otherwise by previewing until called with `confirm` set to its own name. The audit log says which way each
-change was approved. Set it back to `false` and restart to make the server read-only.
+With `UNIFI_ALLOW_WRITES=true` the write tools appear. Each asks you first, on a confirmation form that shows the whole
+change: the request and every field of its body. You click Accept or Decline; the model cannot answer for you. A change
+too big for the form (over 10,000 characters) is refused and nothing is sent, so Claude has to make it in smaller steps.
+
+The form needs a client on MCP revision 2026-07-28 that declares form elicitation. A client without it is refused every
+write. If yours cannot show the form and you still want writes there, set `UNIFI_ALLOW_CONFIRM_FALLBACK=true`. Then such a
+client gets a preview, and the write is sent when the model calls the tool again with `confirm` set to the tool's own name.
+Know what that means: the model sets `confirm` itself, so on that client the model approves its own writes. Nothing
+checks that you saw the preview or said yes. Turn it on only if you trust the model, and what it reads, with your network.
+Clients that can show the form still get it, and ignore `confirm`.
+
+The audit log says how each change was approved, or why it was refused. Set `UNIFI_ALLOW_WRITES` back to `false` and
+restart to make the server read-only.
 
 ## Settings reference
 
@@ -439,6 +450,7 @@ All settings come from the environment (`.env` with Docker Compose). After chang
 | `UNIFI_CERT_SHA256` | none | Pinned fingerprints of the console's public key or certificate, comma separated. |
 | `UNIFI_CERT_TRUST` | `pin` | `ca` checks a CA-issued certificate instead of a pin. |
 | `UNIFI_ALLOW_WRITES` | `false` | Exactly `true` lists the write tools; see [Writes](#writes). |
+| `UNIFI_ALLOW_CONFIRM_FALLBACK` | `false` | Exactly `true` lets a client that cannot show the confirmation form write with `confirm`, so the model approves its own writes there; see [Writes](#writes). |
 | `MCP_PUBLIC_BASE_URL` | none | The connector's public origin, e.g. `https://unifi.example.com`. |
 | `MCP_SIGNIN` | `google` | `code` or `google`; `.env.example` sets `code`. |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | none | Google OAuth web client, for `google` sign-in. |
@@ -475,9 +487,10 @@ All settings come from the environment (`.env` with Docker Compose). After chang
 API key. Claude reaches the server only the way you set up: locally, through your Cloudflare tunnel, over Tailscale, or
 over your LAN with a token.
 
-**Can Claude change my network?** Only if you set `UNIFI_ALLOW_WRITES=true`. Even then each change asks you first. Where
-Claude can show a confirmation form, you see the change and click Accept or Decline yourself. Elsewhere it comes back as a
-preview, and is sent only when Claude calls the tool again with `confirm`; you see that in the conversation.
+**Can Claude change my network?** Only if you set `UNIFI_ALLOW_WRITES=true`. Even then each change asks you first, on a
+confirmation form where you see the whole change and click Accept or Decline yourself. A client that cannot show the form
+cannot write at all, unless you also set `UNIFI_ALLOW_CONFIRM_FALLBACK=true`; then Claude approves its own writes there
+with `confirm`, as [Writes](#writes) explains.
 
 **Will it slow the console down?** The official API is made for this. The diagnostics tools also read the console's
 internal API, which is not, so those calls are limited to 30 a minute and repeats within 10 seconds come from a cache.
@@ -543,7 +556,8 @@ sudo tailscale serve --bg --https=7420 unix:/srv/fleet/apps/unifi-mcp/run/mcp.so
 Then, for Claude Code: `claude mcp add --transport http unifi https://fleet-mini.<tailnet>.ts.net:7420/mcp`.
 
 Files are read on each use, so no restart is needed. Writes are on in `deploy/compose.yaml` (`UNIFI_ALLOW_WRITES: "true"`);
-set it to `"false"` and redeploy to make the server read-only.
+set it to `"false"` and redeploy to make the server read-only. `UNIFI_ALLOW_CONFIRM_FALLBACK` is not set there, so only a
+client that can show the confirmation form can write.
 
 ### Runbook: two stages
 
