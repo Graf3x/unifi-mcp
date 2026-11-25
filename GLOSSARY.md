@@ -78,7 +78,7 @@ _Avoid_: connection, session
 The record of every grant, and the rules that decide whether a grant still stands.
 
 **Authorization code**:
-A single-use proof that the owner just approved a client. The client exchanges it for its first tokens.
+A single-use proof that the owner just approved a client. The client exchanges it for its first tokens, which start in the family of the consent that issued the code, and only while that consent stands.
 
 **Refresh token**:
 A secret the client trades for a new access token and a new refresh token. Each one can be used once.

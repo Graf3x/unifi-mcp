@@ -33,6 +33,8 @@ public sealed class AuthorizationCode
     public string Scope { get; set; } = string.Empty;
     public string? Resource { get; set; }
     public OAuthUser User { get; set; } = new();
+    /// <summary>The family of the consent that issued the code: the only family it can ever mint into.</summary>
+    public string FamilyId { get; set; } = string.Empty;
     public DateTimeOffset ExpiresAt { get; set; }
     public bool Redeemed { get; set; }
 }

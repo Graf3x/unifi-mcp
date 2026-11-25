@@ -212,16 +212,116 @@ public sealed class OAuthStoreTests : IDisposable
     }
 
     [Fact]
-    public void A_new_database_is_schema_version_1()
+    public void A_new_database_is_schema_version_2()
     {
         NewStore();
-        Assert.Equal(1, UserVersion());
+        Assert.Equal(2, UserVersion());
+        Assert.Equal(2, SqliteOAuthStore.SchemaVersion);
         NewStore(); // reopening leaves it alone
-        Assert.Equal(1, UserVersion());
+        Assert.Equal(2, UserVersion());
+    }
+
+    /// <summary>The schema as version 1 created it, with one of everything in it.</summary>
+    private void CreatePopulatedVersion1Database()
+    {
+        var now = _time.GetUtcNow().ToUnixTimeMilliseconds();
+        var later = _time.GetUtcNow().AddDays(20).ToUnixTimeMilliseconds();
+        var soon = _time.GetUtcNow().AddMinutes(4).ToUnixTimeMilliseconds();
+        using var conn = new SqliteConnection($"Data Source={_path}");
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"""
+            CREATE TABLE clients (
+                client_id TEXT PRIMARY KEY, client_name TEXT NOT NULL, redirect_uris TEXT NOT NULL,
+                client_uri TEXT, logo_uri TEXT, software_id TEXT, software_version TEXT, registered_from TEXT,
+                created_at INTEGER NOT NULL, last_used_at INTEGER, disabled INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE codes (
+                code_hash TEXT PRIMARY KEY,
+                client_id TEXT NOT NULL, redirect_uri TEXT NOT NULL, code_challenge TEXT NOT NULL,
+                scope TEXT NOT NULL, resource TEXT,
+                subject TEXT NOT NULL, email TEXT NOT NULL, name TEXT NOT NULL,
+                expires_at INTEGER NOT NULL, redeemed INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE refresh_tokens (
+                token_hash TEXT PRIMARY KEY,
+                client_id TEXT NOT NULL, family_id TEXT NOT NULL, scope TEXT NOT NULL,
+                subject TEXT NOT NULL, email TEXT NOT NULL, name TEXT NOT NULL,
+                expires_at INTEGER NOT NULL, redeemed INTEGER NOT NULL DEFAULT 0, revoked INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX ix_refresh_family ON refresh_tokens (family_id);
+            CREATE TABLE revoked_families (family_id TEXT PRIMARY KEY, revoked_at INTEGER NOT NULL);
+            CREATE TABLE consents (
+                user_id TEXT NOT NULL, client_id TEXT NOT NULL,
+                client_name TEXT NOT NULL, client_uri TEXT, scope TEXT NOT NULL, family_id TEXT NOT NULL,
+                last_used_at INTEGER NOT NULL, created_at INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (user_id, client_id)
+            );
+            CREATE TABLE signing_key (id INTEGER PRIMARY KEY CHECK (id = 1), key_id TEXT NOT NULL, protected_private_key TEXT NOT NULL);
+            INSERT INTO clients VALUES ('c1', 'Claude', '["https://claude.ai/cb"]', NULL, NULL, NULL, NULL, '203.0.113.7 test', {now}, NULL, 0);
+            INSERT INTO codes VALUES ('legacy-code', 'c1', 'https://claude.ai/cb', 'challenge', 'mcp', NULL, 'u1', 'a@b.c', 'A', {soon}, 0);
+            INSERT INTO refresh_tokens VALUES ('{TokenIssuer.Hash(LiveToken)}', 'c1', 'f-live', 'mcp', 'u1', 'a@b.c', 'A', {later}, 0, 0);
+            INSERT INTO refresh_tokens VALUES ('r-flagged', 'c3', 'f-flagged', 'mcp', 'u1', 'a@b.c', 'A', {later}, 0, 1);
+            INSERT INTO revoked_families VALUES ('f-tombstoned', {now});
+            INSERT INTO consents VALUES ('u1', 'c1', 'Claude', NULL, 'mcp', 'f-live', {now}, {now});
+            INSERT INTO consents VALUES ('u1', 'c2', 'Old', NULL, 'mcp', 'f-tombstoned', {now}, {now});
+            INSERT INTO consents VALUES ('u1', 'c3', 'Older', NULL, 'mcp', 'f-flagged', {now}, {now});
+            INSERT INTO signing_key VALUES (1, 'k1', 'p1');
+            PRAGMA user_version = 1;
+            """;
+        cmd.ExecuteNonQuery();
     }
 
     [Fact]
-    public async Task A_database_from_before_the_version_marker_is_upgraded_to_version_1()
+    public async Task A_populated_version_1_database_migrates_to_version_2()
+    {
+        CreatePopulatedVersion1Database();
+        SqliteConnection.ClearAllPools();
+        Assert.Equal(1, UserVersion());
+
+        var store = NewStore();
+
+        Assert.Equal(2, UserVersion());
+        // A code from before codes knew their family cannot be traced to a consent: it is spent.
+        Assert.Null(await store.RedeemCodeAsync("legacy-code"));
+        // Consents of families with revocation evidence (a tombstone, or a revoked token) are withdrawn.
+        Assert.Equal(["c1"], (await store.ListConsentsAsync("u1")).Select(c => c.ClientId));
+        // Everything else is kept: the registration, the live grant, the signing key.
+        Assert.Equal("Claude", (await store.GetRegistrationAsync("c1"))!.ClientName);
+        Assert.Equal("k1", (await store.GetSigningKeyAsync())!.KeyId);
+        var settings = new Settings { SignIn = SignInMode.Google, AllowedGoogleEmailsValue = "a@b.c" };
+        var client = Client.Registered(new ClientRegistration { ClientId = "c1", ClientName = "Claude", RedirectUris = ["https://claude.ai/cb"] });
+        Assert.IsType<GrantIssued>(await new GrantLedger(store, _time, settings).RotateAsync(LiveToken, client));
+
+        NewStore(); // reopening leaves it alone
+        Assert.Equal(2, UserVersion());
+    }
+
+    [Fact]
+    public async Task A_populated_version_1_database_keeps_working_with_new_codes_after_the_migration()
+    {
+        CreatePopulatedVersion1Database();
+        SqliteConnection.ClearAllPools();
+        var store = NewStore();
+        var settings = new Settings { SignIn = SignInMode.Google, AllowedGoogleEmailsValue = "a@b.c" };
+        var client = Client.Registered(new ClientRegistration { ClientId = "c1", ClientName = "Claude", RedirectUris = ["https://claude.ai/cb"] });
+        var user = new OAuthUser { Subject = "u1", Email = "a@b.c", Name = "A" };
+        const string verifier = "verifier-0123456789-0123456789-0123456789-0123456789";
+        var challenge = Microsoft.IdentityModel.Tokens.Base64UrlEncoder.Encode(SHA256.HashData(Encoding.ASCII.GetBytes(verifier)));
+        var ledger = new GrantLedger(store, _time, settings);
+
+        var code = await ledger.AuthorizeAsync(user, client, new CodeRequest("https://claude.ai/cb", challenge, "mcp", null));
+
+        Assert.NotNull(code);
+        var issued = Assert.IsType<GrantIssued>(await ledger.ExchangeAsync(code, verifier, "https://claude.ai/cb", client));
+        Assert.Equal("f-live", (await store.GetRefreshTokenAsync(TokenIssuer.Hash(issued.RefreshToken)))!.FamilyId);
+    }
+
+    /// <summary>The refresh token whose hash the version 1 database holds as its live grant.</summary>
+    private const string LiveToken = "synthetic-live-refresh-token";
+
+    [Fact]
+    public async Task A_database_from_before_the_version_marker_is_upgraded_to_the_current_version()
     {
         // A development database: user_version 0 and a consents table without created_at.
         using (var conn = new SqliteConnection($"Data Source={_path}"))
@@ -243,7 +343,7 @@ public sealed class OAuthStoreTests : IDisposable
         Assert.Equal(0, UserVersion());
 
         var store = NewStore();
-        Assert.Equal(1, UserVersion());
+        Assert.Equal(SqliteOAuthStore.SchemaVersion, UserVersion());
         var consent = await store.GetConsentAsync("u1", "c1");
         Assert.Equal("f1", consent!.FamilyId);
         Assert.Equal(0, consent.CreatedAt.ToUnixTimeMilliseconds());
