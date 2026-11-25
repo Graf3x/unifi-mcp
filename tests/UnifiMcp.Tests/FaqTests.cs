@@ -180,6 +180,105 @@ public class FaqTests
         Assert.Contains("nas", text);
     }
 
+    // --- a network that could not be read is unknown, never "outside every subnet" ---------------------------------------
+
+    [Fact]
+    public async Task Dhcp_reservation_with_the_clients_network_unread_says_membership_is_unknown_and_still_checks_the_rest()
+    {
+        await using var h = await Harness.StartAsync();
+        Seed(h.Unifi);
+        h.Unifi.Route("GET", $"{Site}/networks/{Lan}", """{"message":"boom"}""", 500);
+        h.Unifi.Route("GET", "/proxy/network/api/s/default/stat/sta", NasStation);
+        var (text, isError) = await h.CallAsync("dhcp_reservation_faq", new() { ["client"] = "nas", ["expected_ip"] = "192.168.1.50" });
+        Assert.False(isError, text);
+        Assert.Contains("**Network Main step failed:**", text);
+        Assert.DoesNotContain("no known subnet", text);
+        Assert.Contains("unknown", text);
+        Assert.Contains("could not be read: Main", text);
+        Assert.Contains("Fixed IP reservation: 192.168.1.60", text); // the reservation is still read
+        Assert.Contains("matches the expected 192.168.1.50", text);   // and the verdict still given
+    }
+
+    [Fact]
+    public async Task Dhcp_reservation_keeps_the_networks_that_were_read()
+    {
+        await using var h = await Harness.StartAsync();
+        Seed(h.Unifi);
+        h.Unifi.Route("GET", $"{Site}/networks/{Iot}", """{"message":"boom"}""", 500);
+        var (text, _) = await h.CallAsync("dhcp_reservation_faq", new() { ["client"] = "nas" });
+        Assert.Contains("**Network IoT step failed:**", text);
+        Assert.Contains("DHCP server pool 192.168.1.100 to 192.168.1.200", text);
+        Assert.Contains("outside the pool", text);
+    }
+
+    [Fact]
+    public async Task Dhcp_reservation_with_no_network_list_says_membership_is_unknown()
+    {
+        await using var h = await Harness.StartAsync();
+        Seed(h.Unifi);
+        h.Unifi.Route("GET", $"{Site}/networks", """{"message":"boom"}""", 500);
+        var (text, isError) = await h.CallAsync("dhcp_reservation_faq", new() { ["client"] = "nas", ["expected_ip"] = "192.168.1.50" });
+        Assert.False(isError, text);
+        Assert.Contains("**Networks step failed:**", text);
+        Assert.DoesNotContain("no known subnet", text);
+        Assert.Contains("unknown", text);
+        Assert.Contains("## Reservation", text);
+        Assert.Contains("matches the expected 192.168.1.50", text);
+    }
+
+    [Fact]
+    public async Task Who_is_on_the_network_with_one_network_unread_does_not_call_its_clients_unmatched()
+    {
+        await using var h = await Harness.StartAsync();
+        Seed(h.Unifi);
+        h.Unifi.Route("GET", $"{Site}/networks/{Lan}", """{"message":"boom"}""", 500);
+        var (text, isError) = await h.CallAsync("who_is_on_network_faq");
+        Assert.False(isError, text);
+        Assert.Contains("**Network Main step failed:**", text);
+        Assert.Contains("## IoT (VLAN 20, 10.20.0.1/24): 1 client(s)", text); // what was read is kept
+        Assert.DoesNotContain("No matching network", text);
+        Assert.Contains("could not be read: Main", text);
+        Assert.Contains("nas", text);
+        Assert.Contains("laptop", text);
+    }
+
+    [Fact]
+    public async Task Who_is_on_the_network_with_no_network_list_lists_clients_with_membership_unknown()
+    {
+        await using var h = await Harness.StartAsync();
+        Seed(h.Unifi);
+        h.Unifi.Route("GET", $"{Site}/networks", """{"message":"boom"}""", 500);
+        var (text, isError) = await h.CallAsync("who_is_on_network_faq");
+        Assert.False(isError, text);
+        Assert.DoesNotContain("No matching network", text);
+        Assert.Contains("unknown", text);
+        Assert.Contains("nas", text);
+        Assert.Contains("bulb", text);
+    }
+
+    [Fact]
+    public async Task Who_is_on_a_named_network_that_could_not_be_read_says_so()
+    {
+        await using var h = await Harness.StartAsync();
+        Seed(h.Unifi);
+        h.Unifi.Route("GET", $"{Site}/networks/{Lan}", """{"message":"boom"}""", 500);
+        var (text, _) = await h.CallAsync("who_is_on_network_faq", new() { ["network"] = "Main" });
+        Assert.DoesNotContain("No network matches", text);
+        Assert.DoesNotContain("0 client(s)", text);
+        Assert.Contains("## Main (VLAN 1): subnet unknown", text);
+    }
+
+    [Fact]
+    public async Task Who_is_on_a_named_network_with_no_network_list_says_it_could_not_check()
+    {
+        await using var h = await Harness.StartAsync();
+        Seed(h.Unifi);
+        h.Unifi.Route("GET", $"{Site}/networks", """{"message":"boom"}""", 500);
+        var (text, _) = await h.CallAsync("who_is_on_network_faq", new() { ["network"] = "Main" });
+        Assert.DoesNotContain("No network matches", text);
+        Assert.Contains("could not be checked", text);
+    }
+
     [Fact]
     public async Task Faq_while_not_configured_says_so_as_a_tool_error()
     {

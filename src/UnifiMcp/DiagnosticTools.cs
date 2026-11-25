@@ -38,9 +38,8 @@ public sealed partial class DiagnosticTools(UnifiClient console, ConsoleReads re
     {
         var site = await reads.SiteAsync(siteId, ct);
         var zone = await site.TimeZoneAsync(ct);
-        var window = Window(hours);
-        var query = LogQuery(window, limit, page, List(category), List(@event), List(severity), search);
-        var result = await site.SystemLogAsync(query, ct);
+        var query = LogQuery(hours, limit, page, List(category), List(@event), List(severity), search);
+        var (result, window) = await site.SystemLogAsync(query, ct);
         var events = Items(result, "data").Take(query.PageSize).ToList();
         var total = Long(result, "total_element_count") ?? events.Count;
         var pages = Long(result, "total_page_count") ?? 1;
@@ -55,7 +54,7 @@ public sealed partial class DiagnosticTools(UnifiClient console, ConsoleReads re
 
         if (filters.Count == 0 && page == 0)
         {
-            if (await a.Step("Counts", () => site.SystemLogCountAsync(window.From, window.To, ct)) is { } counts)
+            if (await a.Step("Counts", () => site.SystemLogCountAsync(window, ct)) is { } counts)
             {
                 a.Line("## Counts in this window");
                 a.Line("Categories: " + Counts(counts, "categories"));
@@ -154,8 +153,8 @@ public sealed partial class DiagnosticTools(UnifiClient console, ConsoleReads re
         }
 
         var events = await a.Step("WAN events", () => site.SystemLogAsync(
-            LogQuery(Window(hours), 15, 0, ["INTERNET_AND_WAN"], [], [], null), ct));
-        if (events is { } ev)
+            LogQuery(hours, 15, 0, ["INTERNET_AND_WAN"], [], [], null), ct));
+        if (events?.Json is { } ev)
             a.Line($"## WAN events ({Long(ev, "total_element_count") ?? 0} in the last {hours} h, newest first)").Line(LogTable(Items(ev, "data").Take(15).ToList(), zone.Zone));
     });
 
@@ -193,8 +192,8 @@ public sealed partial class DiagnosticTools(UnifiClient console, ConsoleReads re
 
         var zone = await site.TimeZoneAsync(ct);
         var events = await a.Step("Radio events", () => site.SystemLogAsync(
-            LogQuery(Window(24), 15, 0, [], ["AP_CHANGED_CHANNELS", "AP_DETECTED_RADAR"], [], null), ct));
-        if (events is { } ev)
+            LogQuery(24, 15, 0, [], ["AP_CHANGED_CHANNELS", "AP_DETECTED_RADAR"], [], null), ct));
+        if (events?.Json is { } ev)
             a.Line($"## Channel changes and radar, last 24 h ({Long(ev, "total_element_count") ?? 0})").Line(LogTable(Items(ev, "data").Take(15).ToList(), zone.Zone));
     });
 
@@ -262,9 +261,9 @@ public sealed partial class DiagnosticTools(UnifiClient console, ConsoleReads re
         }
 
         var events = await a.Step("Events", () => site.SystemLogAsync(
-            LogQuery(Window(hours), 15, 0, [], [], [], Text(c, "mac")), ct));
+            LogQuery(hours, 15, 0, [], [], [], Text(c, "mac")), ct));
         if (events is { } ev)
-            a.Line($"## Its events, last {Window(hours).Hours} h ({Long(ev, "total_element_count") ?? 0}, newest first)").Line(LogTable(Items(ev, "data").Take(15).ToList(), zone.Zone));
+            a.Line($"## Its events, last {ev.Window.Hours} h ({Long(ev.Json, "total_element_count") ?? 0}, newest first)").Line(LogTable(Items(ev.Json, "data").Take(15).ToList(), zone.Zone));
     });
 
     [McpServerTool(Name = "list_port_forwards", Title = "List port forwards", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
@@ -289,18 +288,9 @@ public sealed partial class DiagnosticTools(UnifiClient console, ConsoleReads re
 
     // --- the system log ---------------------------------------------------------------------------------------------
 
-    private sealed record LogWindow(int Hours, long From, long To);
-
-    /// <summary>The last <paramref name="hours"/> up to now by the host's clock.</summary>
-    private LogWindow Window(int hours)
-    {
-        var h = Math.Clamp(hours, 1, MaxHours);
-        var to = time.GetUtcNow().ToUnixTimeMilliseconds();
-        return new LogWindow(h, to - h * 3_600_000L, to);
-    }
-
-    private static SystemLogQuery LogQuery(LogWindow w, int limit, int page, string[] categories, string[] events, string[] severities, string? search) =>
-        new(w.From, w.To, Math.Clamp(limit, 1, 200), Math.Max(page, 0),
+    /// <summary>A page over the last <paramref name="hours"/>; <see cref="ConsoleReads"/> sets the window by the host's clock when it asks the console.</summary>
+    private static SystemLogQuery LogQuery(int hours, int limit, int page, string[] categories, string[] events, string[] severities, string? search) =>
+        new(Math.Clamp(hours, 1, MaxHours), Math.Clamp(limit, 1, 200), Math.Max(page, 0),
             categories.Length == 0 ? null : categories, events.Length == 0 ? null : events, severities.Length == 0 ? null : severities,
             string.IsNullOrWhiteSpace(search) ? null : search.Trim());
 

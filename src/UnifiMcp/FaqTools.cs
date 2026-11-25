@@ -15,7 +15,22 @@ namespace UnifiMcp;
 [McpServerToolType]
 public sealed class FaqTools(UnifiClient console, ConsoleReads reads)
 {
-    private sealed record Net(string Name, int Vlan, IPAddress? Host, int Prefix, JsonElement Details);
+    /// <summary>A network from the list; <see cref="Details"/> is null when its details could not be read, so its subnet is unknown.</summary>
+    private sealed record Net(string Name, int Vlan, IPAddress? Host, int Prefix, JsonElement? Details);
+
+    /// <summary>
+    /// What is known of the site's networks. <see cref="All"/> is null when the list could not be read. A client in no
+    /// subnet is outside every network only when <see cref="Complete"/>; otherwise its network is unknown.
+    /// </summary>
+    private sealed record Networks(List<Net>? All)
+    {
+        public List<Net> Read => All?.Where(n => n.Details is not null).ToList() ?? [];
+        public List<string> Unread => All?.Where(n => n.Details is null).Select(n => n.Name).ToList() ?? [];
+        public bool Complete => All is not null && Unread.Count == 0;
+
+        /// <summary>Why a client in no subnet that was read may still be in one.</summary>
+        public string Gap => All is null ? "the list of networks could not be read" : $"the details of these networks could not be read: {string.Join(", ", Unread)}";
+    }
 
     [McpServerTool(Name = "who_is_on_network_faq", Title = "Who is on this network", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
     [Description("[Composite] Who is on a network: connected clients grouped by network (matched by IPv4 subnet) with IP, MAC, type and the device they connect through. Omit network for all of them.")]
@@ -25,23 +40,36 @@ public sealed class FaqTools(UnifiClient console, ConsoleReads reads)
         CancellationToken ct = default) => Answer.RunAsync(async a =>
     {
         var id = (await console.FindSiteAsync(siteId, ct)).Id;
-        var nets = await a.Step("Networks", () => NetworksAsync(id, ct)) ?? [];
+        var nets = await NetworksAsync(a, id, ct);
         var devices = await a.Step("Devices", () => DevicesAsync(id, ct)) ?? new();
         var clients = await a.Step("Connected clients", () => console.GetAllAsync($"/v1/sites/{id}/clients", ct));
         if (clients is null) return;
 
-        var shown = nets.Where(n => network is null || n.Name.Contains(network, StringComparison.OrdinalIgnoreCase) || n.Vlan.ToString() == network.Trim()).ToList();
+        if (nets.All is null && network is not null)
+        {
+            a.Line($"Who is on '{network}' could not be checked: {nets.Gap}.");
+            return;
+        }
+        var shown = (nets.All ?? []).Where(n => network is null || n.Name.Contains(network, StringComparison.OrdinalIgnoreCase) || n.Vlan.ToString() == network.Trim()).ToList();
         if (network is not null && shown.Count == 0) a.Line($"No network matches '{network}'.").Line();
         foreach (var n in shown)
         {
+            if (n.Details is null)
+            {
+                a.Line($"## {n.Name} (VLAN {n.Vlan}): subnet unknown").Line("Its details could not be read, so which clients are on it could not be checked.").Line();
+                continue;
+            }
             var members = clients.Where(c => InSubnet(Ip(c), n)).ToList();
             a.Line($"## {n.Name} (VLAN {n.Vlan}, {n.Host}/{n.Prefix}): {members.Count} client(s)");
             a.Line(ClientTable(members, devices));
         }
 
         if (network is not null) return;
-        var unmatched = clients.Where(c => !nets.Any(n => InSubnet(Ip(c), n))).ToList();
-        if (unmatched.Count > 0) a.Line("## No matching network (VPN, or outside every known subnet)").Line(ClientTable(unmatched, devices));
+        var unmatched = clients.Where(c => !nets.Read.Any(n => InSubnet(Ip(c), n))).ToList();
+        if (unmatched.Count == 0) return;
+        a.Line(nets.Complete
+            ? "## No matching network (VPN, or outside every known subnet)"
+            : $"## Network unknown (in no subnet that could be read; {nets.Gap})").Line(ClientTable(unmatched, devices));
     });
 
     [McpServerTool(Name = "client_path_faq", Title = "Client network path", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
@@ -104,11 +132,12 @@ public sealed class FaqTools(UnifiClient console, ConsoleReads reads)
         var ip = Ip(matches[0]);
         a.Line($"## Client\n{TextOrNull(matches[0], "name")}: current IP {ip ?? "unknown"}, MAC {TextOrNull(matches[0], "macAddress") ?? "?"}").Line();
 
-        var nets = await a.Step("Networks", () => NetworksAsync(id, ct)) ?? [];
-        var net = nets.FirstOrDefault(n => InSubnet(ip, n));
+        var nets = await NetworksAsync(a, id, ct);
+        var net = nets.Read.FirstOrDefault(n => InSubnet(ip, n));
         a.Line("## Network");
-        if (net is null) a.Line("The client's address is in no known subnet.").Line();
-        else a.Line(DescribePool(net, ip)).Line();
+        if (net is not null) a.Line(DescribePool(net, ip)).Line();
+        else if (nets.Complete) a.Line("The client's address is in no known subnet.").Line();
+        else a.Line($"Which network the client's address is in is unknown, so its DHCP pool was not checked: it is in no subnet that could be read, and {nets.Gap}.").Line();
 
         var sta = await StationAsync(a, siteId, TextOrNull(matches[0], "macAddress"), ct);
         var reserved = sta is { } s && Text(s, "use_fixedip") == "true" ? Text(s, "fixed_ip") : null;
@@ -180,22 +209,33 @@ public sealed class FaqTools(UnifiClient console, ConsoleReads reads)
         return null;
     }
 
-    private async Task<List<Net>> NetworksAsync(string site, CancellationToken ct)
+    /// <summary>
+    /// The site's networks, the list and then each one's details, every read a step. A network whose details fail is
+    /// kept with its subnet unknown, and the others are still read.
+    /// </summary>
+    private async Task<Networks> NetworksAsync(Answer a, string site, CancellationToken ct)
     {
+        var list = await a.Step("Networks", () => console.GetAllAsync($"/v1/sites/{site}/networks", ct));
+        if (list is null) return new Networks(null);
         var result = new List<Net>();
-        foreach (var n in await console.GetAllAsync($"/v1/sites/{site}/networks", ct))
+        foreach (var n in list)
         {
-            var d = await console.GetJsonAsync($"/v1/sites/{site}/networks/{TextOrNull(n, "id")}", ct);
-            IPAddress? host = null;
-            var prefix = 0;
-            if (d.TryGetProperty("ipv4Configuration", out var v4) && v4.ValueKind == JsonValueKind.Object)
+            var name = TextOrNull(n, "name") ?? "?";
+            var vlan = n.ValueKind == JsonValueKind.Object && n.TryGetProperty("vlanId", out var vl) && vl.TryGetInt32(out var v) ? v : 0;
+            result.Add(await a.Step($"Network {name}", async () =>
             {
-                if (IPAddress.TryParse(TextOrNull(v4, "hostIpAddress"), out var parsed)) host = parsed;
-                if (v4.TryGetProperty("prefixLength", out var p) && p.TryGetInt32(out var bits)) prefix = bits;
-            }
-            result.Add(new Net(TextOrNull(n, "name") ?? "?", n.TryGetProperty("vlanId", out var vlan) && vlan.TryGetInt32(out var v) ? v : 0, host, prefix, d));
+                var d = await console.GetJsonAsync($"/v1/sites/{site}/networks/{TextOrNull(n, "id")}", ct);
+                IPAddress? host = null;
+                var prefix = 0;
+                if (d.TryGetProperty("ipv4Configuration", out var v4) && v4.ValueKind == JsonValueKind.Object)
+                {
+                    if (IPAddress.TryParse(TextOrNull(v4, "hostIpAddress"), out var parsed)) host = parsed;
+                    if (v4.TryGetProperty("prefixLength", out var p) && p.TryGetInt32(out var bits)) prefix = bits;
+                }
+                return new Net(name, vlan, host, prefix, d);
+            }) ?? new Net(name, vlan, null, 0, null));
         }
-        return result;
+        return new Networks(result);
     }
 
     private async Task<Dictionary<string, string>> DevicesAsync(string site, CancellationToken ct) =>
@@ -204,7 +244,7 @@ public sealed class FaqTools(UnifiClient console, ConsoleReads reads)
     private static string DescribePool(Net net, string? ip)
     {
         var header = $"{net.Name} (VLAN {net.Vlan}, {net.Host}/{net.Prefix}). ";
-        if (!net.Details.TryGetProperty("ipv4Configuration", out var v4) || !v4.TryGetProperty("dhcpConfiguration", out var dhcp) || dhcp.ValueKind != JsonValueKind.Object)
+        if (net.Details is not { } details || !details.TryGetProperty("ipv4Configuration", out var v4) || !v4.TryGetProperty("dhcpConfiguration", out var dhcp) || dhcp.ValueKind != JsonValueKind.Object)
             return header + "No DHCP on this network.";
         if (TextOrNull(dhcp, "mode") != "SERVER" || !dhcp.TryGetProperty("ipAddressRange", out var range))
             return header + $"DHCP mode {TextOrNull(dhcp, "mode")}: addresses come from elsewhere.";
