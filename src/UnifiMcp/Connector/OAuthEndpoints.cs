@@ -339,13 +339,17 @@ public static class OAuthEndpoints
         }
     }
 
+    /// <summary>The names an authorization response may carry (RFC 6749 4.1.2 and 4.1.2.1, RFC 9207).</summary>
+    private static readonly HashSet<string> ResponseParameters = ["code", "state", "iss", "error", "error_description", "error_uri"];
+
     /// <summary>The redirect URI with these parameters added. A query the URI was registered with is kept (RFC 6749
-    /// 3.1.2), less any parameter of the same name, so the answer carries one code, state and iss: ours.</summary>
+    /// 3.1.2), less any authorization response parameter, so the answer carries only ours: one code or error, one state,
+    /// one iss.</summary>
     private static string WithQuery(string baseUri, params (string Key, string? Value)[] parameters)
     {
         var mark = baseUri.IndexOf('?');
         var kept = mark < 0 ? [] : baseUri[(mark + 1)..].Split('&', StringSplitOptions.RemoveEmptyEntries)
-            .Where(p => !parameters.Any(n => n.Key == Uri.UnescapeDataString(p.Split('=', 2)[0].Replace('+', ' '))));
+            .Where(p => !ResponseParameters.Contains(Uri.UnescapeDataString(p.Split('=', 2)[0].Replace('+', ' '))));
         var added = parameters.Where(p => !string.IsNullOrEmpty(p.Value))
             .Select(p => Uri.EscapeDataString(p.Key) + "=" + Uri.EscapeDataString(p.Value!));
         return (mark < 0 ? baseUri : baseUri[..mark]) + "?" + string.Join('&', kept.Concat(added));

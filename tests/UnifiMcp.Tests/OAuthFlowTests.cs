@@ -83,9 +83,10 @@ public sealed partial class OAuthFlowTests
 
     /// <summary>The browser's part: authorize, sign in with Google if needed, allow on the consent page. Returns the code.</summary>
     /// <param name="expectConsentPage">Fail if a standing consent skips the page.</param>
-    internal static async Task<string> AuthorizeAsync(PublicHarness h, string clientId, string challenge = Challenge, bool expectConsentPage = false)
+    internal static async Task<string> AuthorizeAsync(PublicHarness h, string clientId, string challenge = Challenge, bool expectConsentPage = false,
+        string redirectUri = Callback, Action<Dictionary<string, string>>? callback = null)
     {
-        var url = AuthorizeUrl(clientId, challenge);
+        var url = AuthorizeUrl(clientId, challenge, redirectUri: redirectUri);
         var page = await h.Http.GetAsync(url);
         if (page.StatusCode == HttpStatusCode.Redirect && page.Headers.Location!.ToString().StartsWith(FakeGoogle.AuthorizeEndpoint, StringComparison.Ordinal))
         {
@@ -109,6 +110,7 @@ public sealed partial class OAuthFlowTests
         consent.Headers.Add("Origin", Base);
         var q = CallbackQuery(await h.Http.SendAsync(consent));
         Assert.Equal("st-1", q["state"]);
+        callback?.Invoke(q);
         return q["code"];
     }
 
@@ -414,10 +416,10 @@ public sealed partial class OAuthFlowTests
     }
 
     [Fact]
-    public async Task A_redirect_uri_with_its_own_query_keeps_it_and_gets_one_iss_and_state()
+    public async Task A_redirect_uri_with_its_own_query_keeps_it_and_gets_only_our_answer()
     {
         await using var h = await PublicHarness.StartAsync();
-        const string redirect = Callback + "?keep=1&iss=https%3A%2F%2Fevil.example&state=old";
+        const string redirect = Callback + "?keep=1&iss=https%3A%2F%2Fevil.example&state=old&code=old&error=old&error_description=old&error_uri=old";
         using var register = h.NewClient();
         var registered = await register.PostAsJsonAsync("/oauth/register", new
         {
@@ -432,6 +434,16 @@ public sealed partial class OAuthFlowTests
         Assert.Equal("1", q["keep"]);
         Assert.Equal("st-1", q["state"]);
         Assert.Equal("invalid_target", q["error"]);
+        Assert.False(q.ContainsKey("code"));
+        Assert.False(q.ContainsKey("error_uri"));
+
+        Dictionary<string, string>? success = null;
+        var code = await AuthorizeAsync(h, clientId, redirectUri: redirect, callback: c => success = c);
+        Assert.NotEqual("old", code);
+        Assert.Equal("1", success!["keep"]);
+        Assert.False(success.ContainsKey("error"));
+        Assert.False(success.ContainsKey("error_description"));
+        Assert.False(success.ContainsKey("error_uri"));
     }
 
     [Fact]
