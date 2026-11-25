@@ -25,7 +25,7 @@ follow [guide 1](README.md#guide-1-quick-local-setup) in the README.
 | Path | What it is |
 |---|---|
 | `src/UnifiMcp/ApiTool.cs`, `ReadOperationTool.cs`, `OpenApiCatalog.cs` | Tools generated from the OpenAPI document in `openapi/` |
-| `src/UnifiMcp/WriteApproval.cs` | Whether a write may run: the owner's confirmation form, or the `confirm` fallback |
+| `src/UnifiMcp/WriteApproval.cs` | Whether a write may run: the owner's confirmation form, or the `confirm` fallback where the owner opted in |
 | `src/UnifiMcp/FaqTools.cs`, `DiagnosticTools.cs`, `DiagnosticTools.Devices.cs` | The task-oriented and diagnostics tools |
 | `src/UnifiMcp/DeviceReading.cs` | The device reading: every rule about a console device record, for the text answers and the view alike |
 | `src/UnifiMcp/Answer.cs`, `ConsoleJson.cs` | A composite tool's answer (steps, failure lines, tables, the cap, the view) and reading the console's JSON by field name |
@@ -48,7 +48,8 @@ follow [guide 1](README.md#guide-1-quick-local-setup) in the README.
 
 - **Tools:** snake_case names, a title, read-only or destructive hints, a description that starts with its `[Category]`,
   and a description on every parameter. `ToolContractTests` fails if one is missing. Writes must stay behind
-  `UNIFI_ALLOW_WRITES` and `WriteApproval`: the owner's form where the client can show one, `confirm` otherwise.
+  `UNIFI_ALLOW_WRITES` and `WriteApproval`: the owner's form, showing the whole change. A client that cannot show it is
+  refused, unless the owner set `UNIFI_ALLOW_CONFIRM_FALLBACK=true`; only then does `confirm` run a write.
 - **Composite tools:** write the answer through `Answer`: put every read the answer can do without in `a.Step`, so its
   failure is reported and the rest still runs, and read the console's JSON through `ConsoleJson`.
 - **Devices:** a rule about a console device record (online, its state, a port's flags or look, what is plugged in

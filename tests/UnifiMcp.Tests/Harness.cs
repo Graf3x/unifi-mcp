@@ -65,7 +65,7 @@ public sealed class Harness : IAsyncDisposable
     /// <summary>Every log line the host writes, formatted; the audit category is captured down to Debug.</summary>
     public LogCapture Logs { get; } = new();
 
-    public static Settings NewSettings(string dir, bool writes = false, bool key = true, bool pin = true)
+    public static Settings NewSettings(string dir, bool writes = false, bool key = true, bool pin = true, bool confirmFallback = false)
     {
         if (key) File.WriteAllText(Path.Combine(dir, "key"), ApiKey + "\n");
         if (pin) File.WriteAllText(Path.Combine(dir, "pin"), Pin);
@@ -76,16 +76,18 @@ public sealed class Harness : IAsyncDisposable
             CertPinFile = Path.Combine(dir, "pin"),
             AllowedLoginsFile = Path.Combine(dir, "logins"),
             AllowWrites = writes,
+            AllowConfirmFallback = confirmFallback,
             Listen = "http://127.0.0.1:0",
         };
     }
 
     /// <param name="configure">Runs on the builder after the harness's own setup (e.g. a fake TimeProvider).</param>
+    /// <param name="confirmFallback">UNIFI_ALLOW_CONFIRM_FALLBACK: a client that cannot show a form may approve with confirm.</param>
     public static async Task<Harness> StartAsync(bool writes = false, bool key = true, bool pin = true, string? login = Login,
-        Func<HttpContext, Listener>? listenerOf = null, Action<WebApplicationBuilder>? configure = null)
+        Func<HttpContext, Listener>? listenerOf = null, Action<WebApplicationBuilder>? configure = null, bool confirmFallback = false)
     {
         var h = new Harness();
-        h.App = McpHost.Build(NewSettings(h.Dir, writes, key, pin), h.Unifi, b =>
+        h.App = McpHost.Build(NewSettings(h.Dir, writes, key, pin, confirmFallback), h.Unifi, b =>
         {
             b.WebHost.UseTestServer();
             b.Logging.AddProvider(h.Logs);

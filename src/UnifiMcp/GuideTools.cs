@@ -36,9 +36,12 @@ public sealed class GuideTools(Settings settings, UnifiClient client, OpenApiCat
         sb.AppendLine($"- The diagnostics tools (system_log and the last five above) read the console's internal API, which its own UI uses. It is limited to {ConsoleReads.PerMinute} calls a minute (bursts of {ConsoleReads.Burst}) and repeats within {ConsoleReads.CacheFor.TotalSeconds:0} s are served from cache, because heavy polling can destabilise the console. Do not loop on them.").AppendLine();
         sb.AppendLine("## Changes");
         var writes = catalog.Operations.Count(o => o.IsWrite);
-        sb.AppendLine(settings.AllowWrites
-            ? $"Writes are on: {writes} write tools are listed. Each is marked destructive and asks the owner to approve it: with a confirmation form where the client can show one, otherwise with `confirm` set to its own tool name (without it you get a preview and nothing is sent)."
-            : $"This server is read-only: {writes} write operations exist but are not listed, because UNIFI_ALLOW_WRITES is off. `describe_operation` still shows them.");
+        sb.AppendLine(!settings.AllowWrites
+            ? $"This server is read-only: {writes} write operations exist but are not listed, because UNIFI_ALLOW_WRITES is off. `describe_operation` still shows them."
+            : $"Writes are on: {writes} write tools are listed. Each is marked destructive and asks the owner to approve it on a confirmation form that shows the whole change; a change too big for the form is refused, so make smaller changes. "
+              + (settings.AllowConfirmFallback
+                  ? "UNIFI_ALLOW_CONFIRM_FALLBACK is on: a client that cannot show the form runs a write when `confirm` is set to its own tool name (without it you get a preview and nothing is sent). Show the owner the preview and wait for their yes before confirming."
+                  : "A client that cannot show the form is refused every write, and `confirm` does not change that; the owner can allow it with UNIFI_ALLOW_CONFIRM_FALLBACK=true."));
         return sb.ToString();
     }
 

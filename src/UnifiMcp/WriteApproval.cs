@@ -11,8 +11,11 @@ namespace UnifiMcp;
 
 /// <summary>
 /// Whether a write may run, and how the owner approved it. A client that can show a form (one on the 2026-07-28 revision
-/// that declares form elicitation) gets one: the change with Accept or Decline, and <c>confirm</c> is ignored, so the
-/// model cannot approve its own write. Any other client falls back to <c>confirm</c> set to the tool's own name.
+/// that declares form elicitation) gets one: the whole change with Accept or Decline, and <c>confirm</c> is ignored, so
+/// the model cannot approve its own write. A change too big to show whole on the form is refused. Any other client is
+/// refused every write, unless the owner set UNIFI_ALLOW_CONFIRM_FALLBACK=true
+/// (<see cref="Settings.AllowConfirmFallback"/>): then <c>confirm</c> set to the tool's own name runs it, which means the
+/// model approves its own writes on that client.
 /// </summary>
 /// <remarks>
 /// The server is stateless, so the form travels as a multi round-trip request: the first call answers "input required"
@@ -36,8 +39,8 @@ public static class WriteApproval
 
     internal const string InputKey = "approve";
     internal static readonly TimeSpan Lifetime = TimeSpan.FromMinutes(10);
-    private const int MaxBody = 2_000;
-    private const int MaxValue = 200;
+    /// <summary>The most the form may hold, in characters. A change that needs more is refused, never shown in part.</summary>
+    internal const int MaxForm = 10_000;
     private static readonly IDataProtector Protector = new EphemeralDataProtectionProvider().CreateProtector("UnifiMcp.WriteApproval.v2");
     private static readonly ConditionalWeakTable<TimeProvider, Dictionary<string, long>> Ledgers = new();
     private static readonly JsonSerializerOptions Indented = new() { WriteIndented = true };
@@ -48,15 +51,39 @@ public static class WriteApproval
     /// </summary>
     public static Decision Decide(ApiOperation op, string path, IDictionary<string, JsonElement> args, RequestContext<CallToolRequestParams> request)
     {
+        var login = Audit.Login(request.User);
+        var audit = Audit.Logger(request.Services);
         if (!CanAsk(request.Server))
+        {
+            // The fallback is the owner's choice alone; without settings to say so, it is off.
+            if (request.Services?.GetService<Settings>()?.AllowConfirmFallback != true)
+            {
+                audit?.Log(Audit.Level(write: true), "{Login} {Tool} refused: the client cannot show a form", login, op.ToolName);
+                return new Stop(ToolText.Error(
+                    $"Nothing was sent. {op.ToolName} ({op.Method} {path}) changes the live network, and the owner approves each "
+                    + "change on a confirmation form. This client cannot show one (that needs MCP revision 2026-07-28 with form "
+                    + "elicitation), so the write is refused; confirm does not change that. Do not retry. Tell the owner: they "
+                    + "can use a client that shows the form, or set UNIFI_ALLOW_CONFIRM_FALLBACK=true on the server, which lets "
+                    + "the model approve its own writes on clients without one."));
+            }
             return Confirm(args) == op.ToolName ? new Run("approved by confirm argument") : new Stop(ToolText.Ok(
                 $"Nothing was sent. {op.Method} {path} changes the live network.\n"
                 + $"Arguments: {JsonSerializer.Serialize(Approved(args))}\n"
                 + $"To run it, call {op.ToolName} again with confirm set to exactly \"{op.ToolName}\"."));
+        }
 
-        var login = Audit.Login(request.User);
+        var form = Form(op, path, args);
+        if (form.Length > MaxForm)
+        {
+            audit?.Log(Audit.Level(write: true), "{Login} {Tool} refused: too big for the form", login, op.ToolName);
+            return new Stop(ToolText.Error(
+                $"Nothing was sent ({op.Method} {path}). The owner must see the whole change on the confirmation form, and "
+                + $"this one needs {form.Length.ToString("N0", CultureInfo.InvariantCulture)} characters; the form holds "
+                + $"{MaxForm.ToString("N0", CultureInfo.InvariantCulture)}. Make a smaller change: split it into several calls "
+                + "where the API allows it, or ask the owner to make this one in the UniFi console."));
+        }
+
         var time = request.Services?.GetService<TimeProvider>() ?? TimeProvider.System;
-        var audit = Audit.Logger(request.Services);
         if (Answer(request.Params) is { } answer)
         {
             if (Open(Protector, time, request.Params!.RequestState, op.ToolName, path, args, login) is { } token && Spend(token, time))
@@ -73,7 +100,7 @@ public static class WriteApproval
         throw new InputRequiredException(
             new Dictionary<string, InputRequest>
             {
-                [InputKey] = InputRequest.ForElicitation(new ElicitRequestParams { Message = Form(op, path, args), RequestedSchema = new() }),
+                [InputKey] = InputRequest.ForElicitation(new ElicitRequestParams { Message = form, RequestedSchema = new() }),
             },
             Seal(Protector, time, op.ToolName, path, args, login));
     }
@@ -90,8 +117,9 @@ public static class WriteApproval
     }
 
     /// <summary>
-    /// What the owner sees: the change and the exact request, every argument but the body in full, then the body, cut short
-    /// when long. What identifies the target (the path and its parameters) always comes before the cut.
+    /// What the owner sees: the change and the exact request, every argument, then the body, all in full. Nothing is cut:
+    /// the model chooses the order of the body's fields, so the one that decides the change could sit past any cut.
+    /// <see cref="Decide"/> refuses a form longer than <see cref="MaxForm"/>.
     /// </summary>
     internal static string Form(ApiOperation op, string path, IDictionary<string, JsonElement> args)
     {
@@ -102,15 +130,10 @@ public static class WriteApproval
         {
             sb.Append('\n');
             foreach (var (name, value) in named)
-                sb.Append(name).Append(": ").Append(Cut(Shown(value), MaxValue)).Append('\n');
+                sb.Append(name).Append(": ").Append(Shown(value)).Append('\n');
         }
         if (args.TryGetValue("body", out var body))
-        {
-            var shown = JsonSerializer.Serialize(body, Indented);
-            sb.Append("\nBody:\n").Append(shown.Length <= MaxBody
-                ? shown
-                : shown[..MaxBody] + $"\n[truncated: {MaxBody:N0} of {shown.Length:N0} characters shown; the rest is sent too]");
-        }
+            sb.Append("\nBody:\n").Append(JsonSerializer.Serialize(body, Indented));
         return sb.ToString().TrimEnd();
     }
 
@@ -171,8 +194,6 @@ public static class WriteApproval
 
     private static string Digest(IDictionary<string, JsonElement> args) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(Approved(args)))));
-
-    private static string Cut(string s, int max) => s.Length <= max ? s : s[..max] + "…";
 
     private static string? Confirm(IDictionary<string, JsonElement> args) =>
         args.TryGetValue("confirm", out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;

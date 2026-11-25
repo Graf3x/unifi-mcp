@@ -11,8 +11,8 @@ using ModelContextProtocol.Protocol;
 namespace UnifiMcp.Tests;
 
 /// <summary>
-/// How a write is approved: a client that can show a form asks the owner and ignores <c>confirm</c>; any other client
-/// falls back to <c>confirm</c> set to the tool's own name.
+/// How a write is approved: a client that can show a form asks the owner and ignores <c>confirm</c>. Any other client is
+/// refused, unless the owner turned on the confirm fallback; then <c>confirm</c> set to the tool's own name runs it.
 /// </summary>
 public class WriteApprovalTests
 {
@@ -20,9 +20,10 @@ public class WriteApprovalTests
     private const string PolicyId = "33333333-3333-3333-3333-333333333333";
     private static readonly string PostPath = $"/v1/sites/{Harness.SiteId}/dns/policies";
 
-    private static async Task<Harness> StartAsync(Action<Microsoft.AspNetCore.Builder.WebApplicationBuilder>? configure = null)
+    private static async Task<Harness> StartAsync(Action<Microsoft.AspNetCore.Builder.WebApplicationBuilder>? configure = null,
+        bool confirmFallback = false)
     {
-        var h = await Harness.StartAsync(writes: true, configure: configure);
+        var h = await Harness.StartAsync(writes: true, configure: configure, confirmFallback: confirmFallback);
         h.Unifi.WithSite().Route("POST", PostPath, """{"id":"new"}""", 201);
         return h;
     }
@@ -80,6 +81,20 @@ public class WriteApprovalTests
     }
 
     [Fact]
+    public async Task With_the_fallback_on_a_client_that_can_show_a_form_is_still_asked_and_confirm_is_ignored()
+    {
+        await using var h = await StartAsync(confirmFallback: true);
+        var asked = 0;
+        await using var mcp = await h.ConnectAsync(elicit: _ => { asked++; return "decline"; });
+
+        var (text, _) = await CallAsync(mcp, Body(confirm: Tool));
+
+        Assert.Contains("declined", text);
+        Assert.Equal(1, asked);
+        Assert.Equal(0, Posts(h));
+    }
+
+    [Fact]
     public async Task The_asking_round_is_audited_as_asked_not_failed()
     {
         await using var h = await StartAsync();
@@ -92,22 +107,53 @@ public class WriteApprovalTests
         Assert.DoesNotContain($"{Harness.Login} {Tool} -> failed", h.Logs.Lines);
     }
 
+    private static int Changes(Harness h) => h.Unifi.Requests.Count(r => r.Method != "GET");
+
     [Fact]
-    public async Task A_long_body_is_cut_short_after_what_names_the_target()
+    public async Task A_body_whose_last_field_sits_far_down_is_shown_whole()
     {
         await using var h = await StartAsync();
         string? message = null;
         await using var mcp = await h.ConnectAsync(elicit: p => { message = p.Message; return "decline"; });
 
-        await CallAsync(mcp, new() { ["dnsPolicyId"] = PolicyId, ["body"] = new { type = "A_RECORD", domain = new string('x', 20_000) } },
-            tool: "update_dns_policy");
+        // The model chooses the order of the fields, so the one that decides what the change does can come last.
+        await CallAsync(mcp, new()
+        {
+            ["dnsPolicyId"] = PolicyId,
+            ["body"] = new { type = "A_RECORD", domain = "x.test", note = new string('n', 3_000), ipv4Address = "192.168.1.99" },
+        }, tool: "update_dns_policy");
 
         Assert.NotNull(message);
-        Assert.True(message.Length < 4_000, $"{message.Length} characters");
-        Assert.Contains("truncated", message);
-        Assert.Contains("the rest is sent too", message); // the owner is not left to think the hidden part is dropped
         Assert.Contains($"PUT {PostPath}/{PolicyId}", message);
         Assert.Contains($"dnsPolicyId: {PolicyId}", message);
+        Assert.Contains(new string('n', 3_000), message);
+        Assert.Contains("192.168.1.99", message);
+        Assert.DoesNotContain("truncated", message);
+        Assert.Equal(0, Changes(h));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_change_too_big_for_the_form_is_refused_and_nothing_is_sent(bool confirmFallback)
+    {
+        await using var h = await StartAsync(confirmFallback: confirmFallback);
+        var asked = 0;
+        await using var mcp = await h.ConnectAsync(elicit: _ => { asked++; return "accept"; });
+
+        var (text, isError) = await CallAsync(mcp, new()
+        {
+            ["dnsPolicyId"] = PolicyId,
+            ["body"] = new { type = "A_RECORD", domain = "x.test", note = new string('n', WriteApproval.MaxForm), ipv4Address = "192.168.1.99" },
+            ["confirm"] = "update_dns_policy",
+        }, tool: "update_dns_policy");
+
+        Assert.True(isError, text);
+        Assert.Contains("Nothing was sent", text);
+        Assert.Contains("smaller", text);
+        Assert.Equal(0, asked); // never put to the owner in part
+        Assert.Equal(0, Changes(h));
+        Assert.Contains($"{Harness.Login} update_dns_policy refused: too big for the form", h.Logs.Lines);
     }
 
     [Fact]
@@ -160,10 +206,44 @@ public class WriteApprovalTests
         Assert.Equal(0, asked);
     }
 
-    [Fact]
-    public async Task A_client_on_an_older_revision_falls_back_to_confirm()
+    public static TheoryData<string> NoForm => ["older revision", "url elicitation only", "no elicitation"];
+
+    private static Task<McpClient> ConnectWithoutFormAsync(Harness h, string client, Action asked) => client switch
+    {
+        "older revision" => h.ConnectAsync(elicit: _ => { asked(); return "accept"; }, protocolVersion: "2025-11-25"),
+        "url elicitation only" => h.ConnectAsync(elicit: _ => { asked(); return "accept"; },
+            capabilities: new ClientCapabilities { Elicitation = new ElicitationCapability { Url = new UrlElicitationCapability() } }),
+        _ => h.ConnectAsync(),
+    };
+
+    [Theory]
+    [MemberData(nameof(NoForm))]
+    public async Task By_default_a_client_that_cannot_show_a_form_is_refused_even_with_confirm(string client)
     {
         await using var h = await StartAsync();
+        var asked = 0;
+        await using var mcp = await ConnectWithoutFormAsync(h, client, () => asked++);
+
+        var (first, firstIsError) = await CallAsync(mcp, Body());
+        var (second, secondIsError) = await CallAsync(mcp, Body(confirm: Tool));
+
+        Assert.Equal(0, Changes(h));
+        Assert.Equal(0, asked);
+        foreach (var (text, isError) in new[] { (first, firstIsError), (second, secondIsError) })
+        {
+            Assert.True(isError, text);
+            Assert.Contains("Nothing was sent", text);
+            Assert.Contains("confirmation form", text);
+            Assert.Contains("UNIFI_ALLOW_CONFIRM_FALLBACK", text); // how the owner can allow it, if they choose to
+        }
+        Assert.Contains($"{Harness.Login} {Tool} refused: the client cannot show a form", h.Logs.Lines);
+        Assert.DoesNotContain(h.Logs.Lines, l => l.Contains("approved by confirm argument", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task With_the_fallback_on_a_client_on_an_older_revision_falls_back_to_confirm()
+    {
+        await using var h = await StartAsync(confirmFallback: true);
         var asked = 0;
         await using var mcp = await h.ConnectAsync(elicit: _ => { asked++; return "accept"; }, protocolVersion: "2025-11-25");
 
@@ -179,9 +259,9 @@ public class WriteApprovalTests
     }
 
     [Fact]
-    public async Task A_client_that_declares_only_url_elicitation_falls_back_to_confirm()
+    public async Task With_the_fallback_on_a_client_that_declares_only_url_elicitation_falls_back_to_confirm()
     {
-        await using var h = await StartAsync();
+        await using var h = await StartAsync(confirmFallback: true);
         var asked = 0;
         await using var mcp = await h.ConnectAsync(elicit: _ => { asked++; return "accept"; },
             capabilities: new ClientCapabilities { Elicitation = new ElicitationCapability { Url = new UrlElicitationCapability() } });

@@ -47,8 +47,12 @@ The one person allowed to use the server: a listed Google address, or whoever ho
 _Avoid_: user, admin, account
 
 **Write approval**:
-The owner's yes to one change to the network, given for that change alone: on a confirmation form where the client can show one, otherwise by the model repeating the call with the tool's own name. A yes on the form holds once, for that exact request and arguments, and lapses within minutes; the fallback has no such binding, since the model gives it in the same call it makes. Not the same as consent, which lets a client connect at all.
+The owner's yes to one change to the network, given for that change alone on a confirmation form that shows the whole change. A yes holds once, for that exact request and arguments, and lapses within minutes. A change too big to show whole is refused, and so is any write from a client that cannot show the form. Not the same as consent, which lets a client connect at all.
 _Avoid_: consent, permission, confirmation (except the form itself)
+
+**Confirm fallback**:
+The owner's opt-in (UNIFI_ALLOW_CONFIRM_FALLBACK) that lets a client without the form write when the model repeats the call with the tool's own name in `confirm`. It is not a write approval: the model gives it in the same call it makes, so the model approves its own writes. Without the opt-in, such a client is refused every write.
+_Avoid_: preview approval, confirm approval
 
 **Admission**:
 The decision that an identity is the owner under the current settings. It is made again each time the identity is used, so changing the allowed addresses or the sign-in method ends access for anyone who no longer qualifies.
