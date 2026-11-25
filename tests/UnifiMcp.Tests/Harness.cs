@@ -19,6 +19,8 @@ public sealed class FakeUnifi : HttpMessageHandler
     private readonly Dictionary<string, (int Status, string Json)> _routes = new(StringComparer.Ordinal);
     public List<Seen> Requests { get; } = [];
     public Exception? Throw { get; set; }
+    /// <summary>Only requests with this method throw <see cref="Throw"/>; any method when null.</summary>
+    public string? ThrowOn { get; set; }
 
     public FakeUnifi Route(string method, string path, string json, int status = 200)
     {
@@ -38,7 +40,7 @@ public sealed class FakeUnifi : HttpMessageHandler
         var uri = req.RequestUri!;
         var full = uri.PathAndQuery.StartsWith(Prefix, StringComparison.Ordinal) ? uri.PathAndQuery[Prefix.Length..] : uri.PathAndQuery;
         Requests.Add(new(req.Method.Method, full, body, key, uri.Scheme, uri.Host));
-        if (Throw is not null) throw Throw;
+        if (Throw is not null && (ThrowOn is null || ThrowOn == req.Method.Method)) throw Throw;
         var path = full.Split('?')[0];
         var hit = _routes.TryGetValue($"{req.Method.Method} {full}", out var r) || _routes.TryGetValue($"{req.Method.Method} {path}", out r);
         return hit
@@ -101,10 +103,11 @@ public sealed class Harness : IAsyncDisposable
     /// declares no forms.</param>
     /// <param name="protocolVersion">Pins a revision, e.g. "2025-11-25"; by default the client negotiates the newest.</param>
     /// <param name="through">Wraps the test server's handler, to see or change what the client sends.</param>
+    /// <param name="capabilities">What the client declares, beyond what its handlers imply.</param>
     public Task<McpClient> ConnectAsync(Func<ElicitRequestParams, string>? elicit = null, string? protocolVersion = null,
-        Func<HttpMessageHandler, HttpMessageHandler>? through = null)
+        Func<HttpMessageHandler, HttpMessageHandler>? through = null, ClientCapabilities? capabilities = null)
     {
-        var options = new McpClientOptions { ProtocolVersion = protocolVersion };
+        var options = new McpClientOptions { ProtocolVersion = protocolVersion, Capabilities = capabilities };
         if (elicit is not null)
             options.Handlers.ElicitationHandler = (p, _) => new ValueTask<ElicitResult>(new ElicitResult { Action = elicit(p!) });
         var http = Http;

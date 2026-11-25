@@ -27,8 +27,19 @@ public sealed class ApiTool(ApiOperation op, UnifiClient client) : McpServerTool
 
     public override IReadOnlyList<object> Metadata { get; } = [];
 
-    public override ValueTask<CallToolResult> InvokeAsync(RequestContext<CallToolRequestParams> request, CancellationToken cancellationToken = default) =>
-        new(RunAsync(op, client, request.Params?.Arguments ?? new Dictionary<string, JsonElement>(), request, cancellationToken));
+    /// <summary>The arguments the schema names; it allows no others.</summary>
+    private readonly string[] _known = [.. op.InputSchema()["properties"]!.AsObject().Select(p => p.Key)];
+
+    public override ValueTask<CallToolResult> InvokeAsync(RequestContext<CallToolRequestParams> request, CancellationToken cancellationToken = default)
+    {
+        var args = request.Params?.Arguments ?? new Dictionary<string, JsonElement>();
+        // Refused before anything else: an argument the request never uses would still be shown on the owner's form.
+        var unknown = args.Keys.Where(k => !_known.Contains(k, StringComparer.Ordinal)).ToList();
+        if (unknown.Count > 0)
+            return new(ToolText.Error($"{op.ToolName} has no parameter {string.Join(", ", unknown.Select(u => $"'{u}'"))}. "
+                                      + $"It takes: {string.Join(", ", _known)}."));
+        return new(RunAsync(op, client, args, request, cancellationToken));
+    }
 
     /// <summary>One operation with its arguments: the write's approval, path and query, the call, the audit line.</summary>
     internal static async Task<CallToolResult> RunAsync(ApiOperation op, UnifiClient client, IDictionary<string, JsonElement> args,
@@ -54,11 +65,17 @@ public sealed class ApiTool(ApiOperation op, UnifiClient client) : McpServerTool
             if (!response.Ok) return ToolText.Error($"The console answered {response.Status} to {op.Method} {path.Split('?')[0]}: {response.Body}");
             return ToolText.Ok(response.Body.Length == 0 ? $"Done ({response.Status}, no content)." : response.Body);
         }
+        // An approved write that got no answer, or whose caller gave up waiting, may still have reached the console, so it
+        // keeps its approval on record.
         catch (Exception e) when (e is UnifiError or UnifiNotConfigured)
         {
-            // An approved write that got no answer (it may still have reached the console) keeps its approval on record.
             if (approval is not null) Log(op, request, path!, "no answer", approval);
             return ToolText.Error(e.Message);
+        }
+        catch (OperationCanceledException) when (approval is not null)
+        {
+            Log(op, request, path!, "cancelled", approval);
+            throw;
         }
     }
 

@@ -1,7 +1,7 @@
 # No published ports. The tailnet side listens on ./run/mcp.sock, reached through `tailscale serve` on the host; the public
 # side listens on ./run/public.sock, reached only by the cloudflared sidecar (route unifi.example.com -> unix:/run/unifi-mcp/public.sock).
 # The public hostname below is a placeholder: set MCP_PUBLIC_BASE_URL to your real host when deploying.
-# Owner-supplied files live in ./config (see README). Write tools are on (UNIFI_ALLOW_WRITES); each still needs a per-call confirm.
+# Owner-supplied files live in ./config (see README). Write tools are on (UNIFI_ALLOW_WRITES); each still needs your approval.
 # Owner keys (fleet-key, declared in fleet.yaml): UNIFI_API_KEY, UNIFI_CERT_SHA256, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, UNIFI_MCP_TUNNEL_TOKEN.
 # UNIFI_MCP_DATA_KEY is a Fleet-generated secret that wraps the OAuth keyring in ./data.
 services:

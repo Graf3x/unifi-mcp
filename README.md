@@ -39,7 +39,7 @@ real thing: here seven checks pass, and the tunnel check says what is wrong and 
 | Who signed in to the console in the last day? | `system_log` |
 | Which devices are offline or have firmware updates waiting? | `network_health_faq` |
 | What ports are forwarded to the internet? | `list_port_forwards` |
-| With writes on: add a DNS record so `nas.home` points at 192.168.1.20 | `create_dns_policy`, after a preview you confirm |
+| With writes on: add a DNS record so `nas.home` points at 192.168.1.20 | `create_dns_policy`, after you approve it |
 
 Anything else the API offers, Claude finds with `search_operations` and runs with `call_read_operation`.
 

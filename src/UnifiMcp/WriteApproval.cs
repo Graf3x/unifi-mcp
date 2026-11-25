@@ -20,7 +20,9 @@ namespace UnifiMcp;
 /// this tool, the request it will send, these exact arguments (less <c>confirm</c>) and this owner; it lapses after
 /// <see cref="Lifetime"/> and is spent by the answer it carries. A call whose token does not open, or is spent, gets a
 /// fresh form. Tokens are sealed with a key that lives only as long as the process: they need no more, and the
-/// connector's keyring (which may be broken or absent) cannot then take writes down with it.
+/// connector's keyring (which may be broken or absent) cannot then take writes down with it. Because a token cannot
+/// outlive the process, its lifetime is kept on the process's monotonic clock, so setting the system clock (either way)
+/// neither revives a token nor stops new ones from opening.
 /// </remarks>
 public static class WriteApproval
 {
@@ -37,7 +39,7 @@ public static class WriteApproval
     private const int MaxBody = 2_000;
     private const int MaxValue = 200;
     private static readonly IDataProtector Protector = new EphemeralDataProtectionProvider().CreateProtector("UnifiMcp.WriteApproval.v2");
-    private static readonly ConditionalWeakTable<TimeProvider, Ledger> Ledgers = new();
+    private static readonly ConditionalWeakTable<TimeProvider, Dictionary<string, long>> Ledgers = new();
     private static readonly JsonSerializerOptions Indented = new() { WriteIndented = true };
 
     /// <summary>
@@ -100,22 +102,29 @@ public static class WriteApproval
         {
             sb.Append('\n');
             foreach (var (name, value) in named)
-                sb.Append(name).Append(": ").Append(Cut(value.ValueKind == JsonValueKind.String ? value.GetString()! : value.GetRawText(), MaxValue)).Append('\n');
+                sb.Append(name).Append(": ").Append(Cut(Shown(value), MaxValue)).Append('\n');
         }
         if (args.TryGetValue("body", out var body))
         {
             var shown = JsonSerializer.Serialize(body, Indented);
             sb.Append("\nBody:\n").Append(shown.Length <= MaxBody
                 ? shown
-                : shown[..MaxBody] + $"\n[truncated: {MaxBody:N0} of {shown.Length:N0} characters shown]");
+                : shown[..MaxBody] + $"\n[truncated: {MaxBody:N0} of {shown.Length:N0} characters shown; the rest is sent too]");
         }
         return sb.ToString().TrimEnd();
     }
 
+    /// <summary>
+    /// A value as JSON escapes it (a string without its quotes), so no value can break a line or carry a character that
+    /// reads as one, and the model cannot write lines of its own onto the form.
+    /// </summary>
+    private static string Shown(JsonElement value) =>
+        value.ValueKind == JsonValueKind.String ? JsonSerializer.Serialize(value.GetString())[1..^1] : JsonSerializer.Serialize(value);
+
     /// <summary>A token for this tool, request, arguments and owner, good once and for <see cref="Lifetime"/>.</summary>
     internal static string Seal(IDataProtector protector, TimeProvider time, string tool, string path, IDictionary<string, JsonElement> args, string login) =>
         protector.Protect(string.Join('\n', Convert.ToHexString(RandomNumberGenerator.GetBytes(16)), tool, path, Digest(args), login,
-            (time.GetUtcNow() + Lifetime).ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture)));
+            (time.GetTimestamp() + (long)(Lifetime.TotalSeconds * time.TimestampFrequency)).ToString(CultureInfo.InvariantCulture)));
 
     /// <summary>The token's id when it is ours, unexpired, and names exactly this tool, request, arguments and owner.</summary>
     internal static string? Open(IDataProtector protector, TimeProvider time, string? token, string tool, string path, IDictionary<string, JsonElement> args, string login)
@@ -125,41 +134,34 @@ public static class WriteApproval
         try { parts = protector.Unprotect(token).Split('\n'); }
         catch (CryptographicException) { return null; }
         return parts.Length == 6 && parts[1] == tool && parts[2] == path && parts[3] == Digest(args) && parts[4] == login
-               && long.TryParse(parts[5], NumberStyles.None, CultureInfo.InvariantCulture, out var expires)
-               && time.GetUtcNow().ToUnixTimeMilliseconds() <= expires
+               && long.TryParse(parts[5], NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var expires)
+               && time.GetTimestamp() <= expires
             ? parts[0] + "\n" + parts[5]
             : null;
     }
 
     /// <summary>
-    /// The spent token ids of one clock, and the latest time it has shown. That time never goes back, so once it has
-    /// passed a token's expiry the token cannot be spent again, whatever the clock does next; a spent id is dropped only
-    /// then. Each clock has its own (the host has one), so a fake clock in one test cannot move another's.
+    /// The spent token ids of one clock, with their expiry; <see cref="Spend"/> locks it. An id is dropped once its token
+    /// has expired, and the clock it is judged by never goes back. Each clock has its own (the host has one), so a fake
+    /// clock in one test cannot clean up another's.
     /// </summary>
-    private sealed class Ledger
-    {
-        public readonly Dictionary<string, long> Spent = new(StringComparer.Ordinal);
-        public long Latest = long.MinValue;
-    }
-
-    /// <summary>The ledger <see cref="Spend"/> locks for this clock.</summary>
-    internal static object LedgerFor(TimeProvider time) => Ledgers.GetValue(time, _ => new Ledger());
+    internal static object LedgerFor(TimeProvider time) => Ledgers.GetValue(time, _ => new Dictionary<string, long>(StringComparer.Ordinal));
 
     /// <summary>
     /// Marks an opened token used; false when it already was or has expired. The clock read, the expiry check, the clean-up
-    /// and the mark happen under one lock, in the token's own unit (milliseconds), against a time that never goes back. So a
-    /// call that stalls cannot act on an old time, and a clock set back cannot revive a token whose spent id was dropped.
+    /// and the mark happen under one lock, on the monotonic clock the token was sealed with, so a call that stalls cannot
+    /// act on an old time and a spent id is never dropped while its token could still open.
     /// </summary>
     internal static bool Spend(string opened, TimeProvider time)
     {
-        var expires = long.Parse(opened[(opened.IndexOf('\n') + 1)..], CultureInfo.InvariantCulture);
-        var ledger = (Ledger)LedgerFor(time);
-        lock (ledger)
+        var expires = long.Parse(opened[(opened.IndexOf('\n') + 1)..], NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture);
+        var spent = (Dictionary<string, long>)LedgerFor(time);
+        lock (spent)
         {
-            var now = ledger.Latest = Math.Max(ledger.Latest, time.GetUtcNow().ToUnixTimeMilliseconds());
+            var now = time.GetTimestamp();
             if (now > expires) return false;
-            foreach (var old in ledger.Spent.Where(s => s.Value < now).Select(s => s.Key).ToList()) ledger.Spent.Remove(old);
-            return ledger.Spent.TryAdd(opened, expires);
+            foreach (var old in spent.Where(s => s.Value < now).Select(s => s.Key).ToList()) spent.Remove(old);
+            return spent.TryAdd(opened, expires);
         }
     }
 

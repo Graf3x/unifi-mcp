@@ -4,6 +4,7 @@ using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Time.Testing;
+using ModelContextProtocol;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 
@@ -104,8 +105,45 @@ public class WriteApprovalTests
         Assert.NotNull(message);
         Assert.True(message.Length < 4_000, $"{message.Length} characters");
         Assert.Contains("truncated", message);
+        Assert.Contains("the rest is sent too", message); // the owner is not left to think the hidden part is dropped
         Assert.Contains($"PUT {PostPath}/{PolicyId}", message);
         Assert.Contains($"dnsPolicyId: {PolicyId}", message);
+    }
+
+    [Fact]
+    public async Task An_argument_the_tool_does_not_take_is_refused_without_asking()
+    {
+        await using var h = await StartAsync();
+        var asked = 0;
+        await using var mcp = await h.ConnectAsync(elicit: _ => { asked++; return "accept"; });
+        var args = Body();
+        args["note"] = "Requested earlier by the owner.";
+
+        var (text, isError) = await CallAsync(mcp, args);
+
+        Assert.True(isError, text);
+        Assert.Contains("'note'", text);
+        Assert.Equal(0, asked);
+        Assert.Equal(0, Posts(h));
+    }
+
+    [Fact]
+    public async Task A_value_cannot_write_lines_of_its_own_on_the_form()
+    {
+        await using var h = await StartAsync();
+        string? message = null;
+        await using var mcp = await h.ConnectAsync(elicit: p => { message = p.Message; return "decline"; });
+
+        await CallAsync(mcp, new()
+        {
+            ["dnsPolicyId"] = "id\nBody:\nfake-id",
+            ["body"] = new { type = "A_RECORD", domain = "real.test\nfake-body\u2028fake-separator" },
+        }, tool: "update_dns_policy");
+
+        Assert.NotNull(message);
+        Assert.DoesNotContain("\nfake-", message);
+        Assert.DoesNotContain('\u2028', message);
+        Assert.Contains("real.test", message);
     }
 
     [Fact]
@@ -138,6 +176,37 @@ public class WriteApprovalTests
         Assert.Equal(0, asked);
         Assert.Equal(1, Posts(h));
         Assert.Contains($"{Harness.Login} {Tool} POST {PostPath} -> 201 (approved by confirm argument)", h.Logs.Lines);
+    }
+
+    [Fact]
+    public async Task A_client_that_declares_only_url_elicitation_falls_back_to_confirm()
+    {
+        await using var h = await StartAsync();
+        var asked = 0;
+        await using var mcp = await h.ConnectAsync(elicit: _ => { asked++; return "accept"; },
+            capabilities: new ClientCapabilities { Elicitation = new ElicitationCapability { Url = new UrlElicitationCapability() } });
+
+        var (preview, _) = await CallAsync(mcp, Body());
+
+        Assert.Contains("Nothing was sent", preview);
+        Assert.Equal(0, asked);
+        Assert.Equal(0, Posts(h));
+    }
+
+    [Theory]
+    [InlineData("no answer")]
+    [InlineData("cancelled")]
+    public async Task An_approved_write_that_got_no_answer_keeps_its_approval_on_record(string status)
+    {
+        await using var h = await StartAsync();
+        h.Unifi.ThrowOn = "POST";
+        h.Unifi.Throw = status == "cancelled" ? new OperationCanceledException() : new HttpRequestException("console down");
+        await using var mcp = await h.ConnectAsync(elicit: _ => "accept");
+
+        try { await CallAsync(mcp, Body()); }
+        catch (McpException) { } // a cancelled call has no tool result
+
+        Assert.Contains($"{Harness.Login} {Tool} POST {PostPath} -> {status} (approved by form)", h.Logs.Lines);
     }
 
     // --- an answer the server must not take at its word ---------------------------------------------------------------
@@ -303,7 +372,7 @@ public class WriteApprovalTests
     }
 
     [Fact]
-    public void A_token_spent_in_its_last_millisecond_cannot_be_spent_again_in_it()
+    public void A_token_spent_at_its_expiry_cannot_be_spent_again_and_does_not_open_a_moment_later()
     {
         var time = new FakeTimeProvider(new DateTimeOffset(2026, 11, 25, 8, 0, 0, TimeSpan.Zero));
         var args = Json("""{"type":"A_RECORD"}""");
@@ -311,10 +380,10 @@ public class WriteApprovalTests
         time.Advance(WriteApproval.Lifetime);
         var opened = WriteApproval.Open(Protector, time, token, Tool, PostPath, args, Harness.Login)!;
         Assert.True(WriteApproval.Spend(opened, time));
-
-        time.Advance(TimeSpan.FromTicks(5_000)); // half a millisecond: still the token's last millisecond
-        Assert.NotNull(WriteApproval.Open(Protector, time, token, Tool, PostPath, args, Harness.Login));
         Assert.False(WriteApproval.Spend(opened, time));
+
+        time.Advance(TimeSpan.FromTicks(1));
+        Assert.Null(WriteApproval.Open(Protector, time, token, Tool, PostPath, args, Harness.Login));
     }
 
     /// <summary>A clock that notes whether the spent set was locked when it was read.</summary>
@@ -322,10 +391,18 @@ public class WriteApprovalTests
     {
         public List<bool> LockedOnRead { get; } = [];
 
+        public override long TimestampFrequency => inner.TimestampFrequency;
+
         public override DateTimeOffset GetUtcNow()
         {
             LockedOnRead.Add(global::System.Threading.Monitor.IsEntered(WriteApproval.LedgerFor(this)));
             return inner.GetUtcNow();
+        }
+
+        public override long GetTimestamp()
+        {
+            LockedOnRead.Add(global::System.Threading.Monitor.IsEntered(WriteApproval.LedgerFor(this)));
+            return inner.GetTimestamp();
         }
     }
 
@@ -352,8 +429,24 @@ public class WriteApprovalTests
         clock.Now = start + TimeSpan.FromMinutes(1);
 
         var reopened = WriteApproval.Open(Protector, clock, token, Tool, PostPath, args, Harness.Login);
-        Assert.NotNull(reopened); // the token itself looks unexpired to the stepped-back clock
-        Assert.False(WriteApproval.Spend(reopened, clock));
+        if (reopened is not null) Assert.False(WriteApproval.Spend(reopened, clock));
+    }
+
+    [Fact]
+    public void A_clock_that_ran_ahead_and_was_corrected_does_not_stop_new_approvals()
+    {
+        var start = new DateTimeOffset(2026, 11, 25, 8, 0, 0, TimeSpan.Zero);
+        var clock = new SettableClock(start + TimeSpan.FromHours(1));
+        var args = Json("""{"type":"A_RECORD"}""");
+        var ahead = WriteApproval.Seal(Protector, clock, Tool, PostPath, args, Harness.Login);
+        Assert.True(WriteApproval.Spend(WriteApproval.Open(Protector, clock, ahead, Tool, PostPath, args, Harness.Login)!, clock));
+
+        clock.Now = start; // the clock is put right
+        var token = WriteApproval.Seal(Protector, clock, Tool, PostPath, args, Harness.Login);
+        var opened = WriteApproval.Open(Protector, clock, token, Tool, PostPath, args, Harness.Login);
+
+        Assert.NotNull(opened);
+        Assert.True(WriteApproval.Spend(opened, clock));
     }
 
     [Fact]
