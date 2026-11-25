@@ -55,12 +55,13 @@ public sealed partial class OAuthFlowTests
         return (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("client_id").GetString()!;
     }
 
-    internal static string AuthorizeUrl(string clientId, string challenge = Challenge, string? resource = Resource, string state = "st-1") =>
+    internal static string AuthorizeUrl(string clientId, string challenge = Challenge, string? resource = Resource, string state = "st-1",
+        string redirectUri = Callback) =>
         QueryHelpers.AddQueryString("/oauth/authorize", new Dictionary<string, string?>
         {
             ["response_type"] = "code",
             ["client_id"] = clientId,
-            ["redirect_uri"] = Callback,
+            ["redirect_uri"] = redirectUri,
             ["code_challenge"] = challenge,
             ["code_challenge_method"] = "S256",
             ["scope"] = "mcp:tools",
@@ -410,6 +411,27 @@ public sealed partial class OAuthFlowTests
         // The browser follows the consent POST's redirect to Claude, so the page's form-action must allow that origin.
         var csp = page.Headers.GetValues("Content-Security-Policy").Single();
         Assert.Contains("form-action 'self' https://claude.ai", csp);
+    }
+
+    [Fact]
+    public async Task A_redirect_uri_with_its_own_query_keeps_it_and_gets_one_iss_and_state()
+    {
+        await using var h = await PublicHarness.StartAsync();
+        const string redirect = Callback + "?keep=1&iss=https%3A%2F%2Fevil.example&state=old";
+        using var register = h.NewClient();
+        var registered = await register.PostAsJsonAsync("/oauth/register", new
+        {
+            client_name = "Claude", redirect_uris = new[] { redirect }, token_endpoint_auth_method = "none",
+            grant_types = new[] { "authorization_code", "refresh_token" }, response_types = new[] { "code" },
+        });
+        Assert.Equal(HttpStatusCode.Created, registered.StatusCode);
+        var clientId = (await registered.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("client_id").GetString()!;
+
+        // A wrong resource redirects with an error before any sign-in; a code goes out the same way.
+        var q = CallbackQuery(await h.Http.GetAsync(AuthorizeUrl(clientId, resource: "https://evil.example/mcp", redirectUri: redirect)));
+        Assert.Equal("1", q["keep"]);
+        Assert.Equal("st-1", q["state"]);
+        Assert.Equal("invalid_target", q["error"]);
     }
 
     [Fact]

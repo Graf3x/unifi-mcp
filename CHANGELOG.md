@@ -8,8 +8,9 @@ follow [Semantic Versioning](https://semver.org/).
 ### Added
 
 - Sign-in redirects back to Claude now name this server as their issuer (`iss`, RFC 9207), on success and on error,
-  and the authorization server metadata says so. The 2026-07-28 MCP spec asks for this; clients check it so an answer
-  from one server cannot be passed off as another's.
+  and the authorization server metadata says so, as the 2026-07-28 MCP spec asks. A client that checks `iss` can
+  refuse an answer that came from the wrong server; a client that ignores it is unaffected. A redirect address
+  registered with its own query keeps it, and gets a single `code`, `state` and `iss`.
 
 ## 0.8.0
 

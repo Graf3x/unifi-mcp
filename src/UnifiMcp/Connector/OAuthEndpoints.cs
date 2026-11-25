@@ -1,5 +1,4 @@
 using System.Security.Claims;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Authentication;
@@ -340,19 +339,16 @@ public static class OAuthEndpoints
         }
     }
 
+    /// <summary>The redirect URI with these parameters added. A query the URI was registered with is kept (RFC 6749
+    /// 3.1.2), less any parameter of the same name, so the answer carries one code, state and iss: ours.</summary>
     private static string WithQuery(string baseUri, params (string Key, string? Value)[] parameters)
     {
-        var sb = new StringBuilder(baseUri);
-        sb.Append(baseUri.Contains('?') ? '&' : '?');
-        var first = true;
-        foreach (var (key, value) in parameters)
-        {
-            if (string.IsNullOrEmpty(value)) continue;
-            if (!first) sb.Append('&');
-            sb.Append(Uri.EscapeDataString(key)).Append('=').Append(Uri.EscapeDataString(value));
-            first = false;
-        }
-        return sb.ToString();
+        var mark = baseUri.IndexOf('?');
+        var kept = mark < 0 ? [] : baseUri[(mark + 1)..].Split('&', StringSplitOptions.RemoveEmptyEntries)
+            .Where(p => !parameters.Any(n => n.Key == Uri.UnescapeDataString(p.Split('=', 2)[0].Replace('+', ' '))));
+        var added = parameters.Where(p => !string.IsNullOrEmpty(p.Value))
+            .Select(p => Uri.EscapeDataString(p.Key) + "=" + Uri.EscapeDataString(p.Value!));
+        return (mark < 0 ? baseUri : baseUri[..mark]) + "?" + string.Join('&', kept.Concat(added));
     }
 
     private static IResult Page(int status, string html, string? formTarget = null) => new PageResult(status, html, formTarget);
