@@ -183,9 +183,10 @@ public sealed class Clients(SqliteOAuthStore store, IClientMetadataDocuments doc
     private static bool HasFragmentOrUserInfo(string raw, Uri parsed) =>
         !string.IsNullOrEmpty(parsed.Fragment) || raw.Contains('#') || HasUserInfo(raw, parsed);
 
-    /// <summary>User info as parsed, or an '@' anywhere in the address as written (an empty one parses to nothing).</summary>
+    /// <summary>User info as parsed, or an '@' in the authority as written (an empty one parses to nothing). An address with
+    /// no authority, such as a private-use "com.example.app:/cb", has none.</summary>
     private static bool HasUserInfo(string raw, Uri parsed) =>
-        !string.IsNullOrEmpty(parsed.UserInfo) || Authority(raw) is not { } authority || authority.Contains('@');
+        !string.IsNullOrEmpty(parsed.UserInfo) || Authority(raw) is { } authority && authority.Contains('@');
 
     /// <summary>The authority as written: between "://" and the first '/', '?' or '#'. Null when there is no "://".</summary>
     private static string? Authority(string uri)

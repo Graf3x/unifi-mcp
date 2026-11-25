@@ -53,6 +53,10 @@ public sealed class ApiTool(ApiOperation op, UnifiClient client) : McpServerTool
             // The request is built and checked first, so the owner approves the path that will be sent, and never a call
             // that would then be refused for a missing argument.
             if (op.HasBody && body is null) throw new UnifiError("body is required.");
+            if (op.HasBody && Redaction.Carries(b))
+                throw new UnifiError($"Nothing was sent: the body carries {Redaction.Mark}, a secret hidden from you when it was read, and "
+                                     + "sending it would set that secret to the mark itself. Give the real value, or ask the owner to make "
+                                     + "this change in the UniFi app.");
             path = await BuildPathAsync(op, client, args, cancellationToken);
             if (op.IsWrite)
                 switch (WriteApproval.Decide(op, path, args, request))

@@ -47,6 +47,18 @@ public static partial class Redaction
         return Rewrite(body, name => IsSecretName(name) || extra.Contains(name));
     }
 
+    /// <summary>
+    /// Whether a value carries <see cref="Mark"/> anywhere. A body that does would set a secret to the mark itself, as when
+    /// the model puts back an object it read (a Wi-Fi passphrase of "[redacted]" is a valid one), so it is never sent.
+    /// </summary>
+    public static bool Carries(JsonElement value) => value.ValueKind switch
+    {
+        JsonValueKind.String => value.ValueEquals(Mark),
+        JsonValueKind.Object => value.EnumerateObject().Any(p => Carries(p.Value)),
+        JsonValueKind.Array => value.EnumerateArray().Any(Carries),
+        _ => false,
+    };
+
     /// <summary>An error answer, for an error message: redacted by name, or a fixed line when it is not JSON.</summary>
     public static string Error(string body) => Rewrite(body, IsSecretName) ?? NotJson;
 

@@ -10,8 +10,9 @@ namespace UnifiMcp;
 /// a paged list notes where it stopped early. The answer then starts by saying it is partial and how to narrow it.
 /// </summary>
 /// <remarks>
-/// A tool call that is not a composite answer (one generated operation) has no budget; one console answer is still held
-/// to <see cref="ConsoleTransport.MaxResponseBytes"/>. The numbers are well above what a home site needs: a list is read
+/// A tool call that is not a composite answer (one generated operation) has no budget of its own: its request is one
+/// console answer, held to <see cref="ConsoleTransport.MaxResponseBytes"/>, and the site lookup before it opens its own
+/// budget (<see cref="UnifiClient.FindSiteAsync(string?, bool, CancellationToken)"/>). The numbers are well above what a home site needs: a list is read
 /// to <see cref="UnifiClient.MaxItems"/> items, and the largest composite (who is on each network) makes a few dozen
 /// requests on a big site.
 /// </remarks>

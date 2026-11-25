@@ -171,6 +171,37 @@ public sealed class UpstreamBudgetTests : IDisposable
     }
 
     [Fact]
+    public async Task A_page_bigger_than_asked_for_is_cut_to_the_item_limit_and_the_answer_says_so()
+    {
+        // A console that ignores limit and sends the whole list at once.
+        var console = Paged(_ => 6_000, perPage: 6_000);
+        List<JsonElement>? list = null;
+        var text = Text(await Answer.RunAsync(async a => a.Line($"{(list = await Client(console).GetAllAsync("/v1/sites/x/clients", default)).Count} read")));
+
+        Assert.Equal(UnifiClient.MaxItems, list!.Count);
+        Assert.StartsWith("**Partial answer:**", text);
+        Assert.Contains("5000 of 6000", text);
+    }
+
+    [Fact]
+    public async Task A_site_lookup_outside_an_answer_still_has_a_budget()
+    {
+        // A generated operation looks its site up outside any composite answer; the lookup is bounded all the same.
+        var budgeted = new List<bool>();
+        var console = new ScriptedConsole(req =>
+        {
+            budgeted.Add(UpstreamBudget.Current is not null);
+            return Json(FakeUnifi.Page($$"""{"id":"{{Harness.SiteId}}","internalReference":"default","name":"Default"}"""));
+        });
+
+        await Client(console).FindSiteAsync("Default", default);
+
+        Assert.NotEmpty(budgeted);
+        Assert.All(budgeted, Assert.True);
+        Assert.Null(UpstreamBudget.Current); // and the caller's flow is left without one
+    }
+
+    [Fact]
     public async Task A_complete_list_is_not_called_partial()
     {
         var console = Paged(_ => 450);

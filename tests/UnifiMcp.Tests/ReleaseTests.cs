@@ -84,6 +84,18 @@ public sealed partial class ReleaseTests
     }
 
     [Fact]
+    public void The_gate_mounts_each_socket_folder_where_the_server_binds_by_default()
+    {
+        var gate = File.ReadAllText(Path.Combine(Root, "tools", "image-gate.sh"));
+        var defaults = new Settings();
+        foreach (var listen in new[] { defaults.Listen, defaults.PublicListen! })
+        {
+            var folder = Path.GetDirectoryName(listen["unix:".Length..])!.Replace('\\', '/');
+            Assert.Matches($@"-v ""\$\w+:{System.Text.RegularExpressions.Regex.Escape(folder)}""", gate);
+        }
+    }
+
+    [Fact]
     public void The_gate_script_is_valid_bash()
     {
         if (Bash() is not { } bash) return; // no bash here (CI on Linux always has one)

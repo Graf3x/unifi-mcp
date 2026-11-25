@@ -97,6 +97,26 @@ public sealed class RedactionTests : IDisposable
     }
 
     [Fact]
+    public async Task A_write_that_sends_a_redacted_value_back_is_refused_and_nothing_is_sent()
+    {
+        await using var h = await Harness.StartAsync(writes: true, confirmFallback: true);
+        h.Unifi.WithSite().Route("PUT", BroadcastPath, Broadcast);
+
+        // The model read the broadcast (passphrase redacted), changed its name, and puts the whole object back.
+        var (text, isError) = await h.CallAsync("update_wifi_broadcast", new()
+        {
+            ["wifiBroadcastId"] = BroadcastId,
+            ["body"] = new { name = "Home Wi-Fi", securityConfiguration = new { type = "WPA2_PERSONAL", passphrase = Redaction.Mark } },
+            ["confirm"] = "update_wifi_broadcast",
+        });
+
+        Assert.True(isError, text);
+        Assert.Contains(Redaction.Mark, text);
+        Assert.Contains("Nothing was sent", text);
+        Assert.DoesNotContain(h.Unifi.Requests, r => r.Method == "PUT");
+    }
+
+    [Fact]
     public async Task An_error_body_is_redacted_and_keeps_its_message()
     {
         await using var h = await Harness.StartAsync();

@@ -71,13 +71,16 @@ public sealed class UnifiClient(Settings settings, ConsoleTransport transport)
             try
             {
                 var data = page.GetProperty("data").EnumerateArray().ToList();
-                all.AddRange(data.Take(MaxItems - all.Count));
+                var room = MaxItems - all.Count;
+                all.AddRange(data.Take(room));
                 offset += data.Count;
                 var total = page.GetProperty("totalCount").GetInt64();
-                if (data.Count == 0 || offset >= total) return all;
-                if (all.Count >= MaxItems || ++pages >= MaxItems / PageSize)
+                // A page bigger than asked for (a console that ignores limit) can hold more than there is room for.
+                var dropped = data.Count > room;
+                if (!dropped && (data.Count == 0 || offset >= total)) return all;
+                if (dropped || all.Count >= MaxItems || ++pages >= MaxItems / PageSize)
                 {
-                    UpstreamBudget.Current?.Note($"Only the first {all.Count} of {total} items of GET {path.Split('?')[0]} were read "
+                    UpstreamBudget.Current?.Note($"Only the first {all.Count} of {Math.Max(total, offset)} items of GET {path.Split('?')[0]} were read "
                                                  + $"(this server reads at most {MaxItems} per list). {UpstreamBudget.Narrow}");
                     return all;
                 }
@@ -103,6 +106,9 @@ public sealed class UnifiClient(Settings settings, ConsoleTransport transport)
         var wanted = string.IsNullOrWhiteSpace(hint) ? settings.Site : hint.Trim();
         if (_sites.TryGetValue(wanted, out var known) && (!write || known.ById)) return known.Site;
 
+        // A lookup made outside a composite answer (a generated operation, the guide, the setup page) gets a budget of its
+        // own, so it is bounded like any answer; set here, it ends when this method returns.
+        if (UpstreamBudget.Current is null) UpstreamBudget.Open();
         var sites = (await GetAllAsync("/v1/sites", ct)).Where(s => TextOrNull(s, "id") is { Length: > 0 }).ToList();
         // What a name meant before may be stale now, so a fresh list replaces everything looked up from an older one.
         _sites.Clear();

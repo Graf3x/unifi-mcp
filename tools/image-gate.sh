@@ -22,10 +22,10 @@ name="unifi-mcp-gate-$$"
 work=$(mktemp -d)
 data="$work/data"
 run="$work/run"
-# Where the server binds its sockets. sec/socket-isolation moves the public one into a directory of its own; when it
-# lands, point public_sock there, mount that directory and extend check_sockets below.
+# The public socket has a folder of its own, as in compose: only it is mounted into the tunnel container.
+run_public="$work/run-public"
 tailnet_sock="$run/mcp.sock"
-public_sock="$run/public.sock"
+public_sock="$run_public/public.sock"
 failed=0
 
 cleanup() {
@@ -42,12 +42,12 @@ trap cleanup EXIT
 fail() { echo "gate: FAIL: $*" >&2; failed=1; }
 pass() { echo "gate: ok: $*"; }
 
-mkdir -m 0700 "$data" "$run"
-if [ "$(id -u)" = 0 ]; then chown "$uid:$gid" "$data" "$run"; fi
+mkdir -m 0700 "$data" "$run" "$run_public"
+if [ "$(id -u)" = 0 ]; then chown "$uid:$gid" "$data" "$run" "$run_public"; fi
 
 docker run -d --name "$name" ${platform:+--platform "$platform"} \
   --user "$uid:$gid" --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
-  -v "$data:/data" -v "$run:/run/unifi-mcp" \
+  -v "$data:/data" -v "$run:/run/unifi-mcp" -v "$run_public:/run/unifi-mcp-public" \
   -p "127.0.0.1:$setup_port:5198" \
   -e UNIFI_URL=https://192.168.1.1 -e UNIFI_SITE=default \
   -e MCP_SIGNIN=code -e MCP_PUBLIC_BASE_URL="https://$public_host" \
@@ -118,10 +118,15 @@ check_sockets() {
     mode=$(stat -c '%a %u' "$sock")
     [ "$mode" = "600 $uid" ] && pass "${sock#"$work"/} is 600, owned by $uid" || fail "${sock#"$work"/} is $mode, expected 600 $uid"
   done
-  # sec/socket-isolation: check the public socket's own directory here (its mode and owner, and that mcp.sock is not
-  # in it), once the server binds public.sock there.
+  # The public socket's folder holds only what the tunnel container may reach: never the tailnet socket.
+  mode=$(stat -c '%a %u' "$run_public")
+  [ "$mode" = "700 $uid" ] && pass "run-public is 700, owned by $uid" || fail "run-public is $mode, expected 700 $uid"
+  if [ -e "$run_public/mcp.sock" ]; then fail "the tailnet socket is in run-public"; else pass "the tailnet socket is not in run-public"; fi
 }
 check_sockets
+if docker logs "$name" 2>&1 | grep -qE "Public socket not bound|share the folder"; then
+  fail "the log says the public socket is not bound, or shares the tailnet folder"
+else pass "the public socket is bound in a folder of its own"; fi
 
 expect 200 "tailnet socket health" --unix-socket "$tailnet_sock" http://localhost/healthz
 expect 404 "tailnet socket refuses the setup page" --unix-socket "$tailnet_sock" http://localhost/setup

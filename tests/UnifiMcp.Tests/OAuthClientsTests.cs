@@ -212,6 +212,7 @@ public sealed class OAuthClientsTests : IDisposable
 
     [Theory]
     [InlineData("https://user@claude.ai/cb", "redirect_uris must not contain user info.")]
+    [InlineData("com.example.app:/oauth", "redirect_uri 'com.example.app:/oauth' must use https.")]
     [InlineData("https://user:pw@claude.ai/cb", "redirect_uris must not contain user info.")]
     [InlineData("https://claude.ai/cb#", "redirect_uris must not contain a fragment.")]
     public async Task A_registered_redirect_with_user_info_or_a_fragment_is_refused(string redirect, string problem) =>
