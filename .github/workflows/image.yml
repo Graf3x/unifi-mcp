@@ -1,8 +1,12 @@
-# Tests on every push and pull request, and builds the image without pushing it, so a broken Dockerfile shows before a
-# release. On a v* tag, builds the multi-arch image (linux/amd64, linux/arm64) and
-# pushes it to ghcr.io/<owner>/unifi-mcp as <version>, <major>.<minor> and latest. Uses only GITHUB_TOKEN.
-# A prerelease tag (a hyphen in it, e.g. v1.2.3-rc.1) pushes only its own version and leaves latest alone.
+# Tests on every push and pull request, then builds the image for amd64 and arm64, each on a runner of its own
+# architecture, and starts it through tools/image-gate.sh (healthy startup as a non-root user on a read-only filesystem,
+# the setup listener kept apart), so a broken image shows before a release.
+# On a v* tag: builds the multi-arch image (linux/amd64, linux/arm64) and pushes it to ghcr.io/<owner>/unifi-mcp by
+# digest only, runs the same gate on that exact digest on both architectures, and only then tags it <version>,
+# <major>.<minor> and latest. A gate failure leaves an untagged digest that nothing points at. Uses only GITHUB_TOKEN.
+# A prerelease tag (a hyphen in it, e.g. v1.2.3-rc.1) gets only its own version and leaves latest alone.
 # A new GHCR package starts private: make it public under the package's settings so others can pull without logging in.
+# ubuntu-24.04-arm is GitHub's hosted arm64 runner (public repositories); a private fork needs its own arm64 runner there.
 name: test and image
 
 on:
@@ -28,16 +32,28 @@ jobs:
   image-check:
     needs: test
     if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
       - uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64
+          platforms: ${{ matrix.platform }}
           push: false
+          load: true
+          tags: unifi-mcp:gate
           cache-from: type=gha
+      - name: Start the image through the gate
+        run: bash tools/image-gate.sh unifi-mcp:gate "${{ matrix.platform }}"
 
   image:
     needs: test
@@ -46,6 +62,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
       - name: Image name (registry paths must be lower case)
@@ -61,16 +79,79 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE }}
+      # By digest only: no tag exists until image-gate passes on this digest.
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  image-gate:
+    needs: image
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Image name (registry paths must be lower case)
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/unifi-mcp" >> "$GITHUB_ENV"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Start the pushed digest through the gate
+        run: bash tools/image-gate.sh "${IMAGE}@${{ needs.image.outputs.digest }}" "${{ matrix.platform }}"
+
+  promote:
+    needs: [image, image-gate]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Image name (registry paths must be lower case)
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/unifi-mcp" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: Tag the gated digest
+        env:
+          DIGEST: ${{ needs.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          # The same platform images the gate started, under the release tags; nothing is rebuilt.
+          # shellcheck disable=SC2046 # one "-t <tag>" word pair per tag
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") "${IMAGE}@${DIGEST}"
+          # Check it: the first tag lists exactly the platform images of the gated digest.
+          version=$(jq -cr '.tags[0]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          platforms() {
+            docker buildx imagetools inspect --raw "$1" \
+              | jq -r '.manifests[] | select(.annotations["vnd.docker.reference.type"] != "attestation-manifest") | .digest' | sort
+          }
+          diff <(platforms "${IMAGE}@${DIGEST}") <(platforms "$version")
+          echo "Tagged ${IMAGE}@${DIGEST}:"; jq -r '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON"
