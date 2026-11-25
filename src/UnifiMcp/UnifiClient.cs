@@ -29,7 +29,8 @@ public sealed class UnifiClient(Settings settings, ConsoleTransport transport)
     private const string ConsoleRoot = "/proxy/network";
     private const int PageSize = 200;
 
-    private readonly ConcurrentDictionary<string, Site> _sites = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Sites looked up so far, by the hint that named them, and whether the hint was the site's id.</summary>
+    private readonly ConcurrentDictionary<string, (Site Site, bool ById)> _sites = new(StringComparer.OrdinalIgnoreCase);
 
     public Settings Settings => settings;
 
@@ -75,19 +76,37 @@ public sealed class UnifiClient(Settings settings, ConsoleTransport transport)
     }
 
     /// <summary>
-    /// A site by its id, name or internal name, ignoring case; omitted means the configured site. One lookup per hint,
-    /// then cached: the console's sites do not change under a running server often enough to look again.
+    /// A site by its id, name or internal name, ignoring case; omitted means the configured site. An id wins; a name or
+    /// internal name must belong to one site only, or the lookup is refused with the candidates. A read looks a hint up
+    /// once and keeps the answer. A write looks a name up again on every call, since a site can be renamed and its old
+    /// name given to another; only an id, which never moves to another site, is taken from what was looked up before.
     /// </summary>
-    public async Task<Site> FindSiteAsync(string? hint, CancellationToken ct)
+    public Task<Site> FindSiteAsync(string? hint, CancellationToken ct) => FindSiteAsync(hint, write: false, ct);
+
+    /// <inheritdoc cref="FindSiteAsync(string?, CancellationToken)"/>
+    public async Task<Site> FindSiteAsync(string? hint, bool write, CancellationToken ct)
     {
         var wanted = string.IsNullOrWhiteSpace(hint) ? settings.Site : hint.Trim();
-        if (_sites.TryGetValue(wanted, out var known)) return known;
+        if (_sites.TryGetValue(wanted, out var known) && (!write || known.ById)) return known.Site;
 
         var sites = (await GetAllAsync("/v1/sites", ct)).Where(s => TextOrNull(s, "id") is { Length: > 0 }).ToList();
-        // An id names one site, so it wins over another site whose name or internal name happens to be that id.
+        // What a name meant before may be stale now, so a fresh list replaces everything looked up from an older one.
+        _sites.Clear();
         bool Is(JsonElement s, string field) => string.Equals(TextOrNull(s, field), wanted, StringComparison.OrdinalIgnoreCase);
-        if (sites.Where(s => Is(s, "id")).Concat(sites.Where(s => Is(s, "name") || Is(s, "internalReference"))).FirstOrDefault() is { ValueKind: JsonValueKind.Object } found)
-            return _sites[wanted] = new Site(TextOrNull(found, "id")!, TextOrNull(found, "internalReference"), TextOrNull(found, "name") ?? TextOrNull(found, "id")!);
+        // An id names one site, so it wins over another site whose name or internal name happens to be that id.
+        if (sites.FirstOrDefault(s => Is(s, "id")) is { ValueKind: JsonValueKind.Object } byId)
+            return (_sites[wanted] = (ToSite(byId), true)).Site;
+        var named = sites.Where(s => Is(s, "name") || Is(s, "internalReference")).ToList();
+        if (named.Count > 1)
+            throw new UnifiError($"More than one site is called '{wanted}', so none was chosen. Name the site by its id: "
+                                 + string.Join("; ", named.Select(s => Describe(ToSite(s)))) + ".");
+        if (named.Count == 1) return (_sites[wanted] = (ToSite(named[0]), false)).Site;
         throw new UnifiError($"The console has no site '{wanted}'. Sites: {string.Join(", ", sites.Select(s => TextOrNull(s, "name")))}.");
     }
+
+    private static Site ToSite(JsonElement s) =>
+        new(TextOrNull(s, "id")!, TextOrNull(s, "internalReference"), TextOrNull(s, "name") ?? TextOrNull(s, "id")!);
+
+    private static string Describe(Site s) =>
+        s.Reference is { } reference ? $"'{s.Name}' (id {s.Id}, internal name '{reference}')" : $"'{s.Name}' (id {s.Id})";
 }

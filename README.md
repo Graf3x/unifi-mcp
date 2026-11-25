@@ -486,7 +486,7 @@ internal API, which is not, so those calls are limited to 30 a minute and repeat
 `UNIFI_MCP_DATA_KEY`. Console answers go to Claude in the conversation; the diagnostics tools leave out the secrets the
 internal API returns, such as device keys.
 
-**I have several sites.** Every tool takes `siteId` (a UUID or a site name); `UNIFI_SITE` sets the default.
+**I have several sites.** Every tool takes `siteId` (a UUID or a site name); `UNIFI_SITE` sets the default. If two sites share a name, use the UUID: the server refuses a name that fits more than one site.
 
 **Which UniFi versions work?** It is built against UniFi Network's Integration API 11.0.97 and tested on UniFi Network 11.
 The diagnostics use internal endpoints Ubiquiti can change without notice; if one moves, that tool says so and the rest
