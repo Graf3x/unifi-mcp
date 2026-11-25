@@ -801,13 +801,14 @@ public sealed class GrantLedgerTests : IDisposable
         Issued(await Ledger().RotateAsync(fresh, Client));
     }
 
-    /// <summary>Runs two calls on two threads, released together.</summary>
+    /// <summary>Runs two calls on two threads, released together; both finish before either's failure is thrown.</summary>
     private static async Task<(T1, T2)> BothAtOnceAsync<T1, T2>(Func<Task<T1>> first, Func<Task<T2>> second)
     {
         var go = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var a = Task.Run(async () => { await go.Task; return await first(); });
         var b = Task.Run(async () => { await go.Task; return await second(); });
         go.SetResult();
+        await Task.WhenAll(a, b);
         return (await a, await b);
     }
 
