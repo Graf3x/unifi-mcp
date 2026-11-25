@@ -124,7 +124,9 @@ check_sockets() {
   if [ -e "$run_public/mcp.sock" ]; then fail "the tailnet socket is in run-public"; else pass "the tailnet socket is not in run-public"; fi
 }
 check_sockets
-if docker logs "$name" 2>&1 | grep -qE "Public socket not bound|share the folder"; then
+# The log is captured first: a failed docker logs stops the gate rather than reading as a clean log.
+log=$(docker logs "$name" 2>&1)
+if grep -qE "Public socket not bound|share the folder" <<< "$log"; then
   fail "the log says the public socket is not bound, or shares the tailnet folder"
 else pass "the public socket is bound in a folder of its own"; fi
 
