@@ -56,12 +56,19 @@ public sealed class UnifiClient(Settings settings, ConsoleTransport transport)
         catch (JsonException) { throw new UnifiError($"The console's answer to GET {path.Split('?')[0]} was not JSON."); }
     }
 
+    /// <summary>The items of a paged list as read, and whether they are all of it: false when this server's limit cut the list short.</summary>
+    public sealed record PagedList(List<JsonElement> Items, bool Complete);
+
+    /// <summary>The items of a paged list, as <see cref="GetListAsync"/> reads them, for a caller that needs no more than the answer's partial note.</summary>
+    public async Task<List<JsonElement>> GetAllAsync(string path, CancellationToken ct) => (await GetListAsync(path, ct)).Items;
+
     /// <summary>
     /// Every item of a paged list, up to <see cref="MaxItems"/> in at most <see cref="MaxItems"/> / 200 pages. It ends at
     /// the console's latest total or at an empty page, so a total that changes while it reads cannot keep it going. A list
-    /// cut short is noted in the answer's <see cref="UpstreamBudget"/>, so the answer says it is partial.
+    /// cut short is noted in the answer's <see cref="UpstreamBudget"/>, so the answer says it is partial, and comes back
+    /// not <see cref="PagedList.Complete"/>, so a caller can tell an item missing from the list from one cut off it.
     /// </summary>
-    public async Task<List<JsonElement>> GetAllAsync(string path, CancellationToken ct)
+    public async Task<PagedList> GetListAsync(string path, CancellationToken ct)
     {
         var all = new List<JsonElement>();
         var sep = path.Contains('?') ? '&' : '?';
@@ -77,12 +84,12 @@ public sealed class UnifiClient(Settings settings, ConsoleTransport transport)
                 var total = page.GetProperty("totalCount").GetInt64();
                 // A page bigger than asked for (a console that ignores limit) can hold more than there is room for.
                 var dropped = data.Count > room;
-                if (!dropped && (data.Count == 0 || offset >= total)) return all;
+                if (!dropped && (data.Count == 0 || offset >= total)) return new(all, true);
                 if (dropped || all.Count >= MaxItems || ++pages >= MaxItems / PageSize)
                 {
                     UpstreamBudget.Current?.Note($"Only the first {all.Count} of {Math.Max(total, offset)} items of GET {path.Split('?')[0]} were read "
                                                  + $"(this server reads at most {MaxItems} per list). {UpstreamBudget.Narrow}");
-                    return all;
+                    return new(all, false);
                 }
             }
             catch (Exception e) when (e is KeyNotFoundException or InvalidOperationException or FormatException)
@@ -94,7 +101,8 @@ public sealed class UnifiClient(Settings settings, ConsoleTransport transport)
 
     /// <summary>
     /// A site by its id, name or internal name, ignoring case; omitted means the configured site. An id wins; a name or
-    /// internal name must belong to one site only, or the lookup is refused with the candidates. A read looks a hint up
+    /// internal name must belong to one site only, or the lookup is refused with the candidates; on a console with more
+    /// sites than <see cref="MaxItems"/>, where that cannot be known, only an id is taken. A read looks a hint up
     /// once and keeps the answer. A write looks a name up again on every call, since a site can be renamed and its old
     /// name given to another; only an id, which never moves to another site, is taken from what was looked up before.
     /// </summary>
@@ -109,13 +117,18 @@ public sealed class UnifiClient(Settings settings, ConsoleTransport transport)
         // A lookup made outside a composite answer (a generated operation, the guide, the setup page) gets a budget of its
         // own, so it is bounded like any answer; set here, it ends when this method returns.
         if (UpstreamBudget.Current is null) UpstreamBudget.Open();
-        var sites = (await GetAllAsync("/v1/sites", ct)).Where(s => TextOrNull(s, "id") is { Length: > 0 }).ToList();
+        var list = await GetListAsync("/v1/sites", ct);
+        var sites = list.Items.Where(s => TextOrNull(s, "id") is { Length: > 0 }).ToList();
         // What a name meant before may be stale now, so a fresh list replaces everything looked up from an older one.
         _sites.Clear();
         bool Is(JsonElement s, string field) => string.Equals(TextOrNull(s, field), wanted, StringComparison.OrdinalIgnoreCase);
         // An id names one site, so it wins over another site whose name or internal name happens to be that id.
         if (sites.FirstOrDefault(s => Is(s, "id")) is { ValueKind: JsonValueKind.Object } byId)
             return (_sites[wanted] = (ToSite(byId), true)).Site;
+        // Past the cut there may be the site whose id this is, or a second site with this name, so a name is not enough.
+        if (!list.Complete)
+            throw new UnifiError($"The console has more sites than the {MaxItems} this server reads, and none of those has the id '{wanted}', "
+                                 + "so it was not taken as a name: name the site by its id.");
         var named = sites.Where(s => Is(s, "name") || Is(s, "internalReference")).ToList();
         if (named.Count > 1)
             throw new UnifiError($"More than one site is called '{wanted}', so none was chosen. Name the site by its id: "

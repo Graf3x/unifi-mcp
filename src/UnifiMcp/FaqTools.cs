@@ -19,17 +19,28 @@ public sealed class FaqTools(UnifiClient console, ConsoleReads reads)
     private sealed record Net(string Name, int Vlan, IPAddress? Host, int Prefix, JsonElement? Details);
 
     /// <summary>
-    /// What is known of the site's networks. <see cref="All"/> is null when the list could not be read. A client in no
-    /// subnet is outside every network only when <see cref="Complete"/>; otherwise its network is unknown.
+    /// What is known of the site's networks. <see cref="All"/> is null when the list could not be read, and
+    /// <see cref="Listed"/> is false when it was cut short, so a network may be missing from it. A client in no subnet is
+    /// outside every network only when <see cref="Complete"/>; otherwise its network is unknown.
     /// </summary>
-    private sealed record Networks(List<Net>? All)
+    private sealed record Networks(List<Net>? All, bool Listed)
     {
         public List<Net> Read => All?.Where(n => n.Details is not null).ToList() ?? [];
         public List<string> Unread => All?.Where(n => n.Details is null).Select(n => n.Name).ToList() ?? [];
-        public bool Complete => All is not null && Unread.Count == 0;
+        public bool Complete => All is not null && Listed && Unread.Count == 0;
 
         /// <summary>Why a client in no subnet that was read may still be in one.</summary>
-        public string Gap => All is null ? "the list of networks could not be read" : $"the details of these networks could not be read: {string.Join(", ", Unread)}";
+        public string Gap
+        {
+            get
+            {
+                if (All is null) return "the list of networks could not be read";
+                var gaps = new List<string>();
+                if (!Listed) gaps.Add("the console has more networks than were listed");
+                if (Unread is { Count: > 0 } unread) gaps.Add($"the details of these networks could not be read: {string.Join(", ", unread)}");
+                return string.Join("; ", gaps);
+            }
+        }
     }
 
     [McpServerTool(Name = "who_is_on_network_faq", Title = "Who is on this network", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
@@ -40,18 +51,22 @@ public sealed class FaqTools(UnifiClient console, ConsoleReads reads)
         CancellationToken ct = default) => Answer.RunAsync(async a =>
     {
         var id = (await console.FindSiteAsync(siteId, ct)).Id;
-        var nets = await NetworksAsync(a, id, ct);
-        var devices = await a.Step("Devices", () => DevicesAsync(id, ct)) ?? new();
+        // What the answer needs comes first, within the answer's budget: the clients, then only the networks asked for,
+        // and the device names (which only label the table) last.
         var clients = await a.Step("Connected clients", () => console.GetAllAsync($"/v1/sites/{id}/clients", ct));
         if (clients is null) return;
+        var nets = await NetworksAsync(a, id, ct, (name, vlan) =>
+            network is null || name.Contains(network, StringComparison.OrdinalIgnoreCase) || vlan.ToString() == network.Trim());
+        var devices = await a.Step("Devices", () => DevicesAsync(id, ct)) ?? new();
 
         if (nets.All is null && network is not null)
         {
             a.Line($"Who is on '{network}' could not be checked: {nets.Gap}.");
             return;
         }
-        var shown = (nets.All ?? []).Where(n => network is null || n.Name.Contains(network, StringComparison.OrdinalIgnoreCase) || n.Vlan.ToString() == network.Trim()).ToList();
-        if (network is not null && shown.Count == 0) a.Line($"No network matches '{network}'.").Line();
+        var shown = nets.All ?? [];
+        if (network is not null && shown.Count == 0)
+            a.Line(nets.Listed ? $"No network matches '{network}'." : $"No network listed matches '{network}', but {nets.Gap}, so it may be one of the others.").Line();
         foreach (var n in shown)
         {
             if (n.Details is null)
@@ -65,7 +80,8 @@ public sealed class FaqTools(UnifiClient console, ConsoleReads reads)
         }
 
         if (network is not null) return;
-        var unmatched = clients.Where(c => !nets.Read.Any(n => InSubnet(Ip(c), n))).ToList();
+        var read = nets.Read;
+        var unmatched = clients.Where(c => !read.Any(n => InSubnet(Ip(c), n))).ToList();
         if (unmatched.Count == 0) return;
         a.Line(nets.Complete
             ? "## No matching network (VPN, or outside every known subnet)"
@@ -210,19 +226,20 @@ public sealed class FaqTools(UnifiClient console, ConsoleReads reads)
     }
 
     /// <summary>
-    /// The site's networks, the list and then each one's details, every read a step. A network whose details fail is
-    /// kept with its subnet unknown, and the others are still read.
+    /// The site's networks, the list and then the details of each one <paramref name="wanted"/> keeps (every one when
+    /// null), every read a step. A network whose details fail is kept with its subnet unknown, and the others are still read.
     /// </summary>
-    private async Task<Networks> NetworksAsync(Answer a, string site, CancellationToken ct)
+    private async Task<Networks> NetworksAsync(Answer a, string site, CancellationToken ct, Func<string, int, bool>? wanted = null)
     {
-        var list = await a.Step("Networks", () => console.GetAllAsync($"/v1/sites/{site}/networks", ct));
-        if (list is null) return new Networks(null);
+        var list = await a.Step("Networks", () => console.GetListAsync($"/v1/sites/{site}/networks", ct));
+        if (list is null) return new Networks(null, false);
         var result = new List<Net>();
         var stopped = false;
-        foreach (var n in list)
+        foreach (var n in list.Items)
         {
             var name = TextOrNull(n, "name") ?? "?";
             var vlan = n.ValueKind == JsonValueKind.Object && n.TryGetProperty("vlanId", out var vl) && vl.TryGetInt32(out var v) ? v : 0;
+            if (wanted is not null && !wanted(name, vlan)) continue;
             if (stopped)
             {
                 result.Add(new Net(name, vlan, null, 0, null));
@@ -245,7 +262,7 @@ public sealed class FaqTools(UnifiClient console, ConsoleReads reads)
             stopped = net is null && UpstreamBudget.Current?.Exhausted == true;
             result.Add(net ?? new Net(name, vlan, null, 0, null));
         }
-        return new Networks(result);
+        return new Networks(result, list.Complete);
     }
 
     private async Task<Dictionary<string, string>> DevicesAsync(string site, CancellationToken ct) =>
