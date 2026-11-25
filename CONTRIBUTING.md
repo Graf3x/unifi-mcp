@@ -30,6 +30,7 @@ follow [guide 1](README.md#guide-1-quick-local-setup) in the README.
 | `src/UnifiMcp/DeviceReading.cs` | The device reading: every rule about a console device record, for the text answers and the view alike |
 | `src/UnifiMcp/Answer.cs`, `ConsoleJson.cs` | A composite tool's answer (steps, failure lines, tables, the cap, the view) and reading the console's JSON by field name |
 | `src/UnifiMcp/ViewResources.cs`, `Views/`, `DeviceViewModel.cs` | Interactive views (MCP Apps): one embedded HTML file per view, and the data a tool hands it in `_meta` |
+| `src/UnifiMcp/Redaction.cs` | The credentials redacted from every console answer and error before it reaches the client |
 | `src/UnifiMcp/ConsoleTransport.cs` | The only code that talks to the console: the key, certificate trust (pin or CA), scrubbing |
 | `src/UnifiMcp/UnifiClient.cs` | The console's two APIs over that transport: the write gate, paging, finding a site |
 | `src/UnifiMcp/ConsoleReads.cs` | The console's internal API: one named read per endpoint, cached and throttled |
@@ -60,6 +61,9 @@ follow [guide 1](README.md#guide-1-quick-local-setup) in the README.
   entry with no route.
 - **The console's internal API:** add a read as a named method on `ConsoleSite` in `ConsoleReads.cs`, never a way to
   send a path of the caller's choosing, and return chosen fields, never the raw JSON (it carries secrets).
+- **Secrets:** console JSON that reaches the client whole (an operation's answer, an error body) goes through
+  `Redaction` first. A new credential field the name rule misses fails `RedactionTests` when the OpenAPI document
+  marks it; add it to the rule there.
 - **Docs:** if you change setup steps or settings, update the README and `.env.example` together. The setup page renders
   the README's Setup section, and a test checks that every heading it links to still exists. After editing
   `tools/make-diagrams.mjs`, run `node tools/make-diagrams.mjs` and commit the regenerated SVGs.

@@ -69,6 +69,11 @@ Anything else the API offers, Claude finds with `search_operations` and runs wit
   checked against a trusted CA. There is no default pin and no way to turn verification off.
 - The API key comes from the `UNIFI_API_KEY` environment variable, falling back to `/config/unifi-api-key` only when the
   variable is unset or empty. It is never logged or returned, and is scrubbed from console errors.
+- Credentials the console sends back (Wi-Fi passphrases, per-network keys, hotspot voucher codes) are replaced with
+  `[redacted]` in every answer and error before it reaches Claude, writes on or off. Names, ids and other settings stay.
+  An answer that is not JSON can't be checked, so it isn't shown. Voucher codes are what the voucher tools are for: if
+  you hand them out through Claude, set `UNIFI_REVEAL_SECRETS=voucher-codes`. Nothing shows a Wi-Fi passphrase or key;
+  read those in the UniFi app.
 - No published ports unless you add the LAN listener. The server listens on two Unix sockets:
   - `public.sock`, the Claude connector, reached through a Cloudflare tunnel. It takes OAuth bearer tokens, issued only
     after the owner signs in (see [guide 2](#guide-2-claudeai-with-a-sign-in-code) and [guide 3](#guide-3-full-setup-with-google-sign-in)), and, if you set one, the fixed `MCP_ACCESS_TOKEN`.
@@ -439,6 +444,7 @@ All settings come from the environment (`.env` with Docker Compose). After chang
 | `UNIFI_CERT_SHA256` | none | Pinned fingerprints of the console's public key or certificate, comma separated. |
 | `UNIFI_CERT_TRUST` | `pin` | `ca` checks a CA-issued certificate instead of a pin. |
 | `UNIFI_ALLOW_WRITES` | `false` | Exactly `true` lists the write tools; see [Writes](#writes). |
+| `UNIFI_REVEAL_SECRETS` | none | `voucher-codes` shows hotspot voucher codes in answers; see [Safety](#safety). Any other value stops the server. |
 | `MCP_PUBLIC_BASE_URL` | none | The connector's public origin, e.g. `https://unifi.example.com`. |
 | `MCP_SIGNIN` | `google` | `code` or `google`; `.env.example` sets `code`. |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | none | Google OAuth web client, for `google` sign-in. |
