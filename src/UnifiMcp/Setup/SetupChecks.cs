@@ -298,7 +298,7 @@ public sealed class SetupChecks(Settings settings, UnifiClient client, Connector
                     "Is the cloudflared container running and connected? Run docker compose logs cloudflared. Outbound port 7844 must be open.", Tunnel);
             if (status is 502 or 504)
                 return new("tunnel", CheckStatus.Fail, "The tunnel is up, but it can't reach this server.",
-                    "The route's service must be unix:/run/unifi-mcp/public.sock, and ./run must be mounted in both containers.", Tunnel);
+                    "The route's service must be unix:/run/unifi-mcp-public/public.sock, and ./run-public must be mounted in both containers.", Tunnel);
             if (status == 404)
                 return new("tunnel", CheckStatus.Fail, $"{host} answered 404.",
                     "The tunnel may have no route for this hostname, or the route's path isn't empty.", Tunnel);

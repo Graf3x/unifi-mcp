@@ -17,7 +17,7 @@ public class ListenerTests
     [Fact]
     public void Unix_paths_map_to_their_listener()
     {
-        Assert.Equal(Listener.Public, Listeners.Of(new UnixDomainSocketEndPoint("/run/unifi-mcp/public.sock"), Defaults));
+        Assert.Equal(Listener.Public, Listeners.Of(new UnixDomainSocketEndPoint("/run/unifi-mcp-public/public.sock"), Defaults));
         Assert.Equal(Listener.Tailnet, Listeners.Of(new UnixDomainSocketEndPoint("/run/unifi-mcp/mcp.sock"), Defaults));
         Assert.Equal(Listener.Unknown, Listeners.Of(new UnixDomainSocketEndPoint("/x.sock"), Defaults));
     }

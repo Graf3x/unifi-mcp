@@ -50,7 +50,8 @@ public sealed partial record Settings
 
     // The public (Claude connector) side. Env-first so a container needs no files for these.
     public string? ApiKeyValue { get; init; }
-    public string PublicListen { get; init; } = "unix:/run/unifi-mcp/public.sock";
+    // A folder of its own, so the tunnel container that mounts it never sees the tailnet socket.
+    public string PublicListen { get; init; } = "unix:/run/unifi-mcp-public/public.sock";
     public Uri? PublicBaseUrl { get; init; }
     public string? GoogleClientId { get; init; }
     public string? GoogleClientSecret { get; init; }
