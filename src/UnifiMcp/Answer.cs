@@ -82,17 +82,27 @@ internal sealed class Answer
         return smaller.Length <= ViewLimit ? JsonNode.Parse(smaller) : null;
     }
 
-    // Text past the cap is cut off anyway, so it is not kept.
     public Answer Write(string text)
     {
-        if (_text.Length <= ToolText.Limit) _text.Append(text);
+        Keep(text);
         return this;
     }
 
     public Answer Line(string text = "")
     {
-        if (_text.Length <= ToolText.Limit) _text.AppendLine(text);
+        Keep(text);
+        Keep(Environment.NewLine);
         return this;
+    }
+
+    /// <summary>
+    /// Appends what fits in <see cref="ToolText.Limit"/> and one character more: text past the cap is cut off anyway, so
+    /// it is not kept, even from one large write, and the one character over is what makes the cap add its marker.
+    /// </summary>
+    private void Keep(string text)
+    {
+        var room = ToolText.Limit + 1 - _text.Length;
+        if (room > 0) _text.Append(text, 0, Math.Min(room, text.Length));
     }
 
     /// <summary>

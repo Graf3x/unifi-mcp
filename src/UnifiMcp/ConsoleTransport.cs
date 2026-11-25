@@ -62,7 +62,8 @@ public sealed class ConsoleTransport
     /// A request to <paramref name="path"/>, from the console's root (/proxy/network/…). It waits for one of
     /// <see cref="MaxInFlight"/> turns, and has <see cref="Deadline"/> in all, that wait and the body included. The answer is read as it
     /// streams in and refused past <see cref="MaxResponseBytes"/>, or past what the current answer's
-    /// <see cref="UpstreamBudget"/> has left, whether or not the console declared a length.
+    /// <see cref="UpstreamBudget"/> has left, whether or not the console declared a length; its bytes are charged to that
+    /// budget as they arrive.
     /// </summary>
     public async Task<UnifiResponse> SendAsync(HttpMethod method, string path, string? body, CancellationToken ct)
     {
@@ -94,13 +95,7 @@ public sealed class ConsoleTransport
         try
         {
             using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, deadline.Token);
-            var left = budget?.BytesLeft ?? long.MaxValue;
-            var limit = Math.Min(MaxResponseBytes, left);
-            UnifiError TooLarge() => limit < MaxResponseBytes
-                ? budget!.OutOfBytes(what)
-                : new UnifiError($"The console's answer to {what} is larger than {UpstreamBudget.Megabytes(MaxResponseBytes)}, so this server stopped reading it. "
-                                 + "Ask for less: a filter or a smaller limit on list tools, or one device, client or shorter window on the others.");
-            var text = await ReadAsync(resp.Content, limit, TooLarge, budget, deadline.Token);
+            var text = await ReadAsync(resp.Content, what, budget, deadline.Token);
             return new UnifiResponse((int)resp.StatusCode, Scrub(text, key));
         }
         catch (HttpRequestException ex)
@@ -126,13 +121,27 @@ public sealed class ConsoleTransport
     }
 
     /// <summary>
-    /// The body as text, read as it arrives: refused before reading when the console declares more than
-    /// <paramref name="limit"/> bytes, and stopped as soon as more than that arrives when it does not (a chunked answer).
-    /// What was read is charged to <paramref name="budget"/>, also when it is refused.
+    /// The body of the answer to <paramref name="what"/> as text, read as it arrives: refused before reading when the
+    /// console declares more than <see cref="MaxResponseBytes"/> or than <paramref name="budget"/> has left, and stopped
+    /// as soon as more than that arrives when it does not (a chunked answer). Each chunk is charged to the budget as it
+    /// arrives, the one that goes over included, so reads made at once in one answer see each other's bytes and stop
+    /// within a chunk of the budget. An answer too large for one read is noted in the budget, so the answer says it is
+    /// partial.
     /// </summary>
-    private static async Task<string> ReadAsync(HttpContent content, long limit, Func<UnifiError> tooLarge, UpstreamBudget? budget, CancellationToken ct)
+    private static async Task<string> ReadAsync(HttpContent content, string what, UpstreamBudget? budget, CancellationToken ct)
     {
-        if (content.Headers.ContentLength > limit) throw tooLarge();
+        UnifiError TooLarge()
+        {
+            var message = $"The console's answer to {what} is larger than {UpstreamBudget.Megabytes(MaxResponseBytes)}, so this server stopped reading it. "
+                          + "Ask for less: a filter or a smaller limit on list tools, or one device, client or shorter window on the others.";
+            budget?.Note(message);
+            return new UnifiError(message);
+        }
+
+        var left = budget?.BytesLeft ?? long.MaxValue;
+        if (content.Headers.ContentLength is { } declared && declared > Math.Min(MaxResponseBytes, left))
+            throw left < MaxResponseBytes ? budget!.OutOfBytes(what) : TooLarge();
+
         await using var stream = await content.ReadAsStreamAsync(ct);
         using var body = new MemoryStream();
         var chunk = ArrayPool<byte>.Shared.Rent(64 * 1024);
@@ -140,26 +149,52 @@ public sealed class ConsoleTransport
         {
             for (int n; (n = await stream.ReadAsync(chunk, ct)) > 0;)
             {
-                if (body.Length + n > limit) throw tooLarge();
+                if (budget is not null)
+                {
+                    var over = n > budget.BytesLeft;
+                    budget.Read(n);
+                    if (over) throw budget.OutOfBytes(what);
+                }
+                if (body.Length + n > MaxResponseBytes) throw TooLarge();
                 body.Write(chunk, 0, n);
             }
         }
         finally
         {
             ArrayPool<byte>.Shared.Return(chunk);
-            budget?.Read(body.Length);
         }
 
-        var bytes = body.GetBuffer().AsSpan(0, (int)body.Length);
-        var encoding = Encoding.UTF8;
+        return Decode(body.GetBuffer().AsSpan(0, (int)body.Length), content.Headers.ContentType?.CharSet);
+    }
+
+    /// <summary>Encodings an answer without a charset is recognised by, from its byte order mark; UTF-32LE before the UTF-16LE mark it starts with.</summary>
+    private static readonly Encoding[] Marked = [Encoding.UTF8, Encoding.UTF32, new UTF32Encoding(bigEndian: true, byteOrderMark: true), Encoding.Unicode, Encoding.BigEndianUnicode];
+
+    /// <summary>
+    /// The text of <paramref name="bytes"/>, as HttpContent reads it: in the declared charset, less its byte order mark;
+    /// with no charset (or one unknown), in the encoding its byte order mark names, else UTF-8, which JSON is.
+    /// </summary>
+    private static string Decode(ReadOnlySpan<byte> bytes, string? charset)
+    {
+        Encoding? encoding = null;
         try
         {
-            if (content.Headers.ContentType?.CharSet is { Length: > 0 } charset) encoding = Encoding.GetEncoding(charset.Trim('"'));
+            if (charset is { Length: > 0 }) encoding = Encoding.GetEncoding(charset.Trim('"'));
         }
         catch (ArgumentException)
         {
-            // An unknown charset: JSON is UTF-8.
+            // An unknown charset: read as if none were declared.
         }
+        if (encoding is null)
+        {
+            foreach (var marked in Marked)
+            {
+                if (!bytes.StartsWith(marked.Preamble)) continue;
+                encoding = marked;
+                break;
+            }
+        }
+        encoding ??= Encoding.UTF8;
         var preamble = encoding.Preamble;
         if (preamble.Length > 0 && bytes.StartsWith(preamble)) bytes = bytes[preamble.Length..];
         return encoding.GetString(bytes);

@@ -73,6 +73,77 @@ public sealed class UpstreamBudgetTests : IDisposable
         Assert.True(watch.Elapsed < TimeSpan.FromSeconds(10), $"took {watch.Elapsed}");
     }
 
+    [Fact]
+    public async Task An_answer_too_large_for_one_read_is_charged_and_the_composite_says_it_is_partial()
+    {
+        var console = new ScriptedConsole(_ => new GeneratedStream(40 * MiB));
+        var transport = Transport(console);
+        UpstreamBudget? budget = null;
+        var text = Text(await Answer.RunAsync(async a =>
+        {
+            budget = UpstreamBudget.Current;
+            await a.Step("Devices", () => transport.SendAsync(HttpMethod.Get, Classic + "/stat/device", null, default));
+        }));
+
+        Assert.StartsWith("**Partial answer:**", text);
+        Assert.Contains("larger than 16 MB", text);
+        // The chunk that went past the limit was read from the console, so it is charged too.
+        Assert.True(budget!.BytesLeft < UpstreamBudget.MaxBytes - ConsoleTransport.MaxResponseBytes, $"{budget.BytesLeft} bytes left");
+    }
+
+    [Fact]
+    public async Task A_chunk_that_goes_past_the_budget_is_charged_but_a_declared_length_refused_unread_is_not()
+    {
+        var chunked = UpstreamBudget.Open();
+        chunked.Read(UpstreamBudget.MaxBytes - 1);
+        await Assert.ThrowsAsync<UnifiError>(() =>
+            Transport(new ScriptedConsole(_ => new GeneratedStream(64 * 1024))).SendAsync(HttpMethod.Get, Classic + "/stat/device", null, default));
+        Assert.Equal(0, chunked.BytesLeft);
+
+        var declared = UpstreamBudget.Open();
+        declared.Read(UpstreamBudget.MaxBytes - 1);
+        await Assert.ThrowsAsync<UnifiError>(() =>
+            Transport(new ScriptedConsole(_ => new GeneratedStream(64 * 1024), declareLength: true)).SendAsync(HttpMethod.Get, Classic + "/stat/device", null, default));
+        Assert.Equal(1, declared.BytesLeft);
+    }
+
+    [Fact]
+    public async Task Reads_at_once_in_one_answer_see_each_others_bytes()
+    {
+        // Three answers of the most one read may take, all past their headers before any body is read: together they are
+        // more than one answer may read.
+        const int reads = 3;
+        var started = 0;
+        var go = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var console = new ScriptedConsole(_ => new HeldStream(new GeneratedStream(ConsoleTransport.MaxResponseBytes), go.Task,
+            () => { if (Interlocked.Increment(ref started) == reads) go.SetResult(); }));
+        var transport = Transport(console);
+
+        UpstreamBudget.Open();
+        var outcomes = await Task.WhenAll(Enumerable.Range(0, reads)
+            .Select(i => transport.SendAsync(HttpMethod.Get, $"{Classic}/stat/device?n={i}", null, default))
+            .Select(t => t.ContinueWith(r => r.Exception?.InnerException, TaskScheduler.Default)));
+
+        Assert.True(console.Served <= UpstreamBudget.MaxBytes + reads * 64 * 1024, $"{console.Served} bytes read");
+        Assert.Contains(outcomes, e => e is UnifiError u && u.Message.Contains("32 MB"));
+    }
+
+    [Fact]
+    public async Task An_answer_without_a_charset_is_decoded_by_its_byte_order_mark()
+    {
+        const string json = """{"name":"Café"}""";
+        foreach (var encoding in new Encoding[] { Encoding.Unicode, Encoding.BigEndianUnicode, Encoding.UTF32, Encoding.UTF8 })
+        {
+            var console = new ScriptedConsole(_ => new MemoryStream([.. encoding.Preamble, .. encoding.GetBytes(json)])) { CharSet = null };
+            var r = await Transport(console).SendAsync(HttpMethod.Get, Classic + "/stat/device", null, default);
+            Assert.Equal(json, r.Body);
+        }
+
+        // Without a mark or a charset the answer is UTF-8.
+        var plain = new ScriptedConsole(_ => Json(json)) { CharSet = null };
+        Assert.Equal(json, (await Transport(plain).SendAsync(HttpMethod.Get, Classic + "/stat/device", null, default)).Body);
+    }
+
     // --- requests at once ---------------------------------------------------------------------------------------------
 
     [Fact]
@@ -97,6 +168,35 @@ public sealed class UpstreamBudgetTests : IDisposable
         Assert.All(await Task.WhenAll(calls), r => Assert.True(r.Ok));
         Assert.Equal(ConsoleTransport.MaxInFlight, console.MostInFlight);
         Assert.Equal(calls.Count, console.Requests);
+    }
+
+    [Fact]
+    public async Task A_request_keeps_its_turn_while_its_answer_is_read()
+    {
+        // Every turn is taken by an answer whose headers came but whose body is held open.
+        var started = 0;
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var console = new ScriptedConsole(_ => new HeldStream(Json("{}"), release.Task, () => Interlocked.Increment(ref started)));
+        var transport = Transport(console);
+
+        var calls = Enumerable.Range(0, ConsoleTransport.MaxInFlight + 1)
+            .Select(i => transport.SendAsync(HttpMethod.Get, $"{Integration}/v1/info?n={i}", null, default)).ToList();
+        try
+        {
+            for (var waited = 0; Volatile.Read(ref started) < ConsoleTransport.MaxInFlight; waited += 10)
+            {
+                if (waited > 10_000) throw new TimeoutException($"only {started} bodies being read");
+                await Task.Delay(10);
+            }
+            await Task.Delay(200);
+            Assert.Equal(ConsoleTransport.MaxInFlight, console.Requests); // the last has not reached the console
+        }
+        finally
+        {
+            release.SetResult();
+        }
+        Assert.All(await Task.WhenAll(calls), r => Assert.True(r.Ok));
+        Assert.Equal(ConsoleTransport.MaxInFlight + 1, console.Requests);
     }
 
     [Fact]
@@ -317,6 +417,9 @@ internal sealed class ScriptedConsole(Func<HttpRequestMessage, Stream> answer, b
     /// <summary>When set, each request waits for it before answering.</summary>
     public Task? Hold { get; init; }
 
+    /// <summary>The charset the answers declare; null for none.</summary>
+    public string? CharSet { get; init; } = "utf-8";
+
     public async Task WaitForInFlightAsync(int count)
     {
         for (var waited = 0; InFlight < count; waited += 10)
@@ -337,7 +440,7 @@ internal sealed class ScriptedConsole(Func<HttpRequestMessage, Stream> answer, b
             var body = answer(request);
             var content = new StreamContent(new Counting(body, n => Interlocked.Add(ref _served, n)));
             if (declareLength) content.Headers.ContentLength = body.Length;
-            content.Headers.ContentType = new("application/json") { CharSet = "utf-8" };
+            content.Headers.ContentType = new("application/json") { CharSet = CharSet };
             return new HttpResponseMessage(HttpStatusCode.OK) { Content = content };
         }
         finally
@@ -373,6 +476,45 @@ internal sealed class ScriptedConsole(Func<HttpRequestMessage, Stream> answer, b
             if (disposing) inner.Dispose();
             base.Dispose(disposing);
         }
+    }
+}
+
+/// <summary>
+/// A body held open after the headers: its first read says it has <paramref name="started"/>, then waits for
+/// <paramref name="gate"/> before reading <paramref name="inner"/>.
+/// </summary>
+internal sealed class HeldStream(Stream inner, Task gate, Action started) : Stream
+{
+    private bool _started;
+
+    public override bool CanRead => true;
+    public override bool CanSeek => false;
+    public override bool CanWrite => false;
+    public override long Length => throw new NotSupportedException();
+    public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+    public override void Flush() { }
+    public override int Read(byte[] buffer, int offset, int count) => ReadAsync(buffer, offset, count, default).GetAwaiter().GetResult();
+
+    public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+    {
+        if (!_started)
+        {
+            _started = true;
+            started();
+            await gate.WaitAsync(ct);
+        }
+        return await inner.ReadAsync(buffer, ct);
+    }
+
+    public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct) => ReadAsync(buffer.AsMemory(offset, count), ct).AsTask();
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+    public override void SetLength(long value) => throw new NotSupportedException();
+    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) inner.Dispose();
+        base.Dispose(disposing);
     }
 }
 
