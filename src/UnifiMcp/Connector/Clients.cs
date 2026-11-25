@@ -119,8 +119,8 @@ public sealed class Clients(SqliteOAuthStore store, IClientMetadataDocuments doc
         {
             if (raw is { Length: > MaxRedirectUriLength }) return $"Each redirect_uri must be at most {MaxRedirectUriLength} characters.";
             if (!Uri.TryCreate(raw?.Trim(), UriKind.Absolute, out var uri)) return $"redirect_uri '{Truncate(raw)}' is not an absolute URI.";
-            if (!string.IsNullOrEmpty(uri.Fragment) || raw!.Contains('#')) return "redirect_uris must not contain a fragment.";
-            if (HasUserInfo(raw!.Trim(), uri)) return "redirect_uris must not contain user info.";
+            if (!string.IsNullOrEmpty(uri.Fragment) || raw!.Contains('#')) return NoFragment;
+            if (HasUserInfo(raw!.Trim(), uri)) return NoUserInfo;
             if (uri.Scheme != Uri.UriSchemeHttps) return $"redirect_uri '{Truncate(raw)}' must use https.";
         }
         if (!IsPublic(request.TokenEndpointAuthMethod)) return "Only public clients (token_endpoint_auth_method=none, PKCE) are supported.";
@@ -131,6 +131,8 @@ public sealed class Clients(SqliteOAuthStore store, IClientMetadataDocuments doc
     }
 
     internal const int MaxDocumentRedirectUris = 10;
+    private const string NoFragment = "redirect_uris must not contain a fragment.";
+    private const string NoUserInfo = "redirect_uris must not contain user info.";
 
     /// <summary>
     /// What is wrong with a metadata document's redirects and client type, or null. Every redirect must be same-origin
@@ -145,7 +147,11 @@ public sealed class Clients(SqliteOAuthStore store, IClientMetadataDocuments doc
         var origin = new Uri(clientIdUrl);
         foreach (var raw in document.RedirectUris)
         {
-            if (!Uri.TryCreate(raw, UriKind.Absolute, out var r) || HasFragmentOrUserInfo(raw, r)) return $"redirect_uri '{raw}' is not a valid absolute URI.";
+            // An address with user info may carry a password, and problems reach the client and the log: never echo one.
+            if (raw is not null && Authority(raw) is { } written && written.Contains('@')) return NoUserInfo;
+            if (!Uri.TryCreate(raw, UriKind.Absolute, out var r)) return $"redirect_uri '{raw}' is not a valid absolute URI.";
+            if (HasUserInfo(raw, r)) return NoUserInfo;
+            if (!string.IsNullOrEmpty(r.Fragment) || raw.Contains('#')) return NoFragment;
             if (IsLoopback(r)) continue;
             if (r.Scheme != origin.Scheme || !string.Equals(r.Host, origin.Host, StringComparison.OrdinalIgnoreCase) || r.Port != origin.Port)
                 return $"redirect_uri '{raw}' is not same-origin with the client_id URL.";
