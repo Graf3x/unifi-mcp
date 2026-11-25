@@ -4,7 +4,7 @@
 #
 # Multi-arch without emulation: the SDK stage runs on the build machine and cross-publishes for TARGETARCH
 # (amd64 or arm64); the runtime stage only copies files.
-FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0.403 AS build
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0.404 AS build
 ARG TARGETARCH
 WORKDIR /src
 COPY src/UnifiMcp/UnifiMcp.csproj src/UnifiMcp/
@@ -17,7 +17,9 @@ COPY src/UnifiMcp/ src/UnifiMcp/
 RUN dotnet publish src/UnifiMcp/UnifiMcp.csproj -c Release -a "$TARGETARCH" --self-contained false --no-restore -o /app \
  && chmod -R a+rX /app
 
-FROM mcr.microsoft.com/dotnet/aspnet:10.0.9
+# The servicing patch the tests run on: never older than the ASP.NET packages in UnifiMcp.csproj (ReleaseTests checks),
+# and the same in deploy/Dockerfile. CI starts every build of this image with tools/image-gate.sh before it is published.
+FROM mcr.microsoft.com/dotnet/aspnet:10.0.15
 ENV DOTNET_EnableDiagnostics=0
 WORKDIR /app
 COPY --from=build /app .

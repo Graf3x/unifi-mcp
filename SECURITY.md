@@ -4,7 +4,8 @@ unifi-mcp holds an API key to your network console, so security reports are take
 
 ## Supported versions
 
-Only the latest release gets fixes. Update with `docker compose pull && docker compose up -d`.
+Only the latest release gets fixes. Update with `docker compose pull && docker compose up -d`, after a backup
+(README, [Backup and rollback](README.md#backup-and-rollback)).
 
 ## Reporting a vulnerability
 

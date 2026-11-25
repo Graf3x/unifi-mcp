@@ -9,6 +9,8 @@
 services:
   unifi-mcp:
     # The image is published by this repo's GitHub workflow. Pin a version (e.g. :0.6.0) if you prefer.
+    # Each release is started and checked on amd64 and arm64 before it is tagged. Before you pull a new one, back up ./data
+    # and note this image's digest, so you can roll back (README, "Backup and rollback").
     image: ghcr.io/graf3x/unifi-mcp:latest
     # To build from this checkout instead of pulling, uncomment these two lines:
     # build: .

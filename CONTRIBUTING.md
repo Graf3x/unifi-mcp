@@ -42,6 +42,7 @@ follow [guide 1](README.md#guide-1-quick-local-setup) in the README.
 | `tests/UnifiMcp.Tests/` | xUnit tests; `ToolContractTests` checks every tool against Claude's tool rules |
 | `tests/view-host/` | A development-only page that plays the host for a view, with sample answers |
 | `tools/make-diagrams.mjs` | Draws the README diagrams in `docs/images/` |
+| `tools/image-gate.sh` | Starts a built image as Compose runs it and checks it before CI publishes it (Linux, Docker) |
 | `deploy/` | The maintainer's own deployment bundle; you can ignore it |
 
 ## Conventions

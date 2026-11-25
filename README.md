@@ -396,7 +396,44 @@ Already running guide 2 or 3? Add the listener to `docker-compose.yml` instead: 
 uncomment the `MCP_LAN_LISTEN` and `7420:7420` lines. Its token must differ from `MCP_ACCESS_TOKEN`, so the one that
 crosses your network in plain HTTP never opens the internet-facing connector.
 
+### Sharing one server
+
+Read this before you let more than one person, or a client you don't run yourself, use the same server.
+
+**One console key, every site it reaches.** The server makes every call to the console with its one `UNIFI_API_KEY`.
+`UNIFI_SITE` is only the default: any caller can name another site in `siteId` and read every site that key can reach,
+and change it too when writes are on. The console sees one API client, so its own logs cannot tell your callers apart.
+
+**One identity per way in.** Each way in gives the server one caller, and the audit log names that caller:
+
+| Way in | Who the server sees | Name in the audit log | To end that access |
+|---|---|---|---|
+| Code sign-in (guide 2) | One owner: whoever can read the server's log or open the setup page | `owner` | Disconnect each client on `/connections`. To end every grant at once, stop the server and delete `./data` (every client signs in again). |
+| Google sign-in (guide 3) | Each address in `MCP_ALLOWED_GOOGLE_EMAILS` | The Google address | Remove the address and run `docker compose up -d`, or Disconnect its clients on `/connections`. |
+| `MCP_ACCESS_TOKEN` | Everyone who holds the token, as one caller | `access token` | Change or clear it and run `docker compose up -d`. |
+| `MCP_LAN_ACCESS_TOKEN` (guide 4) | Everyone who holds the token, as one caller | `LAN access token` | Change it and run `docker compose -f docker-compose.lan.yml up -d`. |
+| Tailnet (`mcp.sock`) | Each login in `MCP_ALLOWED_LOGINS` | The Tailscale login | Remove the login and run `docker compose up -d`. |
+| The console key itself | Not a caller: what the server uses for everyone | | Delete it in UniFi Network under Settings > Control Plane > Integrations. The server then reaches nothing until you give it a new key. |
+
+A sign-in grant ends at the client's next refresh: the access token it already holds works until it expires, within
+the hour. Stopping the server and deleting `./data` ends them all at once, since the tokens were signed with a key kept
+there. The two tokens and the tailnet logins end as soon as the server restarts with the new values.
+
+**What the audit can tell you.** The log category `UnifiMcp.Audit` has one line per tool call: the name above, the tool
+and how it ended. A call to the Integration API also logs its method and path (the path names the site) and, for a write,
+how it was approved; arguments are never logged. Writes are logged by default. Reads are logged at Debug only; to keep
+them too, set `Logging__LogLevel__UnifiMcp.Audit=Debug` in `.env`. The audit cannot tell apart two people who share a
+token, a Tailscale login or the sign-in code, and a write approval comes from whoever made the call, in their own client,
+so it does not protect one caller from another.
+
+**Groups that don't trust each other** each need a separate instance: its own folder, `.env`, `./data`,
+`UNIFI_MCP_DATA_KEY`, tokens and public hostname, and its own console key. A key can do what the console lets it do, and
+this server cannot narrow it. If your console can make a key with less access (for example under an admin limited to
+some sites, or to viewing only), give each group such a key; check what your UniFi Network version offers.
+
 ### Updating
+
+Before you update, note the image you run and back up `./data`: see [Backup and rollback](#backup-and-rollback).
 
 For guides 2, 3 and 4 (add `-f docker-compose.lan.yml` to both commands for guide 4):
 
@@ -423,6 +460,49 @@ you move it, the connector is down (the log says `Public socket not bound`) and 
 4. `docker compose pull && docker compose up -d`, then open the setup page: the Cloudflare tunnel check should pass.
    You may delete the old `run/public.sock`. If you set `MCP_PUBLIC_LISTEN` in `.env`, remove it or point it into
    `/run/unifi-mcp-public`.
+### Backup and rollback
+
+Do this before every update. `./data` holds the connector's state: `oauth.db` (clients, consents, refresh tokens as
+hashes, revoked grants and the signing key) and `keys/` (the keyring that seals the signing key under
+`UNIFI_MCP_DATA_KEY`). A new version may change the layout of `oauth.db`, and an older image is not promised to read
+the newer one, so a rollback is the old image together with the data from before the update. Guide 4 without the
+connector keeps nothing there; noting the image is enough.
+
+Note the image by digest, stop the server so SQLite finishes its write-ahead log, copy the whole folder (with
+`oauth.db-wal` and `oauth.db-shm` if they are there), and start it again (add `-f docker-compose.lan.yml` for guide 4):
+
+```sh
+stamp=$(date +%Y%m%d-%H%M%S)
+mkdir -p backups && chmod 700 backups && mkdir -m 700 "backups/$stamp"
+docker image inspect --format '{{index .RepoDigests 0}}' ghcr.io/graf3x/unifi-mcp:latest > "backups/$stamp/image"
+docker compose stop unifi-mcp
+(umask 077 && tar -cf "backups/$stamp/data.tar" data)
+docker compose start unifi-mcp
+```
+
+`backups/<stamp>/image` now reads `ghcr.io/graf3x/unifi-mcp@sha256:…`, the exact image you ran. An image you built
+yourself has no digest; write down the commit you built (`git rev-parse HEAD`) instead.
+
+**Keep the data key apart.** The backup does not hold `UNIFI_MCP_DATA_KEY` (it lives in `.env`); keep a copy of it
+somewhere else, such as a password manager, and never next to the backup. Without it a backup opens nothing: the
+connector answers 503. With it, a backup can sign tokens this server accepts, so anyone who has both has your access.
+
+**Roll back** with the data key unchanged:
+
+```sh
+docker compose stop unifi-mcp
+mv data data.before-rollback
+tar -xf backups/<stamp>/data.tar
+```
+
+Then set `image:` in `docker-compose.yml` to the line in `backups/<stamp>/image` and run `docker compose up -d`. Delete
+`data.before-rollback` once you are sure.
+
+**A backup is old authorization state.** Restoring it brings back every client and grant that existed when it was made,
+including ones you disconnected since, and forgets clients that connected later (they sign in again). After a restore,
+open `/connections` and Disconnect anything that should not be there. Keep backups readable only by you, as above, off
+shared drives, and delete the ones you no longer need. If the data key ever leaks, stop the server, delete `./data` and
+every backup made under that key, and set a new key: every client signs in again.
 
 ### Troubleshooting
 
