@@ -92,7 +92,7 @@ public static class OAuthEndpoints
                     return Page(400, Pages.ErrorPage("Redirect not allowed", "The application asked to send you to an address it did not register."));
 
                 var state = q["state"].ToString();
-                IResult Fail(string error, string description) => RedirectWithError(redirectUri, error, description, state);
+                IResult Fail(string error, string description) => RedirectWithError(issuer, redirectUri, error, description, state);
 
                 if (q["response_type"].ToString() != "code") return Fail("unsupported_response_type", "Only response_type=code is supported.");
                 var challenge = q["code_challenge"].ToString();
@@ -123,7 +123,7 @@ public static class OAuthEndpoints
                 // Consent once per client: a standing consent skips the page and keeps its family; otherwise the owner is
                 // asked, and the consent POST starts a fresh family.
                 if (await ledger.AuthorizeAsync(user, client, new CodeRequest(redirectUri, challenge, scope, NullIfEmpty(resource)), ct) is { } code)
-                    return CodeRedirect(redirectUri, code, state);
+                    return CodeRedirect(issuer, redirectUri, code, state);
 
                 var pending = new PendingAuthorization(clientId, redirectUri, challenge, scope, NullIfEmpty(resource), state, user.Subject,
                     time.GetUtcNow().Add(PendingConsentLifetime));
@@ -132,7 +132,7 @@ public static class OAuthEndpoints
             })
             .RequireRateLimiting(AuthorizeRateLimitPolicy);
 
-        app.MapPost("/oauth/consent", async Task<IResult> (HttpContext http, Clients clients, GrantLedger ledger, IDataProtectionProvider dp,
+        app.MapPost("/oauth/consent", async Task<IResult> (HttpContext http, Clients clients, ITokenIssuer issuer, GrantLedger ledger, IDataProtectionProvider dp,
                 TimeProvider time, ILoggerFactory lf, CancellationToken ct) =>
             {
                 if (!http.Request.HasFormContentType) return Page(400, Pages.ErrorPage("This request has expired", "Go back to the application and connect again."));
@@ -160,13 +160,13 @@ public static class OAuthEndpoints
                 if (form["decision"].ToString() != "allow")
                 {
                     Log(lf).LogInformation("OAuth: {Email} denied client {ClientId}", LogText.Clean(user.Label), LogText.Clean(client.ClientId));
-                    return RedirectWithError(pending.RedirectUri, "access_denied", "The user declined.", pending.State);
+                    return RedirectWithError(issuer, pending.RedirectUri, "access_denied", "The user declined.", pending.State);
                 }
 
                 var code = await ledger.ApproveAsync(user, client, new CodeRequest(pending.RedirectUri, pending.CodeChallenge, pending.Scope, pending.Resource), ct);
                 Log(lf).LogInformation("OAuth: {Email} granted client {ClientId} '{Name}' scope {Scope}", LogText.Clean(user.Label), LogText.Clean(client.ClientId),
                     LogText.Clean(client.DisplayName), pending.Scope);
-                return CodeRedirect(pending.RedirectUri, code, pending.State);
+                return CodeRedirect(issuer, pending.RedirectUri, code, pending.State);
             });
 
         // ---- token ---------------------------------------------------------------------------------
@@ -266,6 +266,8 @@ public static class OAuthEndpoints
         // Client ID Metadata Documents: Claude's hosted surfaces and Claude Code send a URL as client_id instead of
         // registering. Requires "none" above as well; both are checked by the client.
         client_id_metadata_document_supported = true,
+        // RFC 9207: every redirect back carries iss, so a client can tell this server's answer from another's.
+        authorization_response_iss_parameter_supported = true,
         revocation_endpoint_auth_methods_supported = new[] { "none" },
         scopes_supported = AllowedScopes,
         subject_types_supported = new[] { "public" },
@@ -277,8 +279,9 @@ public static class OAuthEndpoints
         string.IsNullOrEmpty(resource) || string.Equals(resource.TrimEnd('/'), issuer.Audience.TrimEnd('/'), StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Back to the client with its code; the URL carries the code, so it is never logged.</summary>
-    private static IResult CodeRedirect(string redirectUri, string code, string state) =>
-        new QuietRedirect(WithQuery(redirectUri, ("code", code), ("state", state)));
+    /// <summary>Back to the client with a code, and this server named as its issuer (RFC 9207).</summary>
+    private static IResult CodeRedirect(ITokenIssuer issuer, string redirectUri, string code, string state) =>
+        new QuietRedirect(WithQuery(redirectUri, ("code", code), ("state", state), ("iss", issuer.Issuer)));
 
     private static async Task<IResult> TokenResponseAsync(ITokenIssuer issuer, OAuthUser user, string clientId, string scope, string refreshToken, CancellationToken ct)
     {
@@ -318,8 +321,9 @@ public static class OAuthEndpoints
     private static IResult OAuthError(int status, string error, string description) =>
         Results.Json(new { error, error_description = description }, statusCode: status);
 
-    private static IResult RedirectWithError(string redirectUri, string error, string description, string state) =>
-        new QuietRedirect(WithQuery(redirectUri, ("error", error), ("error_description", description), ("state", state)));
+    /// <summary>Back to the client with an error, and this server named as its issuer (RFC 9207).</summary>
+    private static IResult RedirectWithError(ITokenIssuer issuer, string redirectUri, string error, string description, string state) =>
+        new QuietRedirect(WithQuery(redirectUri, ("error", error), ("error_description", description), ("state", state), ("iss", issuer.Issuer)));
 
     /// <summary>
     /// A 302 that writes no log line. Results.Redirect logs its destination at Information, and the destination carries

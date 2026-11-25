@@ -68,13 +68,16 @@ public sealed partial class OAuthFlowTests
             ["resource"] = resource,
         }.Where(kv => kv.Value is not null));
 
-    /// <summary>The query of a redirect back to Claude's callback.</summary>
+    /// <summary>The query of a redirect back to Claude's callback. Every one, code or error, names this server as its
+    /// issuer (RFC 9207), so a client talking to several servers can tell whose answer it holds.</summary>
     private static Dictionary<string, string> CallbackQuery(HttpResponseMessage response)
     {
         Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
         var location = response.Headers.Location!;
         Assert.StartsWith(Callback + "?", location.ToString());
-        return QueryHelpers.ParseQuery(location.Query).ToDictionary(kv => kv.Key, kv => kv.Value.ToString());
+        var q = QueryHelpers.ParseQuery(location.Query).ToDictionary(kv => kv.Key, kv => kv.Value.ToString());
+        Assert.Equal(Base, q.GetValueOrDefault("iss"));
+        return q;
     }
 
     /// <summary>The browser's part: authorize, sign in with Google if needed, allow on the consent page. Returns the code.</summary>
@@ -272,6 +275,7 @@ public sealed partial class OAuthFlowTests
             Assert.Equal(["code"], Strings("response_types_supported"));
             Assert.Equal(["mcp:tools"], Strings("scopes_supported"));
             Assert.True(m.GetProperty("client_id_metadata_document_supported").GetBoolean());
+            Assert.True(m.GetProperty("authorization_response_iss_parameter_supported").GetBoolean());
         }
 
         var jwks = await client.GetFromJsonAsync<JsonElement>("/oauth/jwks");
@@ -406,6 +410,28 @@ public sealed partial class OAuthFlowTests
         // The browser follows the consent POST's redirect to Claude, so the page's form-action must allow that origin.
         var csp = page.Headers.GetValues("Content-Security-Policy").Single();
         Assert.Contains("form-action 'self' https://claude.ai", csp);
+    }
+
+    [Fact]
+    public async Task Declined_consent_redirects_with_access_denied()
+    {
+        await using var h = await PublicHarness.StartAsync();
+        var clientId = await RegisterAsync(h);
+        var url = AuthorizeUrl(clientId);
+        await h.SignInAsync(PublicHarness.GoogleEmail, start: url);
+        var html = await (await h.Http.GetAsync(url)).Content.ReadAsStringAsync();
+        var pending = RequestField().Match(html);
+        Assert.True(pending.Success, html);
+
+        using var consent = new HttpRequestMessage(HttpMethod.Post, "/oauth/consent")
+        {
+            Content = new FormUrlEncodedContent(new Dictionary<string, string> { ["request"] = pending.Groups[1].Value, ["decision"] = "deny" }),
+        };
+        consent.Headers.Add("Origin", Base);
+        var q = CallbackQuery(await h.Http.SendAsync(consent));
+        Assert.Equal("access_denied", q["error"]);
+        Assert.Equal("st-1", q["state"]);
+        Assert.False(q.ContainsKey("code"));
     }
 
     [Fact]

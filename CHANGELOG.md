@@ -5,6 +5,12 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Added
+
+- Sign-in redirects back to Claude now name this server as their issuer (`iss`, RFC 9207), on success and on error,
+  and the authorization server metadata says so. The 2026-07-28 MCP spec asks for this; clients check it so an answer
+  from one server cannot be passed off as another's.
+
 ## 0.8.0
 
 ### Added
