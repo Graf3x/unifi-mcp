@@ -36,23 +36,28 @@ public sealed class ApiTool(ApiOperation op, UnifiClient client) : McpServerTool
     {
         var body = args.TryGetValue("body", out var b) ? b.GetRawText() : null;
         string? approval = null;
-        if (op.IsWrite)
-            switch (WriteApproval.Decide(op, args, request))
-            {
-                case WriteApproval.Stop stop: return stop.Result;
-                case WriteApproval.Run run: approval = run.How; break;
-            }
+        string? path = null;
         try
         {
+            // The request is built and checked first, so the owner approves the path that will be sent, and never a call
+            // that would then be refused for a missing argument.
             if (op.HasBody && body is null) throw new UnifiError("body is required.");
-            var path = await BuildPathAsync(op, client, args, cancellationToken);
+            path = await BuildPathAsync(op, client, args, cancellationToken);
+            if (op.IsWrite)
+                switch (WriteApproval.Decide(op, path, args, request))
+                {
+                    case WriteApproval.Stop stop: return stop.Result;
+                    case WriteApproval.Run run: approval = run.How; break;
+                }
             var response = await client.SendAsync(op.Method, path, op.HasBody ? body : null, cancellationToken);
-            Log(op, request, path, response.Status, approval);
+            Log(op, request, path, response.Status.ToString(System.Globalization.CultureInfo.InvariantCulture), approval);
             if (!response.Ok) return ToolText.Error($"The console answered {response.Status} to {op.Method} {path.Split('?')[0]}: {response.Body}");
             return ToolText.Ok(response.Body.Length == 0 ? $"Done ({response.Status}, no content)." : response.Body);
         }
         catch (Exception e) when (e is UnifiError or UnifiNotConfigured)
         {
+            // An approved write that got no answer (it may still have reached the console) keeps its approval on record.
+            if (approval is not null) Log(op, request, path!, "no answer", approval);
             return ToolText.Error(e.Message);
         }
     }
@@ -92,7 +97,7 @@ public sealed class ApiTool(ApiOperation op, UnifiClient client) : McpServerTool
 
     /// <summary>What was sent to the console: method, path and status only, never the body or arguments, and for a write
     /// how it was approved. <see cref="Audit.Calls"/> adds the call's outcome.</summary>
-    private static void Log(ApiOperation op, RequestContext<CallToolRequestParams> request, string path, int status, string? approval)
+    private static void Log(ApiOperation op, RequestContext<CallToolRequestParams> request, string path, string status, string? approval)
     {
         var logger = Audit.Logger(request.Services);
         if (approval is null)

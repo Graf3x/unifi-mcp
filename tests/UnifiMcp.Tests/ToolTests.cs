@@ -54,6 +54,7 @@ public class ToolTests
     public async Task A_write_without_confirm_previews_and_sends_nothing()
     {
         await using var h = await Harness.StartAsync(writes: true);
+        h.Unifi.WithSite(); // the preview shows the path that would be sent, with the site resolved
         var (text, _) = await h.CallAsync("create_dns_policy", new() { ["body"] = new { type = "A_RECORD" }, ["confirm"] = "" });
         Assert.Contains("Nothing was sent", text);
         Assert.Contains("POST", text);

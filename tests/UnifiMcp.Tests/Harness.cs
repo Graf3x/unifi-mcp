@@ -100,17 +100,25 @@ public sealed class Harness : IAsyncDisposable
     /// <param name="elicit">Answers a form the server asks for, with "accept", "decline" or "cancel"; without it the client
     /// declares no forms.</param>
     /// <param name="protocolVersion">Pins a revision, e.g. "2025-11-25"; by default the client negotiates the newest.</param>
-    public Task<McpClient> ConnectAsync(Func<ElicitRequestParams, string>? elicit = null, string? protocolVersion = null)
+    /// <param name="through">Wraps the test server's handler, to see or change what the client sends.</param>
+    public Task<McpClient> ConnectAsync(Func<ElicitRequestParams, string>? elicit = null, string? protocolVersion = null,
+        Func<HttpMessageHandler, HttpMessageHandler>? through = null)
     {
         var options = new McpClientOptions { ProtocolVersion = protocolVersion };
         if (elicit is not null)
             options.Handlers.ElicitationHandler = (p, _) => new ValueTask<ElicitResult>(new ElicitResult { Action = elicit(p!) });
+        var http = Http;
+        if (through is not null)
+        {
+            http = new HttpClient(through(App.GetTestServer().CreateHandler())) { BaseAddress = Http.BaseAddress };
+            http.DefaultRequestHeaders.Add(CallerPolicy.LoginHeader, Login);
+        }
         return McpClient.CreateAsync(new HttpClientTransport(new HttpClientTransportOptions
         {
             Endpoint = new Uri(Http.BaseAddress!, "/mcp"),
             TransportMode = HttpTransportMode.StreamableHttp,
             Name = "unifi-mcp-tests",
-        }, Http, loggerFactory: null, ownsHttpClient: false), options);
+        }, http, loggerFactory: null, ownsHttpClient: through is not null), options);
     }
 
     public async Task<(string Text, bool IsError)> CallAsync(string tool, Dictionary<string, object?>? args = null)
