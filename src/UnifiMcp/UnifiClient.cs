@@ -29,6 +29,9 @@ public sealed class UnifiClient(Settings settings, ConsoleTransport transport)
     private const string ConsoleRoot = "/proxy/network";
     private const int PageSize = 200;
 
+    /// <summary>The most items one paged list is read to: 25 pages of 200.</summary>
+    public const int MaxItems = 5_000;
+
     /// <summary>Sites looked up so far, by the hint that named them, and whether the hint was the site's id.</summary>
     private readonly ConcurrentDictionary<string, (Site Site, bool ById)> _sites = new(StringComparer.OrdinalIgnoreCase);
 
@@ -53,20 +56,31 @@ public sealed class UnifiClient(Settings settings, ConsoleTransport transport)
         catch (JsonException) { throw new UnifiError($"The console's answer to GET {path.Split('?')[0]} was not JSON."); }
     }
 
-    /// <summary>Every item of a paged list.</summary>
+    /// <summary>
+    /// Every item of a paged list, up to <see cref="MaxItems"/> in at most <see cref="MaxItems"/> / 200 pages. It ends at
+    /// the console's latest total or at an empty page, so a total that changes while it reads cannot keep it going. A list
+    /// cut short is noted in the answer's <see cref="UpstreamBudget"/>, so the answer says it is partial.
+    /// </summary>
     public async Task<List<JsonElement>> GetAllAsync(string path, CancellationToken ct)
     {
         var all = new List<JsonElement>();
         var sep = path.Contains('?') ? '&' : '?';
-        for (var offset = 0; ;)
+        for (int offset = 0, pages = 0; ;)
         {
             var page = await GetJsonAsync($"{path}{sep}offset={offset}&limit={PageSize}", ct);
             try
             {
                 var data = page.GetProperty("data").EnumerateArray().ToList();
-                all.AddRange(data);
+                all.AddRange(data.Take(MaxItems - all.Count));
                 offset += data.Count;
-                if (data.Count == 0 || offset >= page.GetProperty("totalCount").GetInt64()) return all;
+                var total = page.GetProperty("totalCount").GetInt64();
+                if (data.Count == 0 || offset >= total) return all;
+                if (all.Count >= MaxItems || ++pages >= MaxItems / PageSize)
+                {
+                    UpstreamBudget.Current?.Note($"Only the first {all.Count} of {total} items of GET {path.Split('?')[0]} were read "
+                                                 + $"(this server reads at most {MaxItems} per list). {UpstreamBudget.Narrow}");
+                    return all;
+                }
             }
             catch (Exception e) when (e is KeyNotFoundException or InvalidOperationException or FormatException)
             {

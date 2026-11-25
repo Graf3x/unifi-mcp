@@ -30,7 +30,8 @@ follow [guide 1](README.md#guide-1-quick-local-setup) in the README.
 | `src/UnifiMcp/DeviceReading.cs` | The device reading: every rule about a console device record, for the text answers and the view alike |
 | `src/UnifiMcp/Answer.cs`, `ConsoleJson.cs` | A composite tool's answer (steps, failure lines, tables, the cap, the view) and reading the console's JSON by field name |
 | `src/UnifiMcp/ViewResources.cs`, `Views/`, `DeviceViewModel.cs` | Interactive views (MCP Apps): one embedded HTML file per view, and the data a tool hands it in `_meta` |
-| `src/UnifiMcp/ConsoleTransport.cs` | The only code that talks to the console: the key, certificate trust (pin or CA), scrubbing |
+| `src/UnifiMcp/ConsoleTransport.cs` | The only code that talks to the console: the key, certificate trust (pin or CA), scrubbing, and each request's turn, deadline and byte limit |
+| `src/UnifiMcp/UpstreamBudget.cs` | What one composite answer may ask of the console in all, and why it stopped early |
 | `src/UnifiMcp/UnifiClient.cs` | The console's two APIs over that transport: the write gate, paging, finding a site |
 | `src/UnifiMcp/ConsoleReads.cs` | The console's internal API: one named read per endpoint, cached and throttled |
 | `src/UnifiMcp/Listeners.cs`, `RouteTable.cs`, `Connector/PublicGate.cs` | Which listener a request came in on, which paths each listener serves, and the gate that refuses the rest |
