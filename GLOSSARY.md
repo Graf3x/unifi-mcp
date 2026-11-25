@@ -5,7 +5,7 @@ An MCP server that lets Claude read, and with the owner's leave change, one home
 ## Console
 
 **Site**:
-One network managed by the console. It can be named by its id, its name, or its internal name.
+One network managed by the console. It can be named by its id, its name, or its internal name. An id always wins; a name or internal name that more than one site has names none of them. A write looks a name up again each time, since a renamed site's old name can pass to another.
 _Avoid_: network (a site holds many networks), location
 
 **Integration API**:
