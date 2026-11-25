@@ -78,7 +78,10 @@ public sealed partial class ConsoleReads(UnifiClient client, TimeProvider time)
     private async Task<(UnifiResponse Response, long SentAt)> SendAsync(HttpMethod method, string path, string cacheKey, Func<long, string?> body, CancellationToken ct)
     {
         if (client.Settings.Missing().Count > 0) // throws "not configured"
-            return (await client.SendInternalAsync(method, path, body(time.GetUtcNow().ToUnixTimeMilliseconds()), ct), 0);
+        {
+            var at = time.GetUtcNow().ToUnixTimeMilliseconds();
+            return (await client.SendInternalAsync(method, path, body(at), ct), at);
+        }
 
         await _gate.WaitAsync(ct);
         try

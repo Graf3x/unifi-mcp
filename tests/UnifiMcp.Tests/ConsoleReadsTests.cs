@@ -67,6 +67,37 @@ public sealed class ConsoleReadsTests : IDisposable
         Assert.Equal(_time.GetUtcNow().ToUnixTimeMilliseconds(), later.Window.To);
     }
 
+    /// <summary>A clock that runs <see cref="OnNow"/> once, the first time the wall clock is read.</summary>
+    private sealed class HookedClock(DateTimeOffset wall) : TimeProvider
+    {
+        public Action? OnNow { get; set; }
+        public override DateTimeOffset GetUtcNow()
+        {
+            var hook = OnNow;
+            OnNow = null;
+            hook?.Invoke();
+            return wall;
+        }
+    }
+
+    [Fact]
+    public async Task A_key_installed_while_a_read_is_being_made_still_gets_the_window_its_body_asked_for()
+    {
+        var clock = new HookedClock(new DateTimeOffset(2025, 3, 1, 12, 0, 0, TimeSpan.Zero));
+        var reads = new ConsoleReads(_client, clock);
+        var site = await reads.SiteAsync(null, default);
+        var keyFile = _client.Settings.ApiKeyFile;
+        var key = File.ReadAllText(keyFile);
+        File.Delete(keyFile);
+        // The key arrives after this server saw it missing but before the transport looks again.
+        clock.OnNow = () => File.WriteAllText(keyFile, key);
+
+        var page = await site.SystemLogAsync(Page(0), default);
+        var at = clock.GetUtcNow().ToUnixTimeMilliseconds();
+        Assert.Equal(new LogWindow(24, at - 24 * 3_600_000L, at), page.Window);
+        Assert.Contains($"\"timestampTo\":{at}", _fake.Requests[^1].Body);
+    }
+
     [Fact]
     public async Task Reads_beyond_the_burst_are_refused_until_the_budget_refills()
     {
