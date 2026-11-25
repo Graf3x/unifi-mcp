@@ -62,8 +62,11 @@ public sealed class ApiTool(ApiOperation op, UnifiClient client) : McpServerTool
                 }
             var response = await client.SendAsync(op.Method, path, op.HasBody ? body : null, cancellationToken);
             Log(op, request, path, response.Status.ToString(System.Globalization.CultureInfo.InvariantCulture), approval);
-            if (!response.Ok) return ToolText.Error($"The console answered {response.Status} to {op.Method} {path.Split('?')[0]}: {response.Body}");
-            return ToolText.Ok(response.Body.Length == 0 ? $"Done ({response.Status}, no content)." : response.Body);
+            // Secrets in the answer are redacted before it leaves (Redaction), errors and echoed writes alike.
+            if (!response.Ok) return ToolText.Error($"The console answered {response.Status} to {op.Method} {path.Split('?')[0]}: {Redaction.Error(response.Body)}");
+            if (response.Body.Length == 0) return ToolText.Ok($"Done ({response.Status}, no content).");
+            return Redaction.Answer(op, response.Body, client.Settings) is { } shown ? ToolText.Ok(shown)
+                : ToolText.Error($"The console answered {response.Status} to {op.Method} {path.Split('?')[0]}, but its answer was not JSON, so it is not shown.");
         }
         // An approved write that got no answer, or whose caller gave up waiting, may still have reached the console, so it
         // keeps its approval on record.

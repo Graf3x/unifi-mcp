@@ -132,7 +132,7 @@ public sealed partial class ConsoleReads(UnifiClient client, TimeProvider time)
     private static JsonElement Parse(HttpMethod method, string path, UnifiResponse r)
     {
         var name = $"{method} {path.Split('?')[0]}";
-        if (!r.Ok) throw new UnifiError($"The console answered {r.Status} to {name}: {Short(r.Body)}");
+        if (!r.Ok) throw new UnifiError($"The console answered {r.Status} to {name}: {Short(Redaction.Error(r.Body))}");
         JsonElement json;
         try { json = JsonDocument.Parse(r.Body).RootElement; }
         catch (JsonException) { throw new UnifiError($"The console's answer to {name} was not JSON."); }
