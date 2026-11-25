@@ -55,12 +55,13 @@ public sealed partial class OAuthFlowTests
         return (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("client_id").GetString()!;
     }
 
-    internal static string AuthorizeUrl(string clientId, string challenge = Challenge, string? resource = Resource, string state = "st-1") =>
+    internal static string AuthorizeUrl(string clientId, string challenge = Challenge, string? resource = Resource, string state = "st-1",
+        string redirectUri = Callback) =>
         QueryHelpers.AddQueryString("/oauth/authorize", new Dictionary<string, string?>
         {
             ["response_type"] = "code",
             ["client_id"] = clientId,
-            ["redirect_uri"] = Callback,
+            ["redirect_uri"] = redirectUri,
             ["code_challenge"] = challenge,
             ["code_challenge_method"] = "S256",
             ["scope"] = "mcp:tools",
@@ -68,20 +69,24 @@ public sealed partial class OAuthFlowTests
             ["resource"] = resource,
         }.Where(kv => kv.Value is not null));
 
-    /// <summary>The query of a redirect back to Claude's callback.</summary>
+    /// <summary>The query of a redirect back to Claude's callback. Every one, code or error, names this server as its
+    /// issuer (RFC 9207), so a client talking to several servers can tell whose answer it holds.</summary>
     private static Dictionary<string, string> CallbackQuery(HttpResponseMessage response)
     {
         Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
         var location = response.Headers.Location!;
         Assert.StartsWith(Callback + "?", location.ToString());
-        return QueryHelpers.ParseQuery(location.Query).ToDictionary(kv => kv.Key, kv => kv.Value.ToString());
+        var q = QueryHelpers.ParseQuery(location.Query).ToDictionary(kv => kv.Key, kv => kv.Value.ToString());
+        Assert.Equal(Base, q.GetValueOrDefault("iss"));
+        return q;
     }
 
     /// <summary>The browser's part: authorize, sign in with Google if needed, allow on the consent page. Returns the code.</summary>
     /// <param name="expectConsentPage">Fail if a standing consent skips the page.</param>
-    internal static async Task<string> AuthorizeAsync(PublicHarness h, string clientId, string challenge = Challenge, bool expectConsentPage = false)
+    internal static async Task<string> AuthorizeAsync(PublicHarness h, string clientId, string challenge = Challenge, bool expectConsentPage = false,
+        string redirectUri = Callback, Action<Dictionary<string, string>>? callback = null)
     {
-        var url = AuthorizeUrl(clientId, challenge);
+        var url = AuthorizeUrl(clientId, challenge, redirectUri: redirectUri);
         var page = await h.Http.GetAsync(url);
         if (page.StatusCode == HttpStatusCode.Redirect && page.Headers.Location!.ToString().StartsWith(FakeGoogle.AuthorizeEndpoint, StringComparison.Ordinal))
         {
@@ -105,6 +110,7 @@ public sealed partial class OAuthFlowTests
         consent.Headers.Add("Origin", Base);
         var q = CallbackQuery(await h.Http.SendAsync(consent));
         Assert.Equal("st-1", q["state"]);
+        callback?.Invoke(q);
         return q["code"];
     }
 
@@ -272,6 +278,7 @@ public sealed partial class OAuthFlowTests
             Assert.Equal(["code"], Strings("response_types_supported"));
             Assert.Equal(["mcp:tools"], Strings("scopes_supported"));
             Assert.True(m.GetProperty("client_id_metadata_document_supported").GetBoolean());
+            Assert.True(m.GetProperty("authorization_response_iss_parameter_supported").GetBoolean());
         }
 
         var jwks = await client.GetFromJsonAsync<JsonElement>("/oauth/jwks");
@@ -406,6 +413,59 @@ public sealed partial class OAuthFlowTests
         // The browser follows the consent POST's redirect to Claude, so the page's form-action must allow that origin.
         var csp = page.Headers.GetValues("Content-Security-Policy").Single();
         Assert.Contains("form-action 'self' https://claude.ai", csp);
+    }
+
+    [Fact]
+    public async Task A_redirect_uri_with_its_own_query_keeps_it_and_gets_only_our_answer()
+    {
+        await using var h = await PublicHarness.StartAsync();
+        const string redirect = Callback + "?keep=1&iss=https%3A%2F%2Fevil.example&state=old&code=old&error=old&error_description=old&error_uri=old";
+        using var register = h.NewClient();
+        var registered = await register.PostAsJsonAsync("/oauth/register", new
+        {
+            client_name = "Claude", redirect_uris = new[] { redirect }, token_endpoint_auth_method = "none",
+            grant_types = new[] { "authorization_code", "refresh_token" }, response_types = new[] { "code" },
+        });
+        Assert.Equal(HttpStatusCode.Created, registered.StatusCode);
+        var clientId = (await registered.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("client_id").GetString()!;
+
+        // A wrong resource redirects with an error before any sign-in; a code goes out the same way.
+        var q = CallbackQuery(await h.Http.GetAsync(AuthorizeUrl(clientId, resource: "https://evil.example/mcp", redirectUri: redirect)));
+        Assert.Equal("1", q["keep"]);
+        Assert.Equal("st-1", q["state"]);
+        Assert.Equal("invalid_target", q["error"]);
+        Assert.False(q.ContainsKey("code"));
+        Assert.False(q.ContainsKey("error_uri"));
+
+        Dictionary<string, string>? success = null;
+        var code = await AuthorizeAsync(h, clientId, redirectUri: redirect, callback: c => success = c);
+        Assert.NotEqual("old", code);
+        Assert.Equal("1", success!["keep"]);
+        Assert.False(success.ContainsKey("error"));
+        Assert.False(success.ContainsKey("error_description"));
+        Assert.False(success.ContainsKey("error_uri"));
+    }
+
+    [Fact]
+    public async Task Declined_consent_redirects_with_access_denied()
+    {
+        await using var h = await PublicHarness.StartAsync();
+        var clientId = await RegisterAsync(h);
+        var url = AuthorizeUrl(clientId);
+        await h.SignInAsync(PublicHarness.GoogleEmail, start: url);
+        var html = await (await h.Http.GetAsync(url)).Content.ReadAsStringAsync();
+        var pending = RequestField().Match(html);
+        Assert.True(pending.Success, html);
+
+        using var consent = new HttpRequestMessage(HttpMethod.Post, "/oauth/consent")
+        {
+            Content = new FormUrlEncodedContent(new Dictionary<string, string> { ["request"] = pending.Groups[1].Value, ["decision"] = "deny" }),
+        };
+        consent.Headers.Add("Origin", Base);
+        var q = CallbackQuery(await h.Http.SendAsync(consent));
+        Assert.Equal("access_denied", q["error"]);
+        Assert.Equal("st-1", q["state"]);
+        Assert.False(q.ContainsKey("code"));
     }
 
     [Fact]
