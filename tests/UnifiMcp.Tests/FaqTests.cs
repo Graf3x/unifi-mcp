@@ -279,6 +279,81 @@ public class FaqTests
         Assert.Contains("could not be checked", text);
     }
 
+    // --- a network list cut short is incomplete, even when every network in it was read --------------------------------
+
+    /// <summary>
+    /// A console that sends one network per page and reports 26: this server reads 25 pages, so Main, the 26th and the
+    /// network nas is on, is never listed. Every network that is listed has details that read.
+    /// </summary>
+    private static void SeedCutNetworks(FakeUnifi f)
+    {
+        Seed(f);
+        const int Pages = UnifiClient.MaxItems / 200;
+        for (var i = 0; i < Pages; i++)
+        {
+            var id = $"cccccccc-0000-0000-0000-{i:D12}";
+            f.Route("GET", $"{Site}/networks?offset={i}&limit=200",
+                $$"""{"offset":{{i}},"limit":200,"count":1,"totalCount":{{Pages + 1}},"data":[{"id":"{{id}}","name":"Lab {{i}}","vlanId":{{100 + i}} }]}""");
+            f.Route("GET", $"{Site}/networks/{id}", $$"""{"id":"{{id}}","name":"Lab {{i}}","vlanId":{{100 + i}},"ipv4Configuration":{"hostIpAddress":"10.100.{{i}}.1","prefixLength":24} }""");
+        }
+    }
+
+    [Fact]
+    public async Task Who_is_on_the_network_with_the_list_cut_short_does_not_call_its_clients_unmatched()
+    {
+        await using var h = await Harness.StartAsync();
+        SeedCutNetworks(h.Unifi);
+        var (text, isError) = await h.CallAsync("who_is_on_network_faq");
+        Assert.False(isError, text);
+        Assert.Contains("## Lab 0 (VLAN 100, 10.100.0.1/24): 0 client(s)", text);
+        Assert.DoesNotContain("No matching network", text);
+        Assert.Contains("Network unknown", text);
+        Assert.Contains("nas", text);
+    }
+
+    [Fact]
+    public async Task Who_is_on_a_named_network_missing_from_a_list_cut_short_does_not_say_none_matches()
+    {
+        await using var h = await Harness.StartAsync();
+        SeedCutNetworks(h.Unifi);
+        var (text, _) = await h.CallAsync("who_is_on_network_faq", new() { ["network"] = "Main" });
+        Assert.DoesNotContain("No network matches", text);
+        Assert.Contains("'Main'", text);
+        Assert.Contains("listed", text);
+    }
+
+    [Fact]
+    public async Task Dhcp_reservation_with_the_list_cut_short_says_membership_is_unknown()
+    {
+        await using var h = await Harness.StartAsync();
+        SeedCutNetworks(h.Unifi);
+        var (text, _) = await h.CallAsync("dhcp_reservation_faq", new() { ["client"] = "nas" });
+        Assert.DoesNotContain("no known subnet", text);
+        Assert.Contains("unknown", text);
+        Assert.Contains("listed", text);
+    }
+
+    [Fact]
+    public async Task Who_is_on_a_named_network_reads_that_network_and_the_clients_first_on_a_site_of_many_networks()
+    {
+        // 120 networks: reading every one's details would spend the answer's requests before the clients are read.
+        await using var h = await Harness.StartAsync();
+        Seed(h.Unifi);
+        var nets = Enumerable.Range(0, 120).Select(i => $$"""{"id":"dddddddd-0000-0000-0000-{{i:D12}}","name":"Net {{i:D3}}","vlanId":{{200 + i}} }""").ToList();
+        nets.Add($$"""{"id":"{{Iot}}","name":"IoT","vlanId":20}""");
+        h.Unifi.Route("GET", $"{Site}/networks", FakeUnifi.Page([.. nets]));
+        for (var i = 0; i < 120; i++)
+            h.Unifi.Route("GET", $"{Site}/networks/dddddddd-0000-0000-0000-{i:D12}", $$"""{"ipv4Configuration":{"hostIpAddress":"10.{{i}}.0.1","prefixLength":24} }""");
+
+        var (text, isError) = await h.CallAsync("who_is_on_network_faq", new() { ["network"] = "IoT" });
+
+        Assert.False(isError, text);
+        Assert.DoesNotContain("Partial answer", text);
+        Assert.Contains("## IoT (VLAN 20, 10.20.0.1/24): 1 client(s)", text);
+        Assert.Contains("bulb", text);
+        Assert.DoesNotContain(h.Unifi.Requests, r => r.Path.StartsWith($"{Site}/networks/dddddddd", StringComparison.Ordinal));
+    }
+
     [Fact]
     public async Task Faq_while_not_configured_says_so_as_a_tool_error()
     {
