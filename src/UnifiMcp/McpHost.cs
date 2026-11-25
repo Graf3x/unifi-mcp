@@ -130,7 +130,8 @@ public static class McpHost
         var total = 1 + writes.Count + CountTools(typeof(GuideTools)) + CountTools(typeof(FaqTools)) + CountTools(typeof(DiagnosticTools));
         app.Lifetime.ApplicationStarted.Register(() =>
         {
-            RestrictSocket(settings);
+            var claims = app.Services.GetService<SocketClaims>();
+            RestrictSocket(claims);
             app.Logger.LogInformation("{Summary}", StartupSummary(settings, total, connector));
             if (settings.SetupPage)
                 app.Logger.LogWarning("Setup page: {Link} (opens the sign-in code and checks; the key changes on each start)",
@@ -140,8 +141,8 @@ public static class McpHost
                 app.Logger.LogWarning("The setup page listens on {Listen}, beyond this machine, over plain HTTP: anyone on the network who sees its traffic sees the sign-in code. Prefer 127.0.0.1.", settings.SetupListen);
             if (settings.LanListen is { } lan)
                 app.Logger.LogWarning("The LAN listener on {Listen} is plain HTTP: anyone on the network who sees its traffic sees MCP_LAN_ACCESS_TOKEN, and the token gives full access to the tools. Use it only on a network you trust, or put a TLS proxy in front.", lan);
-            if (Listeners.UnixPath(settings.PublicListen) is { } pub && Listeners.UnixPath(settings.Listen) is not null && !SocketPaths(settings).Contains(pub))
-                app.Logger.LogWarning("Public socket not bound: the folder of {Socket} does not exist.", pub);
+            if (claims?.PublicSkipped is { } skipped)
+                app.Logger.LogWarning("Public socket not bound: {Reason}. The tailnet side still runs.", skipped);
             // With the LAN listener on, an empty allow-list is the normal state: only the tailnet listener uses it.
             if (settings.AllowedLogins().Count == 0 && settings.LanListen is null)
                 app.Logger.LogWarning("No allowed logins yet ({File}): every caller is refused.", settings.AllowedLoginsFile);
@@ -179,12 +180,12 @@ public static class McpHost
             builder.WebHost.UseUrls(urls);
             return;
         }
-        var paths = SocketPaths(settings);
-        foreach (var path in paths)
-            if (File.Exists(path)) File.Delete(path); // stale socket from a previous run
+        // The paths are claimed when Kestrel's options are built (as the host is), not before: the host's services hold the
+        // locks and release them when it is disposed. A path that is taken stops the build.
+        builder.Services.AddSingleton<SocketClaims>();
         builder.WebHost.ConfigureKestrel(k =>
         {
-            foreach (var path in paths) unixConnections.Listen(k, path);
+            foreach (var path in k.ApplicationServices.GetRequiredService<SocketClaims>().Claim(settings)) unixConnections.Listen(k, path);
             if (settings.SetupPage && Listeners.SetupEndpoint(settings.SetupListen) is var (address, port))
             {
                 if (address is null) k.ListenLocalhost(port);
@@ -198,18 +199,11 @@ public static class McpHost
         });
     }
 
-    /// <summary>The sockets to bind. The public one is skipped when its folder is missing, so the tailnet side still starts.</summary>
-    private static List<string> SocketPaths(Settings settings) =>
-        new[] { Listeners.UnixPath(settings.Listen), Listeners.UnixPath(settings.PublicListen) }
-            .OfType<string>().Distinct()
-            .Where(p => p == Listeners.UnixPath(settings.Listen) || Directory.Exists(Path.GetDirectoryName(p)))
-            .ToList();
-
     /// <summary>Only the server's own user and root may connect to either socket.</summary>
-    private static void RestrictSocket(Settings settings)
+    private static void RestrictSocket(SocketClaims? claims)
     {
-        if (OperatingSystem.IsWindows() || Listeners.UnixPath(settings.Listen) is null) return;
-        foreach (var path in SocketPaths(settings))
+        if (OperatingSystem.IsWindows() || claims is null) return;
+        foreach (var path in claims.Bound)
             File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
     }
 
