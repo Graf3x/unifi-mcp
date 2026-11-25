@@ -132,11 +132,12 @@ public static class SocketFiles
 
     /// <summary>
     /// False only when a connection is refused outright, which is what a socket nobody listens on does. Anything else
-    /// (a connection, no permission) counts as answering, so the socket is kept.
+    /// (a connection, no permission, a connection left waiting) counts as answering, so the socket is kept.
     /// </summary>
     private static bool Answers(string path)
     {
-        using var s = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+        // Nonblocking: a live listener whose backlog is full would otherwise keep this start waiting, holding the lock.
+        using var s = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified) { Blocking = false };
         try
         {
             s.Connect(new UnixDomainSocketEndPoint(path));
