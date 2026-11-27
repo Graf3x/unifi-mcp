@@ -6,3 +6,7 @@ config/
 /.env
 /data/
 /run/
+/run-public/
+/deploy/data/
+/deploy/run/
+/deploy/run-public/
