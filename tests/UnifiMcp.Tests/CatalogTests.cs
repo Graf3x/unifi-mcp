@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 
 namespace UnifiMcp.Tests;
 
@@ -132,6 +133,24 @@ public class CatalogTests
         var required = standard["required"]!.AsArray().Select(n => n!.GetValue<string>()).ToList();
         Assert.Contains("broadcastingFrequenciesGHz", required);
         Assert.DoesNotContain("securityConfiguration", required);
+    }
+
+    [Fact]
+    public void Every_shown_above_note_points_at_one_named_schema_before_it()
+    {
+        var notes = 0;
+        foreach (var op in Catalog.Operations)
+        {
+            var text = Catalog.Describe(op);
+            Assert.DoesNotContain("nested too deep", text);
+            notes += Regex.Matches(text, "shown above").Count;
+            var labels = Regex.Matches(text, "\"schema\":\"([^\"]+)\"").Select(m => (Name: m.Groups[1].Value, m.Index)).ToList();
+            Assert.True(labels.Count == labels.Select(l => l.Name).Distinct().Count(), $"{op.ToolName} names a schema twice");
+            foreach (Match note in Regex.Matches(text, @"\(the '([^']+)' schema, shown above\)"))
+                Assert.True(labels.Any(l => l.Name == note.Groups[1].Value && l.Index < note.Index),
+                    $"{op.ToolName} points at '{note.Groups[1].Value}', which is not named above");
+        }
+        Assert.True(notes > 0);
     }
 
     private static readonly JsonObject Raw = LoadRaw();
