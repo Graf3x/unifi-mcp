@@ -1,0 +1,53 @@
+# Fails when any NuGet package in the solution, direct or transitive, has a known vulnerability: weekly, so an advisory
+# published against an unchanged tree still shows, and on every push to main and pull request.
+# Only this workflow fails on an advisory. Builds never treat NuGet's NU190x warnings as errors, because the Fleet deploy
+# builds from source and must not break the day a new advisory is published.
+# Kept apart from image.yml so the weekly run does not also test and build both images.
+name: vulnerability audit
+
+on:
+  schedule:
+    - cron: "17 6 * * 1" # Mondays, 06:17 UTC
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  vulnerable-packages:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          dotnet-version: "10.0.x"
+      # A step of its own: after a failed restore the listing can report no packages and exit 0, which reads as clean.
+      - run: dotnet restore unifi-mcp.slnx
+      - name: No package has a known vulnerability
+        run: |
+          set -euo pipefail
+          # The listing exits 0 when it finds vulnerable packages, so the check reads its report, not its exit status.
+          if ! report=$(dotnet list unifi-mcp.slnx package --vulnerable --include-transitive --no-restore --format json); then
+            printf '%s\n' "$report" >&2
+            exit 1
+          fi
+          # A problem (no assets file, an unreachable vulnerability source) means the report is incomplete, not clean.
+          problems=$(jq -r '.problems[]? | "\(.level): \(.text)"' <<< "$report")
+          if [ -n "$problems" ]; then printf '%s\n' "$problems" >&2; exit 1; fi
+          projects=$(jq '.projects | length' <<< "$report")
+          if [ "$projects" -eq 0 ]; then echo "The report lists no projects." >&2; exit 1; fi
+          found=$(jq -r '
+            .projects[] | (.path | split("/") | last) as $project | .frameworks[]? | .framework as $framework
+            | (.topLevelPackages[]?, .transitivePackages[]?)
+            | select((.vulnerabilities // []) | length > 0)
+            | "\($project) [\($framework)] \(.id) \(.resolvedVersion): \([.vulnerabilities[] | "\(.severity) \(.advisoryurl)"] | join(", "))"
+          ' <<< "$report")
+          if [ -n "$found" ]; then
+            printf '%s\n' "$found" >&2
+            echo "Update each package above, or the top-level package that brings it in, to a version without the advisory." >&2
+            exit 1
+          fi
+          echo "No known vulnerable packages in the solution's $projects projects."

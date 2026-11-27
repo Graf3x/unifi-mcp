@@ -5,6 +5,28 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Added
+
+- `UNIFI_WRITE_TOOLS` limits which write tools exist when writes are on: an exact, comma or space separated list of
+  write tool names. The others are not listed and cannot be called. A name that is not a write tool stops startup with
+  the list of valid names, even while writes are off, so a typo shows before writes are turned on. Unset, every write
+  tool is on, as before. `getting_started` says when the owner limited them.
+- A misspelt `UNIFI_*` or `MCP_*` environment variable is no longer ignored without a word: startup logs a warning
+  naming it (never its value) and, when one is close, the setting it probably meant. The name is checked in any case,
+  since on Linux `mcp_setup_page` is never read. When the typo is what stops startup (a misspelt `MCP_LAN_ACCESS_TOKEN`
+  makes `MCP_LAN_LISTEN` refuse to start), the warning is printed next to the error.
+
+### Changed
+
+- The README opens with what the server does: finished answers, write approval, redaction, pinned TLS, the connector
+  with no open ports, its limits on the console and its short tool list.
+
+### Maintenance
+
+- Dependabot opens weekly updates for the NuGet packages, both Dockerfiles (always together) and the workflow actions.
+  A weekly vulnerability audit (also on pull requests) fails when any direct or transitive package has a known
+  advisory; normal builds and the Fleet deploy never fail on one. Every workflow action is pinned to a commit.
+
 ## 0.11.0
 
 Two changes need you to act when you update. With a Cloudflare tunnel, move the public socket to its own folder

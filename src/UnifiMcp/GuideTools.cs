@@ -36,9 +36,12 @@ public sealed class GuideTools(Settings settings, UnifiClient client, OpenApiCat
         sb.AppendLine($"- The diagnostics tools (system_log and the last five above) read the console's internal API, which its own UI uses. It is limited to {ConsoleReads.PerMinute} calls a minute (bursts of {ConsoleReads.Burst}) and repeats within {ConsoleReads.CacheFor.TotalSeconds:0} s are served from cache, because heavy polling can destabilise the console. Do not loop on them.").AppendLine();
         sb.AppendLine("## Changes");
         var writes = catalog.Operations.Count(o => o.IsWrite);
+        var listed = settings.WriteTools is null
+            ? $"{writes} write tools are listed"
+            : $"{EnabledWrites.Count} of {writes} write tools are listed, because the owner limited them with UNIFI_WRITE_TOOLS; the others cannot be called, and `describe_operation` still shows them";
         sb.AppendLine(!settings.AllowWrites
             ? $"This server is read-only: {writes} write operations exist but are not listed, because UNIFI_ALLOW_WRITES is off. `describe_operation` still shows them."
-            : $"Writes are on: {writes} write tools are listed. Each is marked destructive and asks the owner to approve it on a confirmation form that shows the whole change; a change too big for the form is refused, so make smaller changes. "
+            : $"Writes are on: {listed}. Each is marked destructive and asks the owner to approve it on a confirmation form that shows the whole change; a change too big for the form is refused, so make smaller changes. "
               + (settings.AllowConfirmFallback
                   ? "UNIFI_ALLOW_CONFIRM_FALLBACK is on: a client that cannot show the form runs a write when `confirm` is set to its own tool name (without it you get a preview and nothing is sent). Show the owner the preview and wait for their yes before confirming."
                   : "A client that cannot show the form is refused every write, and `confirm` does not change that; the owner can allow it with UNIFI_ALLOW_CONFIRM_FALLBACK=true."));
@@ -82,7 +85,15 @@ public sealed class GuideTools(Settings settings, UnifiClient client, OpenApiCat
     }
 
     private string RunWith(ApiOperation o) =>
-        !o.IsWrite ? $"{ReadOperationTool.ToolName}" : settings.AllowWrites ? $"its own tool {o.ToolName} (destructive, needs the owner's approval)" : "disabled (writes off)";
+        !o.IsWrite ? $"{ReadOperationTool.ToolName}" : Disabled(o) ?? $"its own tool {o.ToolName} (destructive, needs the owner's approval)";
+
+    /// <summary>Why a write has no tool, or null when it has one.</summary>
+    private string? Disabled(ApiOperation o) =>
+        !settings.AllowWrites ? "disabled (writes off)" : !EnabledWrites.Contains(o) ? "disabled (not in UNIFI_WRITE_TOOLS)" : null;
+
+    // The same list the host registered tools for; the host already refused any bad name, so this does not throw.
+    private IReadOnlyList<ApiOperation> EnabledWrites => _enabledWrites ??= McpHost.EnabledWrites(settings, catalog);
+    private IReadOnlyList<ApiOperation>? _enabledWrites;
 
     [McpServerTool(Name = "describe_operation", Title = "Describe an API operation", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
     [Description("[Start] Full detail for one operation: parameters plus complete request and response schemas with references inlined. Use before composing a write body.")]
@@ -94,7 +105,7 @@ public sealed class GuideTools(Settings settings, UnifiClient client, OpenApiCat
         return ToolText.Ok($"State: {StateOf(op)}. Run with: {how}.\n\n{catalog.Describe(op)}");
     }
 
-    private string StateOf(ApiOperation o) => o.IsWrite && !settings.AllowWrites ? "disabled (writes off)" : o.IsWrite ? "write" : "read";
+    private string StateOf(ApiOperation o) => !o.IsWrite ? "read" : Disabled(o) ?? "write";
 
     private string StateLine()
     {

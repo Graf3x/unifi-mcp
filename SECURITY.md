@@ -29,5 +29,7 @@ unless you prefer otherwise.
   is the owner's own choice: with `UNIFI_ALLOW_CONFIRM_FALLBACK=true`, a client that cannot show the form writes on a
   matching `confirm`, which the model sets. That is documented as the model approving its own writes; it is not a
   vulnerability, but a `confirm` write without that setting is.
+- A write tool the owner left out of `UNIFI_WRITE_TOOLS`, when it is set, being listed or run, or a name in it that
+  matches more than the one tool it names exactly.
 
 Weaknesses in UniFi itself belong with Ubiquiti, not here.

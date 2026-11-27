@@ -115,12 +115,93 @@ public sealed partial class ReleaseTests
         // Bash drops the exit status of a process substitution and, under pipefail, a grep -q that stops reading early
         // can fail its writer: either way a failed command reads as "nothing to report" and the check passes. Checks
         // capture each command's output in an assignment, which set -e checks, and compare only what they captured.
-        foreach (var file in new[] { Path.Combine(".github", "workflows", "image.yml"), Path.Combine("tools", "image-gate.sh") })
+        foreach (var file in Workflows().Append(Path.Combine(Root, "tools", "image-gate.sh")))
         {
-            var text = File.ReadAllText(Path.Combine(Root, file));
+            var text = File.ReadAllText(file);
             foreach (Match m in Regex.Matches(text, @"<\(([^)]*)\)"))
                 Assert.Matches(@"^printf '%s\\n' ""\$\w+""$", m.Groups[1].Value);
             Assert.DoesNotMatch(@"\|\s*grep\s+-\w*q", text);
+        }
+    }
+
+    // ---- Dependencies ------------------------------------------------------------------------------------------------
+
+    [Fact]
+    public void Every_action_a_workflow_uses_is_pinned_to_a_commit()
+    {
+        // A tag can be moved to other code after it was reviewed; a commit cannot. The tag stays as a comment so a reader
+        // and Dependabot know which release it is.
+        var uses = Workflows()
+            .SelectMany(w => Regex.Matches(File.ReadAllText(w), @"(?m)^\s*(?:-\s+)?uses:\s*(.+?)\s*$")
+                .Select(m => (File: Path.GetFileName(w), Ref: m.Groups[1].Value)))
+            .ToList();
+        Assert.NotEmpty(uses);
+        Assert.All(uses, u => Assert.True(u.Ref.StartsWith("./") || Regex.IsMatch(u.Ref, @"^[\w.-]+/[\w./-]+@[0-9a-f]{40} # v\d+\.\d+\.\d+$"),
+            $"{u.File} uses {u.Ref}: pin it to the release's full commit SHA with the tag as a comment, e.g. actions/checkout@<40-hex sha> # v4.4.0"));
+    }
+
+    [Fact]
+    public void Dependabot_moves_both_dockerfiles_in_one_pull_request()
+    {
+        // One entry over both folders with one group: Dependabot raises a group's update across all its directories as a
+        // single pull request, so the published image and the Fleet build never pin different .NET versions.
+        var docker = Assert.Single(DependabotUpdates(), u => u.Ecosystem == "docker");
+        var folders = Dockerfiles.Select(f => "/" + Path.GetDirectoryName(f)!.Replace('\\', '/')).Order();
+        Assert.Equal(folders, YamlList(docker.Block, "directories").Order());
+        Assert.DoesNotMatch(@"(?m)^\s+directory:", docker.Block);
+        Assert.Matches(@"(?m)^    groups:\s*$", docker.Block);
+        Assert.Contains("*", YamlList(docker.Block, "patterns"));
+        Assert.DoesNotContain("group-by:", docker.Block); // one pull request per image, which splits the pair again
+        // A new major is a new .NET (TargetFramework, setup-dotnet, both images): a change of its own, not a weekly bump.
+        Assert.Contains("version-update:semver-major", docker.Block);
+    }
+
+    [Fact]
+    public void Dependabot_watches_every_project_and_the_workflows()
+    {
+        var updates = DependabotUpdates();
+        var nuget = Assert.Single(updates, u => u.Ecosystem == "nuget");
+        var projects = Regex.Matches(File.ReadAllText(Path.Combine(Root, "unifi-mcp.slnx")), @"<Project Path=""([^""]+)/[^/""]+\.csproj""")
+            .Select(m => "/" + m.Groups[1].Value).Order();
+        Assert.Equal(projects, YamlList(nuget.Block, "directories").Order());
+        var actions = Assert.Single(updates, u => u.Ecosystem == "github-actions");
+        Assert.Matches(@"(?m)^    directory:\s*""?/""?\s*$", actions.Block);
+    }
+
+    [Fact]
+    public void A_workflow_audits_every_package_weekly_and_reads_the_report_not_the_exit_status()
+    {
+        var audit = File.ReadAllText(Assert.Single(Workflows(), w => File.ReadAllText(w).Contains("--vulnerable")));
+        foreach (var trigger in new[] { "schedule:", "workflow_dispatch:", "pull_request:", "push:" })
+            Assert.Contains(trigger, audit);
+        Assert.Contains("--include-transitive", audit);
+        // The listing exits 0 when it finds vulnerable packages, and after a failed restore it reports nothing at all.
+        Assert.Contains("dotnet restore unifi-mcp.slnx", audit);
+        Assert.Contains("--no-restore --format json", audit);
+        Assert.Contains(".problems", audit);
+        Assert.Contains(".vulnerabilities", audit);
+    }
+
+    [Fact]
+    public void A_new_advisory_never_breaks_a_build()
+    {
+        // The Fleet deploy builds from source: an advisory published overnight must show in the audit, not stop a deploy.
+        var projects = Regex.Matches(File.ReadAllText(Path.Combine(Root, "unifi-mcp.slnx")), @"<Project Path=""([^""]+)""")
+            .Select(m => Path.Combine(Root, m.Groups[1].Value)).ToList();
+        Assert.NotEmpty(projects);
+        // Directory.Build.* anywhere from the root down to a project applies to it.
+        var folders = projects.SelectMany(p => Ancestors(Path.GetDirectoryName(p)!)).Distinct();
+        var props = folders.SelectMany(d => new[] { "Directory.Build.props", "Directory.Build.targets" }.Select(n => Path.Combine(d, n))).Where(File.Exists);
+        foreach (var file in projects.Concat(props))
+        {
+            var text = File.ReadAllText(file);
+            Assert.DoesNotMatch(@"<TreatWarningsAsErrors>\s*true", text);
+            Assert.DoesNotMatch(@"<WarningsAsErrors>[^<]*NU19", text);
+        }
+
+        static IEnumerable<string> Ancestors(string dir)
+        {
+            for (var d = new DirectoryInfo(dir); d is not null && d.FullName.Length >= Root.Length; d = d.Parent) yield return d.FullName;
         }
     }
 
@@ -191,6 +272,30 @@ public sealed partial class ReleaseTests
         Assert.NotEmpty(jobs);
         return jobs;
     }
+
+    private static IEnumerable<string> Workflows() =>
+        Directory.EnumerateFiles(Path.Combine(Root, ".github", "workflows"))
+            .Where(f => f.EndsWith(".yml", StringComparison.Ordinal) || f.EndsWith(".yaml", StringComparison.Ordinal))
+            .Order(StringComparer.Ordinal);
+
+    /// <summary>dependabot.yml's update entries, each as its ecosystem and the text of its block.</summary>
+    private static List<(string Ecosystem, string Block)> DependabotUpdates()
+    {
+        var text = File.ReadAllText(Path.Combine(Root, ".github", "dependabot.yml")).Replace("\r\n", "\n");
+        var start = text.IndexOf("\nupdates:\n", StringComparison.Ordinal);
+        Assert.True(start >= 0, ".github/dependabot.yml has no top-level updates: list");
+        var updates = text[(start + "\nupdates:\n".Length)..];
+        if (Regex.Match(updates, @"(?m)^\S") is { Success: true } next) updates = updates[..next.Index]; // the next top-level key
+        return Regex.Split(updates, @"(?m)^  - (?=package-ecosystem:)").Skip(1)
+            .Select(b => (Regex.Match(b, @"^package-ecosystem:\s*""?([\w-]+)""?").Groups[1].Value, "    " + b))
+            .ToList();
+    }
+
+    /// <summary>The items of every block list under <paramref name="key"/> in a YAML block, quotes and comments dropped.</summary>
+    private static List<string> YamlList(string block, string key) =>
+        Regex.Matches(block, $@"(?m)^([ ]*){Regex.Escape(key)}:[ ]*\n((?:\1[ ]+-[ ].*(?:\n|$))+)")
+            .SelectMany(m => Regex.Matches(m.Groups[2].Value, @"(?m)^[ ]+-[ ]+""?([^""#\n]*?)""?[ ]*(?:#.*)?$").Select(i => i.Groups[1].Value))
+            .ToList();
 
     private static IReadOnlyList<string> Needs(string job)
     {

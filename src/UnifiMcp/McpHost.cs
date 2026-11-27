@@ -27,9 +27,13 @@ public static class McpHost
 
     /// <param name="listenerOf">Tests only: replaces <see cref="Listeners.Of"/>, because a TestServer has no endpoint.</param>
     /// <param name="google">Tests only: the Google OIDC backchannel (discovery, JWKS, token endpoint).</param>
+    /// <param name="environmentNames">The process's environment variable names (never values), to warn about likely typos. Null checks nothing.</param>
     public static WebApplication Build(Settings settings, HttpMessageHandler? unifi = null, Action<WebApplicationBuilder>? configure = null,
-        Func<HttpContext, Listener>? listenerOf = null, HttpMessageHandler? google = null)
+        Func<HttpContext, Listener>? listenerOf = null, HttpMessageHandler? google = null, IEnumerable<string>? environmentNames = null)
     {
+        // First, so a name in UNIFI_WRITE_TOOLS that is not a write tool stops startup before anything is built.
+        var catalog = OpenApiCatalog.Load();
+        var writes = EnabledWrites(settings, catalog);
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { Args = [] });
         var unixConnections = new UnixConnections();
         ConfigureListener(builder, settings, unixConnections);
@@ -38,15 +42,15 @@ public static class McpHost
         // window and the connector's expiry checks all read it.
         builder.Services.TryAddSingleton(TimeProvider.System);
 
-        var catalog = OpenApiCatalog.Load();
         builder.Services.AddSingleton(settings);
         builder.Services.AddSingleton(new UnifiClient(settings, new ConsoleTransport(settings, unifi)));
         builder.Services.AddSingleton(sp => new ConsoleReads(sp.GetRequiredService<UnifiClient>(), sp.GetRequiredService<TimeProvider>()));
         builder.Services.AddSingleton(catalog);
-        // Reads share one tool; each write is its own destructive tool, listed only when writes are on. Registered as
-        // services (which the MCP server collects) so they get the host's client.
-        var writes = catalog.Operations.Where(o => o.IsWrite && settings.AllowWrites).ToList();
-        builder.Services.AddSingleton<McpServerTool>(sp => new ReadOperationTool(catalog, sp.GetRequiredService<UnifiClient>()));
+        // Reads share one tool; each write is its own destructive tool, listed only when writes are on (and, with
+        // UNIFI_WRITE_TOOLS, only the ones named). Registered as services (which the MCP server collects) so they get the
+        // host's client.
+        builder.Services.AddSingleton<McpServerTool>(sp => new ReadOperationTool(catalog, sp.GetRequiredService<UnifiClient>(),
+            settings.AllowWrites, writes.Select(w => w.ToolName).ToHashSet(StringComparer.Ordinal)));
         foreach (var op in writes)
             builder.Services.AddSingleton<McpServerTool>(sp => new ApiTool(op, sp.GetRequiredService<UnifiClient>()));
         // The Google callback URL carries the authorization code and state in its query. Hosting logs every request URL at
@@ -128,11 +132,17 @@ public static class McpHost
         SetupPage.Map(app);
 
         var total = 1 + writes.Count + CountTools(typeof(GuideTools)) + CountTools(typeof(FaqTools)) + CountTools(typeof(DiagnosticTools));
+        var unknownNames = Settings.UnknownNameWarnings(environmentNames ?? []);
         app.Lifetime.ApplicationStarted.Register(() =>
         {
             var claims = app.Services.GetService<SocketClaims>();
             RestrictSocket(claims);
             app.Logger.LogInformation("{Summary}", StartupSummary(settings, total, connector));
+            if (settings.WriteTools is not null && !settings.AllowWrites)
+                app.Logger.LogInformation("UNIFI_WRITE_TOOLS has no effect while UNIFI_ALLOW_WRITES is not true: no write tools are registered.");
+            // A misspelt setting is otherwise ignored without a word; names only, never values.
+            foreach (var warning in unknownNames)
+                app.Logger.LogWarning("{Warning}", warning);
             if (settings.SetupPage)
                 app.Logger.LogWarning("Setup page: {Link} (opens the sign-in code and checks; the key changes on each start)",
                     SetupPage.Link(settings, app.Services.GetRequiredService<SetupKey>()));
@@ -168,7 +178,64 @@ public static class McpHost
         var connector = publicMissing.Count > 0 ? "not configured (" + string.Join("; ", publicMissing) + ")"
             : connectorState?.Reason is { } reason ? "unavailable (" + reason + ")"
             : "ready";
-        return $"unifi-mcp on {settings.Listen} for {settings.BaseUrl}: {state}, writes {(settings.AllowWrites ? "ON" : "off")}, {tools} tools, {settings.AllowedLogins().Count} allowed login(s), connector {connector}, sign-in {settings.SignIn.ToString().ToLowerInvariant()}, access token {(settings.AccessToken is null ? "off" : "on")}, LAN {settings.LanListen ?? "off"}";
+        return $"unifi-mcp on {settings.Listen} for {settings.BaseUrl}: {state}, writes {Writes(settings)}, {tools} tools, {settings.AllowedLogins().Count} allowed login(s), connector {connector}, sign-in {settings.SignIn.ToString().ToLowerInvariant()}, access token {(settings.AccessToken is null ? "off" : "on")}, LAN {settings.LanListen ?? "off"}";
+    }
+
+    /// <summary>
+    /// The write operations that get a tool: none with writes off, else all of them, or only those UNIFI_WRITE_TOOLS names.
+    /// The names are checked even with writes off, so a typo shows before writes are turned on.
+    /// </summary>
+    /// <exception cref="ArgumentException">A name in UNIFI_WRITE_TOOLS is not a write tool of the catalog.</exception>
+    /// <summary>
+    /// Reads the settings, builds the host and runs it until shutdown. A misspelt setting is often what stops startup (a
+    /// typo in MCP_LAN_ACCESS_TOKEN makes MCP_LAN_LISTEN refuse to start), and the started host's log never comes then, so
+    /// on a startup error the unknown-name warnings go to <paramref name="stderr"/> beside it. Names only, never values.
+    /// </summary>
+    public static async Task RunAsync(Func<string, string?> env, IEnumerable<string> environmentNames, TextWriter stderr)
+    {
+        var names = environmentNames.ToList();
+        WebApplication? app = null;
+        try
+        {
+            app = Build(Settings.FromEnvironment(env), environmentNames: names);
+            await app.StartAsync();
+        }
+        catch
+        {
+            foreach (var warning in Settings.UnknownNameWarnings(names))
+                await stderr.WriteLineAsync(warning);
+            if (app is not null) await app.DisposeAsync();
+            throw;
+        }
+        await using (app)
+            await app.WaitForShutdownAsync();
+    }
+
+    public static IReadOnlyList<ApiOperation> EnabledWrites(Settings settings, OpenApiCatalog catalog)
+    {
+        var all = catalog.Operations.Where(o => o.IsWrite).ToList();
+        if (settings.WriteTools is { } named)
+        {
+            // Exact names only: a near miss is not guessed at, because a guess could switch on a write the owner did not mean.
+            var names = all.Select(o => o.ToolName).ToHashSet(StringComparer.Ordinal);
+            if (named.FirstOrDefault(n => !names.Contains(n)) is { } bad)
+            {
+                var what = catalog.Find(bad) is { IsWrite: false }
+                    ? $"'{bad}' is a read operation, and reads are always on; list only write tools."
+                    : $"'{bad}' is not a write tool. Names are exact and case-sensitive, with no wildcards.";
+                throw new ArgumentException($"UNIFI_WRITE_TOOLS: {what} The write tools are: {string.Join(", ", names.Order(StringComparer.Ordinal))}.");
+            }
+        }
+        if (!settings.AllowWrites) return [];
+        return settings.WriteTools is { } only ? all.Where(o => only.Contains(o.ToolName, StringComparer.Ordinal)).ToList() : all;
+    }
+
+    private static string Writes(Settings settings)
+    {
+        if (!settings.AllowWrites) return "off";
+        if (settings.WriteTools is null) return "ON";
+        var count = settings.WriteTools.Distinct(StringComparer.Ordinal).Count();
+        return $"ON ({count} tool{(count == 1 ? "" : "s")}, UNIFI_WRITE_TOOLS)";
     }
 
     private const string UnifiCallerScheme = "UnifiCaller";

@@ -1,0 +1,88 @@
+# Weekly version updates for the NuGet packages, the .NET base images and the workflows' actions.
+#
+# A pull request that touches src/UnifiMcp (any update to UnifiMcp.csproj) fails CI until deploy/SHA256SUMS matches
+# again: it lists every tracked file there, and the Fleet deploy checks it too. Check out the branch, then from the repo
+# root regenerate it, commit and push:
+#   git ls-files src/UnifiMcp | LC_ALL=C sort | while read -r f; do printf '%s *%s\n' "$(git cat-file blob ":$f" | sha256sum | cut -d' ' -f1)" "$f"; done > deploy/SHA256SUMS
+#
+# The two Dockerfiles move together: Dockerfile (the published image) and deploy/Dockerfile (the Fleet build) must pin
+# the same sdk and aspnet versions (ReleaseTests). One docker entry covers both folders with one group, and Dependabot
+# raises a group's update across all its directories as a single pull request.
+# The aspnet image must also be at least the Microsoft.AspNetCore.* packages' version, so a dotnet-runtime pull request
+# fails ReleaseTests until the matching image update is in: merge the docker one first, then rebase the other.
+# New majors of .NET (the runtime packages and both images) are ignored: moving to one is a change of its own
+# (TargetFramework, setup-dotnet, both Dockerfiles), not a weekly bump.
+version: 2
+updates:
+  - package-ecosystem: nuget
+    directories:
+      - "/src/UnifiMcp"
+      - "/tests/UnifiMcp.Tests"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      # One .NET servicing release: the server's packages, TestHost and the Extensions it tests with.
+      dotnet-runtime:
+        patterns:
+          - "Microsoft.AspNetCore.*"
+          - "Microsoft.Extensions.*"
+          - "Microsoft.Data.Sqlite"
+        update-types: [minor, patch]
+      # Token validation: the two packages share a version and must not drift apart.
+      identity-model:
+        patterns:
+          - "Microsoft.IdentityModel.*"
+          - "System.IdentityModel.*"
+        update-types: [minor, patch]
+      model-context-protocol:
+        patterns:
+          - "ModelContextProtocol*"
+        update-types: [minor, patch]
+      test-tooling:
+        patterns:
+          - "xunit*"
+          - "Microsoft.NET.Test.Sdk"
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: "Microsoft.AspNetCore.*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "Microsoft.Extensions.*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "Microsoft.Data.Sqlite"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: docker
+    directories:
+      - "/"
+      - "/deploy"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 1
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      # sdk and aspnet in both Dockerfiles, in one pull request.
+      dotnet-images:
+        patterns:
+          - "*"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        patterns:
+          - "*"
+        update-types: [minor, patch]
