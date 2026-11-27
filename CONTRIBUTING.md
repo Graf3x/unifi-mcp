@@ -68,7 +68,8 @@ follow [guide 1](README.md#guide-1-quick-local-setup) in the README.
   `Redaction` first. A new credential field the name rule misses fails `RedactionTests` when the OpenAPI document
   marks it; add it to the rule there.
 - **Docs:** if you change setup steps or settings, update the README and `.env.example` together. The setup page renders
-  the README's Setup section, and a test checks that every heading it links to still exists. After editing
+  the README's Setup section, and a test checks that every heading it links to still exists. A new API document can
+  change the README's table of write tools; `WriteToolsReadmeTests` then fails and prints the new block to paste. After editing
   `tools/make-diagrams.mjs`, run `node tools/make-diagrams.mjs` and commit the regenerated SVGs.
 - **Checksums:** `deploy/SHA256SUMS` covers `src/UnifiMcp/`. If you change files there, regenerate it from the repo root:
   `sha256sum -b $(git ls-files src/UnifiMcp | LC_ALL=C sort) > deploy/SHA256SUMS`. If you can't, say so in the pull
