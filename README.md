@@ -5,14 +5,34 @@
 [![image](https://img.shields.io/badge/image-ghcr.io%2Fgraf3x%2Funifi--mcp-blue)](https://github.com/Graf3x/unifi-mcp/pkgs/container/unifi-mcp)
 [![license](https://img.shields.io/github/license/Graf3x/unifi-mcp)](LICENSE)
 
-Ask Claude about your UniFi network: who is connected, why the internet dropped last night, which switch port the
-printer is on, which access point is fighting for a channel. This is an MCP server for the UniFi Network API that runs
-next to your console, read-only unless you turn writes on.
+Ask Claude about your UniFi network and get a finished answer: who is on the guest network, which switch port the
+printer is on, whether the internet dropped last night, which access point is on a noisy channel. This MCP server runs
+on your network next to one UniFi Network console, and it only reads unless you turn writes on.
+
+- **Questions answered on the server.** Ten tools built around everyday questions do the reads and write up the result.
+  A step that fails is named in the answer, and an answer cut short says so and how to narrow the question
+  ([What you can ask](#what-you-can-ask)).
+- **Read-only by default.** With writes on, each change is shown to you whole on a form you accept or decline, and the
+  model cannot approve it for you. A client that cannot show the form is refused writes unless you allow the
+  [confirm fallback](#writes).
+- **Credentials stay out of the chat.** Wi-Fi passphrases, per-network keys and hotspot voucher codes the console sends
+  back become `[redacted]` before Claude sees them, unless you choose to show voucher codes. The API key is never
+  logged or returned ([Safety](#safety)).
+- **Pinned to your console.** TLS to the console is pinned to its certificate or public key, or checked against a
+  trusted CA, and there is no way to turn the check off ([Safety](#safety)).
+- **Claude on the web and phone, with no open ports.** Add it as a custom connector in claude.ai, Claude Desktop or the
+  phone apps. A Cloudflare tunnel that dials out carries the traffic, and you sign in with a one-time code from the
+  server's log or a Google account you allow ([Setup](#setup)).
+- **Gentle on the console.** Reads from its internal API go one at a time, at most 30 a minute after a burst of 20, and
+  an identical read within 10 seconds comes from cache. One composite answer makes at most 100 requests and reads at
+  most 32 MB ([FAQ](#faq)).
+- **A short tool list.** All 73 operations of the official API are generated from its OpenAPI document. The 41 reads
+  share one tool, so Claude sees 15 tools, or 47 with writes on ([Tools](#tools)).
 
 It is built with .NET 10 and the official `ModelContextProtocol` SDK, from the UniFi Network API's OpenAPI document
-(v11.0.97, in `openapi/`). Add it to Claude (claude.ai, Claude Desktop, the phone apps) as a custom connector, or to
-Claude Code directly. You sign in with a one-time code from the server's log or with your Google account, and clients
-that send a fixed header can use an access token instead.
+(v11.0.97, in `openapi/`). Claude Code can also connect directly, on the same machine, over your tailnet or across your
+LAN, and clients that send a fixed header can use an access token. Each release image must start healthy as a non-root
+user on a read-only filesystem, on amd64 and arm64, before any tag points at it.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/setup-page-dark.png">
