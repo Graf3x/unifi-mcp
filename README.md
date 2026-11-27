@@ -578,6 +578,8 @@ restart to make the server read-only.
 ## Settings reference
 
 All settings come from the environment (`.env` with Docker Compose). After changing one, run `docker compose up -d`.
+At startup the server logs a warning, by name only and with the closest setting as a suggestion, for any `UNIFI_*` or
+`MCP_*` variable it does not read (a misspelt `MCP_SETUP_PAGE` would otherwise leave the setup page on).
 
 | Variable | Default | What it does |
 |---|---|---|

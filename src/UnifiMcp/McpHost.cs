@@ -27,8 +27,9 @@ public static class McpHost
 
     /// <param name="listenerOf">Tests only: replaces <see cref="Listeners.Of"/>, because a TestServer has no endpoint.</param>
     /// <param name="google">Tests only: the Google OIDC backchannel (discovery, JWKS, token endpoint).</param>
+    /// <param name="environmentNames">The process's environment variable names (never values), to warn about likely typos. Null checks nothing.</param>
     public static WebApplication Build(Settings settings, HttpMessageHandler? unifi = null, Action<WebApplicationBuilder>? configure = null,
-        Func<HttpContext, Listener>? listenerOf = null, HttpMessageHandler? google = null)
+        Func<HttpContext, Listener>? listenerOf = null, HttpMessageHandler? google = null, IEnumerable<string>? environmentNames = null)
     {
         // First, so a name in UNIFI_WRITE_TOOLS that is not a write tool stops startup before anything is built.
         var catalog = OpenApiCatalog.Load();
@@ -130,6 +131,7 @@ public static class McpHost
         SetupPage.Map(app);
 
         var total = 1 + writes.Count + CountTools(typeof(GuideTools)) + CountTools(typeof(FaqTools)) + CountTools(typeof(DiagnosticTools));
+        var unknownNames = Settings.UnknownNameWarnings(environmentNames ?? []);
         app.Lifetime.ApplicationStarted.Register(() =>
         {
             var claims = app.Services.GetService<SocketClaims>();
@@ -137,6 +139,9 @@ public static class McpHost
             app.Logger.LogInformation("{Summary}", StartupSummary(settings, total, connector));
             if (settings.WriteTools is not null && !settings.AllowWrites)
                 app.Logger.LogInformation("UNIFI_WRITE_TOOLS has no effect while UNIFI_ALLOW_WRITES is not true: no write tools are registered.");
+            // A misspelt setting is otherwise ignored without a word; names only, never values.
+            foreach (var warning in unknownNames)
+                app.Logger.LogWarning("{Warning}", warning);
             if (settings.SetupPage)
                 app.Logger.LogWarning("Setup page: {Link} (opens the sign-in code and checks; the key changes on each start)",
                     SetupPage.Link(settings, app.Services.GetRequiredService<SetupKey>()));
