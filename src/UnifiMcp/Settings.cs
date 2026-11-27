@@ -37,6 +37,11 @@ public sealed partial record Settings
     public string AllowedLoginsFile { get; init; } = "/config/allowed-logins";
     public string? AllowedLoginsValue { get; init; }
     public bool AllowWrites { get; init; }
+    /// <summary>
+    /// UNIFI_WRITE_TOOLS: the only write tools to register, by exact tool name, as the owner wrote them. Null (unset or
+    /// blank) means every write tool. The names are checked against the catalog when the host is built (<see cref="McpHost.EnabledWrites"/>).
+    /// </summary>
+    public IReadOnlyList<string>? WriteTools { get; init; }
     /// <summary>UNIFI_REVEAL_SECRETS=voucher-codes: hotspot voucher codes reach the client. Off by default; see <see cref="Redaction"/>.</summary>
     public bool RevealVoucherCodes { get; init; }
     /// <summary>
@@ -130,6 +135,8 @@ public sealed partial record Settings
         // A name this server does not know must not be guessed at: it could be read as wider than meant.
         if (reveal.FirstOrDefault(r => r != "voucher-codes") is { } unknown)
             throw new ArgumentException($"UNIFI_REVEAL_SECRETS takes only voucher-codes, not '{unknown}'. Wi-Fi passphrases and keys are never shown.");
+        // Only parsed here: the names are checked against the catalog when the host is built.
+        var writeTools = (env("UNIFI_WRITE_TOOLS") ?? "").Split([',', ' ', '\t', '\n', '\r'], StringSplitOptions.RemoveEmptyEntries);
         var lanToken = Blank(env("MCP_LAN_ACCESS_TOKEN"));
         int? lanPort = null;
         if (lanListen is not null)
@@ -161,6 +168,7 @@ public sealed partial record Settings
             AllowedLoginsFile = Blank(env("MCP_ALLOWED_LOGINS_FILE")) ?? d.AllowedLoginsFile,
             AllowedLoginsValue = Blank(env("MCP_ALLOWED_LOGINS")),
             AllowWrites = env("UNIFI_ALLOW_WRITES") == "true", // only the literal: a typo must leave writes off
+            WriteTools = writeTools.Length == 0 ? null : writeTools,
             RevealVoucherCodes = reveal.Contains("voucher-codes"),
             AllowConfirmFallback = env("UNIFI_ALLOW_CONFIRM_FALLBACK") == "true", // likewise: a typo leaves it off
             Listen = Blank(env("MCP_LISTEN")) ?? d.Listen,
@@ -231,7 +239,7 @@ public sealed partial record Settings
     private bool PrintMembers(System.Text.StringBuilder sb)
     {
         sb.Append($"BaseUrl = {BaseUrl}, Site = {Site}, ApiKeyFile = {ApiKeyFile}, CertPinFile = {CertPinFile}, ")
-          .Append($"AllowedLoginsFile = {AllowedLoginsFile}, AllowWrites = {AllowWrites}, AllowConfirmFallback = {AllowConfirmFallback}, RevealVoucherCodes = {RevealVoucherCodes}, Listen = {Listen}, ")
+          .Append($"AllowedLoginsFile = {AllowedLoginsFile}, AllowWrites = {AllowWrites}, WriteTools = {(WriteTools is null ? "(all)" : string.Join(",", WriteTools))}, AllowConfirmFallback = {AllowConfirmFallback}, RevealVoucherCodes = {RevealVoucherCodes}, Listen = {Listen}, ")
           .Append($"AllowLoopbackTcp = {AllowLoopbackTcp}, ApiKeyValue = {Mask(ApiKeyValue)}, PublicListen = {PublicListen}, ")
           .Append($"PublicBaseUrl = {PublicBaseUrl}, GoogleClientId = {GoogleClientId}, GoogleClientSecret = {Mask(GoogleClientSecret)}, ")
           .Append($"GoogleAuthority = {GoogleAuthority}, AllowedGoogleEmailsFile = {AllowedGoogleEmailsFile}, ")

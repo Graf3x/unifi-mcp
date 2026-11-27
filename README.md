@@ -85,7 +85,7 @@ Anything else the API offers, Claude finds with `search_operations` and runs wit
   asks you to approve it. A client that can show a confirmation form (MCP 2026-07-28 elicitation, as Claude Code does)
   shows you the whole change with Accept or Decline, and the model cannot approve it for you. A change too big to show
   whole is refused. Any other client is refused every write, unless you turn on the confirm fallback (see
-  [Writes](#writes)).
+  [Writes](#writes)). `UNIFI_WRITE_TOOLS` can narrow the write tools to the few you name.
 - TLS to the console is pinned to a SHA-256 fingerprint of its certificate or public key, or, with `UNIFI_CERT_TRUST=ca`,
   checked against a trusted CA. There is no default pin and no way to turn verification off.
 - The API key comes from the `UNIFI_API_KEY` environment variable, falling back to `/config/unifi-api-key` only when the
@@ -565,6 +565,13 @@ Know what that means: the model sets `confirm` itself, so on that client the mod
 checks that you saw the preview or said yes. Turn it on only if you trust the model, and what it reads, with your network.
 Clients that can show the form still get it, and ignore `confirm`.
 
+To allow only some writes, list their tool names in `UNIFI_WRITE_TOOLS`, separated by commas or spaces, for example
+`UNIFI_WRITE_TOOLS=create_dns_policy,update_dns_policy,delete_dns_policy`. Only those are listed; the others do not exist
+for the client and cannot be called. Names are exact and case-sensitive, with no wildcards. A name that is not a write tool
+stops the server at startup, and the error lists the write tools (`search_operations` shows them too, with what each does).
+Leave it empty for every write tool. It does nothing while `UNIFI_ALLOW_WRITES` is off, but the names are still checked,
+so a typo shows before you turn writes on. `getting_started` tells the model how many write tools you allowed.
+
 The audit log says how each change was approved, or why it was refused. Set `UNIFI_ALLOW_WRITES` back to `false` and
 restart to make the server read-only.
 
@@ -580,6 +587,7 @@ All settings come from the environment (`.env` with Docker Compose). After chang
 | `UNIFI_CERT_SHA256` | none | Pinned fingerprints of the console's public key or certificate, comma separated. |
 | `UNIFI_CERT_TRUST` | `pin` | `ca` checks a CA-issued certificate instead of a pin. |
 | `UNIFI_ALLOW_WRITES` | `false` | Exactly `true` lists the write tools; see [Writes](#writes). |
+| `UNIFI_WRITE_TOOLS` | none (all) | With writes on, only these write tools, by exact name, comma or space separated; see [Writes](#writes). A name that is not a write tool stops the server. |
 | `UNIFI_REVEAL_SECRETS` | none | `voucher-codes` shows hotspot voucher codes in answers; see [Safety](#safety). Any other value stops the server. |
 | `UNIFI_ALLOW_CONFIRM_FALLBACK` | `false` | Exactly `true` lets a client that cannot show the confirmation form write with `confirm`, so the model approves its own writes there; see [Writes](#writes). |
 | `MCP_PUBLIC_BASE_URL` | none | The connector's public origin, e.g. `https://unifi.example.com`. |

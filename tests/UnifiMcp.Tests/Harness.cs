@@ -65,7 +65,8 @@ public sealed class Harness : IAsyncDisposable
     /// <summary>Every log line the host writes, formatted; the audit category is captured down to Debug.</summary>
     public LogCapture Logs { get; } = new();
 
-    public static Settings NewSettings(string dir, bool writes = false, bool key = true, bool pin = true, bool confirmFallback = false)
+    public static Settings NewSettings(string dir, bool writes = false, bool key = true, bool pin = true, bool confirmFallback = false,
+        IReadOnlyList<string>? writeTools = null)
     {
         if (key) File.WriteAllText(Path.Combine(dir, "key"), ApiKey + "\n");
         if (pin) File.WriteAllText(Path.Combine(dir, "pin"), Pin);
@@ -77,17 +78,20 @@ public sealed class Harness : IAsyncDisposable
             AllowedLoginsFile = Path.Combine(dir, "logins"),
             AllowWrites = writes,
             AllowConfirmFallback = confirmFallback,
+            WriteTools = writeTools,
             Listen = "http://127.0.0.1:0",
         };
     }
 
     /// <param name="configure">Runs on the builder after the harness's own setup (e.g. a fake TimeProvider).</param>
     /// <param name="confirmFallback">UNIFI_ALLOW_CONFIRM_FALLBACK: a client that cannot show a form may approve with confirm.</param>
+    /// <param name="writeTools">UNIFI_WRITE_TOOLS: the only write tools to register; null registers them all.</param>
     public static async Task<Harness> StartAsync(bool writes = false, bool key = true, bool pin = true, string? login = Login,
-        Func<HttpContext, Listener>? listenerOf = null, Action<WebApplicationBuilder>? configure = null, bool confirmFallback = false)
+        Func<HttpContext, Listener>? listenerOf = null, Action<WebApplicationBuilder>? configure = null, bool confirmFallback = false,
+        IReadOnlyList<string>? writeTools = null)
     {
         var h = new Harness();
-        h.App = McpHost.Build(NewSettings(h.Dir, writes, key, pin, confirmFallback), h.Unifi, b =>
+        h.App = McpHost.Build(NewSettings(h.Dir, writes, key, pin, confirmFallback, writeTools), h.Unifi, b =>
         {
             b.WebHost.UseTestServer();
             b.Logging.AddProvider(h.Logs);
