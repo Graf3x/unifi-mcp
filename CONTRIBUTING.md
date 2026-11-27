@@ -73,6 +73,10 @@ follow [guide 1](README.md#guide-1-quick-local-setup) in the README.
 - **Checksums:** `deploy/SHA256SUMS` covers `src/UnifiMcp/`. If you change files there, regenerate it from the repo root:
   `sha256sum -b $(git ls-files src/UnifiMcp | LC_ALL=C sort) > deploy/SHA256SUMS`. If you can't, say so in the pull
   request and the maintainer will.
+- **Dependabot:** a Dependabot pull request that touches `src/UnifiMcp/` fails CI until `deploy/SHA256SUMS` is
+  regenerated. Check out its branch, run the command in the header of `.github/dependabot.yml` (it hashes the files as
+  git stores them, so a Windows checkout gives the same sums), then commit and push. Merge a .NET image update before
+  the `dotnet-runtime` package update that needs it.
 - **Commits:** short imperative subject with a type prefix, e.g. `fix(diagnostics): ...` or `docs: ...`.
 
 ## Pull requests
