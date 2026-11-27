@@ -13,7 +13,8 @@ follow [Semantic Versioning](https://semver.org/).
   tool is on, as before. `getting_started` says when the owner limited them.
 - A misspelt `UNIFI_*` or `MCP_*` environment variable is no longer ignored without a word: startup logs a warning
   naming it (never its value) and, when one is close, the setting it probably meant. The name is checked in any case,
-  since on Linux `mcp_setup_page` is never read.
+  since on Linux `mcp_setup_page` is never read. When the typo is what stops startup (a misspelt `MCP_LAN_ACCESS_TOKEN`
+  makes `MCP_LAN_LISTEN` refuse to start), the warning is printed next to the error.
 
 ### Changed
 

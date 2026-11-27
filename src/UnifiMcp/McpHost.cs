@@ -186,6 +186,31 @@ public static class McpHost
     /// The names are checked even with writes off, so a typo shows before writes are turned on.
     /// </summary>
     /// <exception cref="ArgumentException">A name in UNIFI_WRITE_TOOLS is not a write tool of the catalog.</exception>
+    /// <summary>
+    /// Reads the settings, builds the host and runs it until shutdown. A misspelt setting is often what stops startup (a
+    /// typo in MCP_LAN_ACCESS_TOKEN makes MCP_LAN_LISTEN refuse to start), and the started host's log never comes then, so
+    /// on a startup error the unknown-name warnings go to <paramref name="stderr"/> beside it. Names only, never values.
+    /// </summary>
+    public static async Task RunAsync(Func<string, string?> env, IEnumerable<string> environmentNames, TextWriter stderr)
+    {
+        var names = environmentNames.ToList();
+        WebApplication? app = null;
+        try
+        {
+            app = Build(Settings.FromEnvironment(env), environmentNames: names);
+            await app.StartAsync();
+        }
+        catch
+        {
+            foreach (var warning in Settings.UnknownNameWarnings(names))
+                await stderr.WriteLineAsync(warning);
+            if (app is not null) await app.DisposeAsync();
+            throw;
+        }
+        await using (app)
+            await app.WaitForShutdownAsync();
+    }
+
     public static IReadOnlyList<ApiOperation> EnabledWrites(Settings settings, OpenApiCatalog catalog)
     {
         var all = catalog.Operations.Where(o => o.IsWrite).ToList();

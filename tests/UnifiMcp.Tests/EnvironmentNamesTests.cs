@@ -91,6 +91,41 @@ public sealed partial class EnvironmentNamesTests
     }
 
     [Fact]
+    public async Task A_typo_that_stops_startup_is_still_named_next_to_the_error()
+    {
+        // The misspelt token is why MCP_LAN_LISTEN refuses to start: the suggestion matters most exactly here.
+        const string secret = "0123456789abcdef0123456789abcdef-never-printed";
+        var environment = new Dictionary<string, string>
+        {
+            ["MCP_LAN_LISTEN"] = "http://0.0.0.0:7420",
+            ["MCP_LAN_ACESS_TOKEN"] = secret,
+        };
+        var stderr = new StringWriter();
+        await Assert.ThrowsAsync<ArgumentException>(() => McpHost.RunAsync(n => environment.GetValueOrDefault(n), environment.Keys, stderr));
+        Assert.Contains("MCP_LAN_ACESS_TOKEN", stderr.ToString());
+        Assert.Contains("Did you mean MCP_LAN_ACCESS_TOKEN?", stderr.ToString());
+        Assert.DoesNotContain(secret, stderr.ToString());
+    }
+
+    [Fact]
+    public async Task A_bad_write_tool_name_that_stops_startup_still_shows_the_typo_warnings()
+    {
+        var environment = new Dictionary<string, string> { ["UNIFI_WRITE_TOOLS"] = "no_such_tool", ["UNIFI_ALLOW_WRITE"] = "true" };
+        var stderr = new StringWriter();
+        await Assert.ThrowsAsync<ArgumentException>(() => McpHost.RunAsync(n => environment.GetValueOrDefault(n), environment.Keys, stderr));
+        Assert.Contains("Did you mean UNIFI_ALLOW_WRITES?", stderr.ToString());
+    }
+
+    [Fact]
+    public async Task A_startup_error_with_no_unknown_names_prints_nothing_extra()
+    {
+        var environment = new Dictionary<string, string> { ["MCP_LAN_LISTEN"] = "http://0.0.0.0:7420" };
+        var stderr = new StringWriter();
+        await Assert.ThrowsAsync<ArgumentException>(() => McpHost.RunAsync(n => environment.GetValueOrDefault(n), environment.Keys, stderr));
+        Assert.Equal("", stderr.ToString());
+    }
+
+    [Fact]
     public async Task Without_environment_names_the_host_checks_nothing()
     {
         var logs = new LogCapture();
