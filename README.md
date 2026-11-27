@@ -568,12 +568,55 @@ Clients that can show the form still get it, and ignore `confirm`.
 To allow only some writes, list their tool names in `UNIFI_WRITE_TOOLS`, separated by commas or spaces, for example
 `UNIFI_WRITE_TOOLS=create_dns_policy,update_dns_policy,delete_dns_policy`. Only those are listed; the others do not exist
 for the client and cannot be called. Names are exact and case-sensitive, with no wildcards. A name that is not a write tool
-stops the server at startup, and the error lists the write tools (`search_operations` shows them too, with what each does).
-Leave it empty for every write tool. It does nothing while `UNIFI_ALLOW_WRITES` is off, but the names are still checked,
-so a typo shows before you turn writes on. `getting_started` tells the model how many write tools you allowed.
+stops the server at startup, and the error lists the write tools ([below](#write-tools), and `search_operations` shows
+them too). Leave it empty for every write tool. It does nothing while `UNIFI_ALLOW_WRITES` is off, but the names are
+still checked, so a typo shows before you turn writes on. `getting_started` tells the model how many write tools you allowed.
 
 The audit log says how each change was approved, or why it was refused. Set `UNIFI_ALLOW_WRITES` back to `false` and
 restart to make the server read-only.
+
+### Write tools
+
+These are the names `UNIFI_WRITE_TOOLS` takes. "Deletes" marks the ones that remove something from the console.
+
+<!-- write-tools:start -->
+
+| Tool | Category | What it does | Deletes |
+|---|---|---|---|
+| `create_acl_rule` | Access Control (ACL Rules) | Create ACL Rule | no |
+| `delete_acl_rule` | Access Control (ACL Rules) | Delete ACL Rule | yes |
+| `update_acl_rule` | Access Control (ACL Rules) | Update ACL Rule | no |
+| `update_acl_rule_ordering` | Access Control (ACL Rules) | Reorder User-Defined ACL Rules | no |
+| `execute_connected_client_action` | Clients | Execute Client Action | no |
+| `create_dns_policy` | DNS Policies | Create DNS Policy | no |
+| `delete_dns_policy` | DNS Policies | Delete DNS Policy | yes |
+| `update_dns_policy` | DNS Policies | Update DNS Policy | no |
+| `create_firewall_policy` | Firewall | Create Firewall Policy | no |
+| `create_firewall_zone` | Firewall | Create Custom Firewall Zone | no |
+| `delete_firewall_policy` | Firewall | Delete Firewall Policy | yes |
+| `delete_firewall_zone` | Firewall | Delete Custom Firewall Zone | yes |
+| `patch_firewall_policy` | Firewall | Patch Firewall Policy | no |
+| `update_firewall_policy` | Firewall | Update Firewall Policy | no |
+| `update_firewall_policy_ordering` | Firewall | Reorder User-Defined Firewall Policies | no |
+| `update_firewall_zone` | Firewall | Update Firewall Zone | no |
+| `create_vouchers` | Hotspot | Generate Vouchers | no |
+| `delete_voucher` | Hotspot | Delete Voucher | yes |
+| `delete_vouchers` | Hotspot | Delete Vouchers | yes |
+| `create_network` | Networks | Create Network | no |
+| `delete_network` | Networks | Delete Network | yes |
+| `update_network` | Networks | Update Network | no |
+| `create_traffic_matching_list` | Traffic Matching Lists | Create Traffic Matching List | no |
+| `delete_traffic_matching_list` | Traffic Matching Lists | Delete Traffic Matching List | yes |
+| `update_traffic_matching_list` | Traffic Matching Lists | Update Traffic Matching List | no |
+| `adopt_device` | UniFi Devices | Adopt Devices | no |
+| `execute_adopted_device_action` | UniFi Devices | Execute Adopted Device Action | no |
+| `execute_port_action` | UniFi Devices | Execute Port Action | no |
+| `remove_device` | UniFi Devices | Remove (Unadopt) Device | yes |
+| `create_wifi_broadcast` | WiFi Broadcasts | Create Wifi Broadcast | no |
+| `delete_wifi_broadcast` | WiFi Broadcasts | Delete Wifi Broadcast | yes |
+| `update_wifi_broadcast` | WiFi Broadcasts | Update Wifi Broadcast | no |
+
+<!-- write-tools:end -->
 
 ## Settings reference
 
