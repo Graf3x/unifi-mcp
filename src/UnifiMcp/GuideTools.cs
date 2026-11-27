@@ -96,7 +96,7 @@ public sealed class GuideTools(Settings settings, UnifiClient client, OpenApiCat
     private IReadOnlyList<ApiOperation>? _enabledWrites;
 
     [McpServerTool(Name = "describe_operation", Title = "Describe an API operation", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
-    [Description("[Start] Full detail for one operation: parameters plus complete request and response schemas with references inlined. Use before composing a write body.")]
+    [Description("[Start] Full detail for one operation: parameters plus the complete request body schema, and for a read its complete response schema, with references inlined. A write names the read that returns its result, or lists the result's fields. Use before composing a write body.")]
     public CallToolResult Describe([Description("Tool name, e.g. 'create_dns_policy'.")] string operation)
     {
         if (catalog.Find(operation ?? "") is not { } op)

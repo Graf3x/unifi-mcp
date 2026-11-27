@@ -263,6 +263,19 @@ public class GuideToolTests
     }
 
     [Fact]
+    public async Task Describe_of_the_biggest_operations_arrives_whole()
+    {
+        await using var h = await Harness.StartAsync();
+        foreach (var name in new[] { "get_firewall_policies", "create_wifi_broadcast" })
+        {
+            var (text, isError) = await h.CallAsync("describe_operation", new() { ["operation"] = name });
+            Assert.False(isError, text);
+            Assert.DoesNotContain("[truncated", text);
+            Assert.EndsWith("}", text);
+        }
+    }
+
+    [Fact]
     public async Task Describe_of_an_unknown_operation_is_a_clear_error()
     {
         await using var h = await Harness.StartAsync();
