@@ -15,6 +15,8 @@ public sealed partial class EnvironmentNamesTests
     [InlineData("UNIFI_STE", "UNIFI_SITE")]
     [InlineData("UNIFI_ALLOW_WRITE", "UNIFI_ALLOW_WRITES")]
     [InlineData("MCP_LAN_ACESS_TOKEN", "MCP_LAN_ACCESS_TOKEN")]
+    [InlineData("mcp_setup_pages", "MCP_SETUP_PAGE")] // a lower-case name is never read on Linux, so it is checked too
+    [InlineData("Unifi_Ste", "UNIFI_SITE")]
     public void A_typo_warns_with_the_closest_setting(string typo, string meant)
     {
         var warning = Assert.Single(Settings.UnknownNameWarnings([typo]));
@@ -34,6 +36,15 @@ public sealed partial class EnvironmentNamesTests
     [Fact]
     public void Known_names_do_not_warn() =>
         Assert.Empty(Settings.UnknownNameWarnings([.. Settings.EnvironmentNames, .. Settings.OtherContainerNames]));
+
+    [Fact]
+    public void A_known_name_in_other_case_warns_only_where_it_is_not_read()
+    {
+        // Linux (the image) reads environment names case-sensitively: mcp_setup_page=off leaves the setup page on.
+        var warnings = Settings.UnknownNameWarnings(["mcp_setup_page"]);
+        if (OperatingSystem.IsWindows()) Assert.Empty(warnings);
+        else Assert.Contains("Did you mean MCP_SETUP_PAGE?", Assert.Single(warnings));
+    }
 
     [Fact]
     public void The_new_write_tools_setting_is_known() => Assert.Contains("UNIFI_WRITE_TOOLS", Settings.EnvironmentNames);
@@ -115,8 +126,7 @@ public sealed partial class EnvironmentNamesTests
             .ToHashSet();
         Assert.True(read.Count > 20, $"the scan found only {read.Count} names; has the way settings are read changed?");
         Assert.Empty(read.Except(Settings.EnvironmentNames));
-        // UNIFI_WRITE_TOOLS is read by the write-tools change that lands alongside this list.
-        Assert.Empty(Settings.EnvironmentNames.Except(read).Except(["UNIFI_WRITE_TOOLS"]));
+        Assert.Empty(Settings.EnvironmentNames.Except(read));
     }
 
     [Theory]

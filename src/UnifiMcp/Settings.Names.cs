@@ -44,7 +44,8 @@ public sealed partial record Settings
         var comparer = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
         var known = EnvironmentNames.Concat(OtherContainerNames).ToHashSet(comparer);
         return names
-            .Where(n => CheckedPrefixes.Any(p => n.StartsWith(p, StringComparison.Ordinal)) && !known.Contains(n))
+            // Any case: on Linux mcp_setup_page is never read, which is exactly the silent typo this catches.
+            .Where(n => CheckedPrefixes.Any(p => n.StartsWith(p, StringComparison.OrdinalIgnoreCase)) && !known.Contains(n))
             .Distinct(StringComparer.Ordinal)
             .Order(StringComparer.Ordinal)
             .Select(n => Closest(n) is { } meant

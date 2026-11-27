@@ -49,7 +49,8 @@ public static class McpHost
         // Reads share one tool; each write is its own destructive tool, listed only when writes are on (and, with
         // UNIFI_WRITE_TOOLS, only the ones named). Registered as services (which the MCP server collects) so they get the
         // host's client.
-        builder.Services.AddSingleton<McpServerTool>(sp => new ReadOperationTool(catalog, sp.GetRequiredService<UnifiClient>()));
+        builder.Services.AddSingleton<McpServerTool>(sp => new ReadOperationTool(catalog, sp.GetRequiredService<UnifiClient>(),
+            settings.AllowWrites, writes.Select(w => w.ToolName).ToHashSet(StringComparer.Ordinal)));
         foreach (var op in writes)
             builder.Services.AddSingleton<McpServerTool>(sp => new ApiTool(op, sp.GetRequiredService<UnifiClient>()));
         // The Google callback URL carries the authorization code and state in its query. Hosting logs every request URL at

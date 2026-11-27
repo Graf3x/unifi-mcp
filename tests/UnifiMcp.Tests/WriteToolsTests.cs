@@ -109,6 +109,28 @@ public class WriteToolsTests
     }
 
     [Fact]
+    public async Task Call_read_operation_says_a_write_left_off_the_list_is_disabled_rather_than_pointing_at_its_tool()
+    {
+        await using var h = await Harness.StartAsync(writes: true, writeTools: ["create_dns_policy"]);
+        h.Unifi.WithSite();
+        var (text, isError) = await h.CallAsync("call_read_operation", new() { ["operation"] = "delete_dns_policy" });
+        Assert.True(isError);
+        Assert.Contains("UNIFI_WRITE_TOOLS", text);
+        Assert.DoesNotContain("listed only when writes are on", text);
+        Assert.DoesNotContain(h.Unifi.Requests, r => r.Method != "GET");
+    }
+
+    [Fact]
+    public async Task Call_read_operation_points_a_listed_write_at_its_own_tool()
+    {
+        await using var h = await Harness.StartAsync(writes: true, writeTools: ["create_dns_policy"]);
+        h.Unifi.WithSite();
+        var (text, isError) = await h.CallAsync("call_read_operation", new() { ["operation"] = "create_dns_policy" });
+        Assert.True(isError);
+        Assert.Contains("Use its own tool, create_dns_policy", text);
+    }
+
+    [Fact]
     public async Task Getting_started_says_how_many_write_tools_are_on_and_that_the_owner_limited_them()
     {
         await using var h = await Harness.StartAsync(writes: true, writeTools: ["create_dns_policy", "delete_dns_policy"]);

@@ -10,8 +10,12 @@ namespace UnifiMcp;
 /// 30 to 50 of them. Writes keep a tool each (destructive, with the owner's approval), because one tool must never mix safe and
 /// unsafe methods. The operation names are an enum, so a known lookup needs no search first.
 /// </summary>
-public sealed class ReadOperationTool(OpenApiCatalog catalog, UnifiClient client) : McpServerTool
+/// <param name="writesOn">Whether UNIFI_ALLOW_WRITES is on, and <paramref name="enabledWrites"/> the write tools actually
+/// registered, so a refused write is pointed at its own tool only when that tool exists.</param>
+public sealed class ReadOperationTool(OpenApiCatalog catalog, UnifiClient client, bool writesOn = false, IReadOnlySet<string>? enabledWrites = null) : McpServerTool
 {
+    private readonly IReadOnlySet<string> enabledWrites = enabledWrites ?? new HashSet<string>();
+
     public const string ToolName = "call_read_operation";
 
     private readonly List<ApiOperation> _reads = catalog.Operations.Where(o => !o.IsWrite).ToList();
@@ -67,7 +71,9 @@ public sealed class ReadOperationTool(OpenApiCatalog catalog, UnifiClient client
         if (catalog.Find(name) is not { } op)
             return ToolText.Error($"No operation named '{name}'. Use search_operations to find one.");
         if (op.IsWrite)
-            return ToolText.Error($"{op.ToolName} changes the network, so it is not run here. Use its own tool, {op.ToolName}, which is listed only when writes are on and asks for the owner's approval.");
+            return ToolText.Error(writesOn && !enabledWrites.Contains(op.ToolName)
+                ? $"{op.ToolName} changes the network, so it is not run here, and it is disabled: the owner limited write tools with UNIFI_WRITE_TOOLS and left it out. Do not retry it; tell the owner if they need it."
+                : $"{op.ToolName} changes the network, so it is not run here. Use its own tool, {op.ToolName}, which is listed only when writes are on and asks for the owner's approval.");
 
         var args = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
         if (given.TryGetValue("arguments", out var a) && a.ValueKind == JsonValueKind.Object)
