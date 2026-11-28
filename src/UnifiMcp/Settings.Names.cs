@@ -4,23 +4,23 @@ namespace UnifiMcp;
 
 /// <summary>
 /// The environment names this server reads, so a misspelt one is reported instead of silently ignored: a typo in
-/// MCP_SETUP_PAGE would otherwise leave the setup page on. EnvironmentNamesTests checks this list against every name the
-/// code reads.
+/// MCP_SETUP_PAGE would otherwise leave the setup page on.
 /// </summary>
 public sealed partial record Settings
 {
-    /// <summary>Every name <see cref="FromEnvironment"/> reads. A new setting goes here too, or the test fails.</summary>
-    public static readonly IReadOnlySet<string> EnvironmentNames = new[]
+    /// <summary>
+    /// Every name <see cref="FromEnvironment"/> reads: the names it asks for when nothing is set. Every read is made whatever
+    /// the values (EnvironmentNamesTests checks a full environment asks for the same), so a new setting is known as soon as
+    /// it is read.
+    /// </summary>
+    public static IReadOnlySet<string> EnvironmentNames => KnownNames.Value;
+
+    private static readonly Lazy<FrozenSet<string>> KnownNames = new(() =>
     {
-        "UNIFI_URL", "UNIFI_SITE", "UNIFI_API_KEY", "UNIFI_API_KEY_FILE", "UNIFI_CERT_SHA256", "UNIFI_CERT_SHA256_FILE",
-        "UNIFI_CERT_TRUST", "UNIFI_ALLOW_WRITES", "UNIFI_WRITE_TOOLS", "UNIFI_REVEAL_SECRETS", "UNIFI_ALLOW_CONFIRM_FALLBACK",
-        "UNIFI_MCP_DATA_KEY",
-        "MCP_PUBLIC_BASE_URL", "MCP_SIGNIN", "MCP_ACCESS_TOKEN", "MCP_ALLOWED_LOGINS", "MCP_ALLOWED_LOGINS_FILE",
-        "MCP_ALLOWED_GOOGLE_EMAILS", "MCP_ALLOWED_GOOGLE_EMAILS_FILE", "MCP_LISTEN", "MCP_PUBLIC_LISTEN",
-        "MCP_ALLOW_LOOPBACK_TCP", "MCP_DATA_DIR", "MCP_SETUP_PAGE", "MCP_SETUP_LISTEN", "MCP_LAN_LISTEN",
-        "MCP_LAN_ACCESS_TOKEN",
-        "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET",
-    }.ToFrozenSet(StringComparer.Ordinal);
+        var read = new HashSet<string>(StringComparer.Ordinal);
+        FromEnvironment(name => { read.Add(name); return null; });
+        return read.ToFrozenSet(StringComparer.Ordinal);
+    });
 
     /// <summary>
     /// Names with our prefixes that belong to other containers, so they may sit in the same .env without a warning.
@@ -38,11 +38,11 @@ public sealed partial record Settings
     /// is within <see cref="MaxSuggestionDistance"/> edits. Takes names only, so no value can reach the log. Other prefixes
     /// (GOOGLE_, DOTNET_, PATH) are left alone: tools other than this server set them too.
     /// </summary>
-    public static IReadOnlyList<string> UnknownNameWarnings(IEnumerable<string> names)
+    /// <param name="nameCase">How the process's environment compares names, so a known name in other case warns only where
+    /// it is not read: case-sensitive on Linux (the image), ignoring case on Windows.</param>
+    public static IReadOnlyList<string> UnknownNameWarnings(IEnumerable<string> names, IEqualityComparer<string> nameCase)
     {
-        // GetEnvironmentVariable ignores case on Windows, so a name in other case is still read there.
-        var comparer = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
-        var known = EnvironmentNames.Concat(OtherContainerNames).ToHashSet(comparer);
+        var known = EnvironmentNames.Concat(OtherContainerNames).ToHashSet(nameCase);
         return names
             // Any case: on Linux mcp_setup_page is never read, which is exactly the silent typo this catches.
             .Where(n => CheckedPrefixes.Any(p => n.StartsWith(p, StringComparison.OrdinalIgnoreCase)) && !known.Contains(n))

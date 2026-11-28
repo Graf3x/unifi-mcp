@@ -79,7 +79,7 @@ public class HostTests
     public void Startup_summary_reports_not_configured_without_values()
     {
         var dir = Directory.CreateTempSubdirectory().FullName;
-        var text = McpHost.StartupSummary(Harness.NewSettings(dir, key: false, pin: false), 49);
+        var text = Harness.Summary(Harness.NewSettings(dir, key: false, pin: false), 49);
         Assert.Contains("not configured", text);
         Assert.Contains("writes off", text);
         Assert.Contains("49 tools", text);
@@ -89,7 +89,7 @@ public class HostTests
     public void Startup_summary_never_contains_the_key_or_pin()
     {
         var dir = Directory.CreateTempSubdirectory().FullName;
-        var text = McpHost.StartupSummary(Harness.NewSettings(dir), 49);
+        var text = Harness.Summary(Harness.NewSettings(dir), 49);
         Assert.Contains("configured", text);
         Assert.DoesNotContain(Harness.ApiKey, text);
         Assert.DoesNotContain(Harness.Pin, text);

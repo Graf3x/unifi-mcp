@@ -243,7 +243,7 @@ public class SettingsTests
     [Fact]
     public void Startup_summary_never_contains_connector_secrets()
     {
-        var summary = McpHost.StartupSummary(WithSecrets(), 5);
+        var summary = Harness.Summary(WithSecrets(), 5);
         Assert.DoesNotContain("SENTINEL", summary);
         Assert.Contains("connector not configured", summary);
     }

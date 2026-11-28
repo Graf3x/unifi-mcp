@@ -16,6 +16,17 @@ follow [Semantic Versioning](https://semver.org/).
   since on Linux `mcp_setup_page` is never read. When the typo is what stops startup (a misspelt `MCP_LAN_ACCESS_TOKEN`
   makes `MCP_LAN_LISTEN` refuse to start), the warning is printed next to the error.
 
+- The README lists every write tool by name in a table under Writes, for `UNIFI_WRITE_TOOLS`. A test fails when the
+  table no longer matches the API document, and prints the new one.
+
+### Fixed
+
+- `describe_operation` now fits under the answer limit for every operation. Twelve were cut off (the largest at 87,000
+  characters, now 26,000 at most). A write now names the read that returns its result instead of repeating that
+  schema, each variant shows only what it adds to the base, a schema used twice is shown once, and the JSON is compact.
+- Deep schemas no longer show "already shown above" for parts that were never shown: the `create_firewall_policy` body
+  lacked `applicationIds` and other traffic-filter fields, and the ACL rule list lacked `macAddresses`.
+
 ### Changed
 
 - The README opens with what the server does: finished answers, write approval, redaction, pinned TLS, the connector

@@ -65,6 +65,11 @@ public sealed class Harness : IAsyncDisposable
     /// <summary>Every log line the host writes, formatted; the audit category is captured down to Debug.</summary>
     public LogCapture Logs { get; } = new();
 
+    private static readonly OpenApiCatalog Catalog = OpenApiCatalog.Load();
+
+    /// <summary>The startup line for these settings, as the host would log it with this many tools.</summary>
+    public static string Summary(Settings settings, int tools) => McpHost.StartupSummary(settings, EnabledWrites.From(settings, Catalog), tools);
+
     public static Settings NewSettings(string dir, bool writes = false, bool key = true, bool pin = true, bool confirmFallback = false,
         IReadOnlyList<string>? writeTools = null)
     {

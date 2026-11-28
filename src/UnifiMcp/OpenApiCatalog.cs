@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
@@ -100,7 +101,10 @@ public sealed partial class OpenApiCatalog
         return sb.ToString();
     }
 
-    /// <summary>Full detail for one operation, with every schema reference inlined: what describe_operation returns.</summary>
+    /// <summary>
+    /// Full detail for one operation, with every schema reference inlined: what describe_operation returns. Compact JSON,
+    /// because indented, the firewall policy operations come to well over ToolText's cap.
+    /// </summary>
     public string Describe(ApiOperation op)
     {
         var raw = _paths[op.Path]![op.Method.Method.ToLowerInvariant()]!;
@@ -117,16 +121,75 @@ public sealed partial class OpenApiCatalog
                 ["name"] = p.Name, ["in"] = p.In, ["required"] = p.Required, ["schema"] = p.Schema.DeepClone(),
             }).ToArray()),
         };
-        if (raw["requestBody"]?["content"]?["application/json"]?["schema"] is { } body)
-            result["requestBody"] = Inline(body, [], 0);
-        foreach (var code in new[] { "200", "201", "204" })
-            if (raw["responses"]?[code]?["content"]?["application/json"]?["schema"] is { } resp)
-            {
-                result["response"] = Inline(resp, [], 0);
-                break;
-            }
-        return result.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+        var body = raw["requestBody"]?["content"]?["application/json"]?["schema"];
+        // A write's response is the same object its read returns; repeating it here pushed the big ones past the cap.
+        var response = op.IsWrite ? null : ResponseSchema(raw);
+        // Two passes: the first finds the schemas that appear more than once, the second shows each of those once, named.
+        var plan = new Shape([]);
+        Inline(body, plan, 0);
+        Inline(response, plan, 0);
+        var shape = new Shape(plan.Repeated());
+        if (body is not null) result["requestBody"] = Inline(body, shape, 0);
+        if (response is not null) result["response"] = Inline(response, shape, 0);
+        else if (op.IsWrite && ResponseSchema(raw) is { } written) result["response"] = WriteResponse(written);
+        var notes = new List<string>();
+        if (shape.HasVariants)
+            notes.Add("Set the discriminator property to one of the variant keys; each variant lists only the properties and "
+                      + "required fields it adds to the schema it sits in.");
+        if (shape.Share.Count > 0)
+            notes.Add("A schema used more than once is shown in full the first time, marked \"schema\": its name, and named after that.");
+        if (notes.Count > 0) result["notes"] = string.Join(" ", notes);
+        return result.ToJsonString(DescribeJson);
     }
+
+    // Not HTML, so quotes and + need no escaping; escaping them only costs room and reads worse.
+    private static readonly JsonSerializerOptions DescribeJson = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+
+    // A schema this small reads better repeated than named.
+    private const int ShareFrom = 200;
+
+    /// <summary>The state of one render: the references being expanded, and which schemas to show once and then name.</summary>
+    private sealed class Shape(HashSet<string> share)
+    {
+        public readonly HashSet<string> Expanding = [];
+        public readonly HashSet<string> Share = share;
+        public readonly HashSet<string> Shown = [];
+        public readonly Dictionary<string, (int Uses, int Size)> Seen = [];
+        public readonly HashSet<string> Cycled = [];
+        public bool HasVariants;
+
+        // A cycle names its ancestor, so that one needs its name on it too.
+        public HashSet<string> Repeated() =>
+            Seen.Where(s => s.Value.Uses > 1 && s.Value.Size >= ShareFrom).Select(s => s.Key).Concat(Cycled).ToHashSet();
+
+        public void Saw(string name, JsonNode? node)
+        {
+            var (uses, size) = Seen.GetValueOrDefault(name);
+            Seen[name] = (uses + 1, uses == 0 ? node?.ToJsonString(DescribeJson).Length ?? 0 : size);
+        }
+    }
+
+    private static JsonNode? ResponseSchema(JsonNode raw) =>
+        new[] { "200", "201", "204" }.Select(code => raw["responses"]?[code]?["content"]?["application/json"]?["schema"])
+            .FirstOrDefault(s => s is not null);
+
+    /// <summary>A write's response in one line: the read that returns the same object, or the object's top-level fields.</summary>
+    private string WriteResponse(JsonNode schema)
+    {
+        if (schema["$ref"] is { } r && ReadsByResponse.TryGetValue(RefName(r.GetValue<string>()), out var read))
+            return $"The resulting object, as {read} returns it; call describe_operation with \"{read}\" for its schema.";
+        var resolved = schema["$ref"] is { } s ? _schemas[RefName(s.GetValue<string>())] : schema;
+        var names = resolved?["properties"]?.AsObject().Select(p => p.Key).ToList() ?? [];
+        return names.Count > 0 ? $"An object with: {string.Join(", ", names)}." : $"A {resolved?["type"]?.GetValue<string>() ?? "value"}.";
+    }
+
+    private Dictionary<string, string> ReadsByResponse => _readsByResponse ??= Operations
+        .Where(o => !o.IsWrite)
+        .Select(o => (o.ToolName, Schema: ResponseSchema(_paths[o.Path]!["get"]!)?["$ref"]?.GetValue<string>()))
+        .Where(x => x.Schema is not null)
+        .GroupBy(x => RefName(x.Schema!))
+        .ToDictionary(g => g.Key, g => g.First().ToolName);
+    private Dictionary<string, string>? _readsByResponse;
 
     private ApiOperation Parse(HttpMethod method, string path, JsonObject op)
     {
@@ -136,7 +199,7 @@ public sealed partial class OpenApiCatalog
         foreach (var p in op["parameters"]?.AsArray() ?? [])
         {
             var name = p!["name"]!.GetValue<string>();
-            var schema = Inline(p["schema"], [], 0)!.AsObject();
+            var schema = Inline(p["schema"], new Shape([]), 0)!.AsObject();
             if (name == "siteId")
             {
                 schema = new JsonObject { ["type"] = "string", ["description"] = "Site UUID or site name. Omit for the configured default site." };
@@ -171,45 +234,144 @@ public sealed partial class OpenApiCatalog
         return $"JSON request body. {hint}Call describe_operation with \"{tool}\" for the full schema.";
     }
 
-    /// <summary>A copy with every <c>$ref</c> replaced by its schema; a schema already being expanded is named, not repeated.</summary>
-    private JsonNode? Inline(JsonNode? node, HashSet<string> expanding, int depth)
+    /// <summary>
+    /// A copy with every <c>$ref</c> replaced by its schema; a schema already being expanded is named, not repeated.
+    /// <paramref name="depth"/> counts references followed, not JSON nesting: counting nesting cut off deep variants
+    /// behind an "already shown" note that was not true.
+    /// </summary>
+    private JsonNode? Inline(JsonNode? node, Shape shape, int depth, string? named = null)
     {
         switch (node)
         {
             case JsonObject o when o["$ref"] is { } reference:
                 var name = RefName(reference.GetValue<string>());
-                if (depth >= MaxInlineDepth || !expanding.Add(name))
-                    return new JsonObject { ["description"] = $"(the '{name}' schema, already shown above)" };
-                var inlined = Inline(_schemas[name], expanding, depth + 1);
-                expanding.Remove(name);
+                if (shape.Expanding.Contains(name)) shape.Cycled.Add(name);
+                var stub = shape.Expanding.Contains(name) || shape.Shown.Contains(name) ? $"(the '{name}' schema, shown above)"
+                    : depth >= MaxInlineDepth ? $"(the '{name}' schema, nested too deep to show here)"
+                    : null;
+                var inlined = new JsonObject();
+                if (stub is null)
+                {
+                    shape.Expanding.Add(name);
+                    var full = Inline(_schemas[name], shape, depth + 1, name)!.AsObject();
+                    shape.Expanding.Remove(name);
+                    shape.Saw(name, full);
+                    if (shape.Share.Contains(name))
+                    {
+                        shape.Shown.Add(name);
+                        inlined["schema"] = name;
+                    }
+                    foreach (var (key, value) in full.ToList())
+                    {
+                        full.Remove(key);
+                        inlined[key] = value;
+                    }
+                }
+                // Keys beside the $ref, such as what null means for this property, belong to the property, so they win.
+                foreach (var (key, value) in o)
+                    if (key != "$ref") inlined[key] = value?.DeepClone();
+                if (stub is not null)
+                    inlined["description"] = inlined["description"] is { } own ? $"{own.GetValue<string>()} {stub}" : stub;
                 return inlined;
 
             case JsonObject o:
                 var copy = new JsonObject();
                 foreach (var (key, value) in o)
+                    if (key != "discriminator") copy[key] = Inline(value, shape, depth);
+                // After the base's own fields, since each variant only lists what it adds to them.
+                if (o["discriminator"] is { } discriminator)
                 {
-                    if (key == "discriminator")
-                    {
-                        copy["discriminator"] = value?["propertyName"]?.DeepClone();
-                        var variants = new JsonObject();
-                        foreach (var (variant, target) in value?["mapping"]?.AsObject() ?? [])
-                            variants[variant] = Inline(new JsonObject { ["$ref"] = target!.GetValue<string>() }, expanding, depth + 1);
-                        copy["variants"] = variants;
-                    }
-                    else
-                    {
-                        copy[key] = Inline(value, expanding, depth + 1);
-                    }
+                    copy["discriminator"] = discriminator["propertyName"]?.DeepClone();
+                    var variants = new JsonObject();
+                    foreach (var (variant, target) in discriminator["mapping"]?.AsObject() ?? [])
+                        variants[variant] = Variant(RefName(target!.GetValue<string>()), named, shape, depth);
+                    copy["variants"] = variants;
+                    shape.HasVariants = true;
                 }
                 return copy;
 
             case JsonArray a:
-                return new JsonArray(a.Select(n => Inline(n, expanding, depth + 1)).ToArray());
+                return new JsonArray(a.Select(n => Inline(n, shape, depth)).ToArray());
 
             default:
                 return node?.DeepClone();
         }
     }
+
+    /// <summary>
+    /// One discriminator variant, showing only what it adds to <paramref name="owner"/>, the schema whose variants these
+    /// are and which is already shown. Each variant's allOf names its base(s) and repeats their required fields; showing
+    /// all that again for every variant is what pushed the biggest operations past the cap.
+    /// </summary>
+    private JsonNode? Variant(string name, string? owner, Shape shape, int depth)
+    {
+        // Already shown in full elsewhere in this answer: the usual stub, which points at it.
+        if (owner is null || shape.Expanding.Contains(name) || shape.Shown.Contains(name) || depth >= MaxInlineDepth)
+            return Inline(new JsonObject { ["$ref"] = $"#/components/schemas/{name}" }, shape, depth);
+        var schema = _schemas[name]!.AsObject();
+        var baseProperties = _schemas[owner]!["properties"]?.AsObject();
+        var properties = new JsonObject();
+        var required = new List<string>();
+        var rest = new List<JsonNode?>();
+        var result = new JsonObject();
+        if (shape.Share.Contains(name))
+        {
+            result["schema"] = name;
+            shape.Shown.Add(name);
+        }
+        shape.Expanding.Add(name);
+
+        // allOf means every part's fields and required list apply; keep the ones the owner does not already show the same way.
+        void Take(JsonNode? part)
+        {
+            foreach (var (prop, sub) in part?["properties"]?.AsObject() ?? [])
+                if (!properties.ContainsKey(prop) && !JsonNode.DeepEquals(sub, baseProperties?[prop]))
+                    properties[prop] = Inline(sub, shape, depth + 1);
+            required.AddRange(Names(part?["required"]));
+        }
+
+        // A base's fields include the ones it takes through its own allOf.
+        var bases = new HashSet<string>();
+        void TakeBase(string baseName)
+        {
+            if (!bases.Add(baseName) || _schemas[baseName] is not { } b) return;
+            Take(b);
+            foreach (var part in b["allOf"]?.AsArray() ?? [])
+                if (part?["$ref"] is { } r) TakeBase(RefName(r.GetValue<string>()));
+                else Take(part);
+        }
+
+        if (schema["description"] is { } description) result["description"] = description.DeepClone();
+        Take(schema);
+        foreach (var part in schema["allOf"]?.AsArray() ?? [])
+        {
+            if (part?["$ref"] is not { } r) Take(part);
+            // The owner, or another schema this variant is also a variant of (the metadata ones list several).
+            else if (_schemas[RefName(r.GetValue<string>())] is { } other && MapsTo(other, name)) TakeBase(RefName(r.GetValue<string>()));
+            else rest.Add(part);
+        }
+        // Inlined after the properties, in the order the answer shows them, so a schema shown in full always comes before any
+        // "shown above" that points at it.
+        var restShown = new JsonArray(rest.Select(part => Inline(part, shape, depth + 1)).ToArray());
+        shape.Expanding.Remove(name);
+
+        var ownerRequired = Names(_schemas[owner]!["required"]);
+        var added = required.Distinct().Where(n => !ownerRequired.Contains(n)).ToList();
+        if (properties.Count > 0) result["properties"] = properties;
+        if (added.Count > 0) result["required"] = new JsonArray(added.Select(n => (JsonNode)n).ToArray());
+        if (restShown.Count > 0) result["allOf"] = restShown;
+        return result;
+    }
+
+    private static bool MapsTo(JsonNode schema, string variant) =>
+        schema["discriminator"]?["mapping"]?.AsObject().Any(m => RefName(m.Value!.GetValue<string>()) == variant) == true;
+
+    private static HashSet<string> Names(JsonNode? node) => node switch
+    {
+        JsonObject o => o.Select(p => p.Key).ToHashSet(),
+        JsonArray a => a.Select(n => n!.GetValue<string>()).ToHashSet(),
+        _ => [],
+    };
 
     private static string RefName(string reference) => reference[(reference.LastIndexOf('/') + 1)..];
 
