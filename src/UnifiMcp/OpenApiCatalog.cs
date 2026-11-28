@@ -305,15 +305,20 @@ public sealed partial class OpenApiCatalog
     /// </summary>
     private JsonNode? Variant(string name, string? owner, Shape shape, int depth)
     {
-        if (owner is null || shape.Expanding.Contains(name) || depth >= MaxInlineDepth)
+        // Already shown in full elsewhere in this answer: the usual stub, which points at it.
+        if (owner is null || shape.Expanding.Contains(name) || shape.Shown.Contains(name) || depth >= MaxInlineDepth)
             return Inline(new JsonObject { ["$ref"] = $"#/components/schemas/{name}" }, shape, depth);
         var schema = _schemas[name]!.AsObject();
         var baseProperties = _schemas[owner]!["properties"]?.AsObject();
         var properties = new JsonObject();
         var required = new List<string>();
-        var rest = new JsonArray();
+        var rest = new List<JsonNode?>();
         var result = new JsonObject();
-        if (shape.Share.Contains(name)) result["schema"] = name;
+        if (shape.Share.Contains(name))
+        {
+            result["schema"] = name;
+            shape.Shown.Add(name);
+        }
         shape.Expanding.Add(name);
 
         // allOf means every part's fields and required list apply; keep the ones the owner does not already show the same way.
@@ -325,22 +330,36 @@ public sealed partial class OpenApiCatalog
             required.AddRange(Names(part?["required"]));
         }
 
+        // A base's fields include the ones it takes through its own allOf.
+        var bases = new HashSet<string>();
+        void TakeBase(string baseName)
+        {
+            if (!bases.Add(baseName) || _schemas[baseName] is not { } b) return;
+            Take(b);
+            foreach (var part in b["allOf"]?.AsArray() ?? [])
+                if (part?["$ref"] is { } r) TakeBase(RefName(r.GetValue<string>()));
+                else Take(part);
+        }
+
         if (schema["description"] is { } description) result["description"] = description.DeepClone();
         Take(schema);
         foreach (var part in schema["allOf"]?.AsArray() ?? [])
         {
             if (part?["$ref"] is not { } r) Take(part);
             // The owner, or another schema this variant is also a variant of (the metadata ones list several).
-            else if (_schemas[RefName(r.GetValue<string>())] is { } other && MapsTo(other, name)) Take(other);
-            else rest.Add(Inline(part, shape, depth + 1));
+            else if (_schemas[RefName(r.GetValue<string>())] is { } other && MapsTo(other, name)) TakeBase(RefName(r.GetValue<string>()));
+            else rest.Add(part);
         }
+        // Inlined after the properties, in the order the answer shows them, so a schema shown in full always comes before any
+        // "shown above" that points at it.
+        var restShown = new JsonArray(rest.Select(part => Inline(part, shape, depth + 1)).ToArray());
         shape.Expanding.Remove(name);
 
         var ownerRequired = Names(_schemas[owner]!["required"]);
         var added = required.Distinct().Where(n => !ownerRequired.Contains(n)).ToList();
         if (properties.Count > 0) result["properties"] = properties;
         if (added.Count > 0) result["required"] = new JsonArray(added.Select(n => (JsonNode)n).ToArray());
-        if (rest.Count > 0) result["allOf"] = rest;
+        if (restShown.Count > 0) result["allOf"] = restShown;
         return result;
     }
 

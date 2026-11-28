@@ -171,6 +171,7 @@ public class CatalogTests
     {
         var names = new HashSet<string>();
         var seen = new HashSet<string>();
+        var bases = new HashSet<string>();
         static string RefName(JsonNode r) => r.GetValue<string>()[(r.GetValue<string>().LastIndexOf('/') + 1)..];
         static JsonNode Named(string name) => Raw["components"]!["schemas"]![name]!;
         static bool IsBaseOf(JsonNode schema, string variant) =>
@@ -194,8 +195,7 @@ public class CatalogTests
                                 Walk(new JsonObject { ["$ref"] = target!.GetValue<string>() }, null);
                         else if (key == "allOf" && current is not null)
                             foreach (var part in value!.AsArray())
-                                if (part?["$ref"] is { } b && IsBaseOf(Named(RefName(b)), current))
-                                    Walk(new JsonObject { ["properties"] = Named(RefName(b))["properties"]?.DeepClone() ?? new JsonObject() }, null);
+                                if (part?["$ref"] is { } b && IsBaseOf(Named(RefName(b)), current)) WalkBase(RefName(b));
                                 else Walk(part, null);
                         else if (key is not ("example" or "required" or "enum"))
                             Walk(value, null);
@@ -206,6 +206,16 @@ public class CatalogTests
                     break;
             }
         }
+        // A base's fields, including what it takes through its own allOf, but not its variants: those are other types.
+        void WalkBase(string name)
+        {
+            if (!bases.Add(name)) return;
+            Walk(new JsonObject { ["properties"] = Named(name)["properties"]?.DeepClone() ?? new JsonObject() }, null);
+            foreach (var part in Named(name)["allOf"]?.AsArray() ?? [])
+                if (part?["$ref"] is { } r) WalkBase(RefName(r));
+                else Walk(part, null);
+        }
+
         Walk(schema, null);
         return names;
     }

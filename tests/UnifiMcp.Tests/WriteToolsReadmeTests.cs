@@ -24,8 +24,8 @@ public class WriteToolsReadmeTests
         return sb.ToString().TrimEnd('\n');
     }
 
-    // A pipe in a summary would end the cell early.
-    private static string Cell(string text) => text.Replace("|", "\\|").Trim();
+    // A pipe in a summary would end the cell early, and a line break the row.
+    private static string Cell(string text) => text.ReplaceLineEndings(" ").Replace("|", "\\|").Trim();
 
     [Fact]
     public void The_readme_lists_every_write_tool_as_generated()
