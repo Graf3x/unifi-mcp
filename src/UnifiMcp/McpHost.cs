@@ -27,9 +27,10 @@ public static class McpHost
 
     /// <param name="listenerOf">Tests only: replaces <see cref="Listeners.Of"/>, because a TestServer has no endpoint.</param>
     /// <param name="google">Tests only: the Google OIDC backchannel (discovery, JWKS, token endpoint).</param>
-    /// <param name="environmentNames">The process's environment variable names (never values), to warn about likely typos. Null checks nothing.</param>
+    /// <param name="unknownNameWarnings">The <see cref="Settings.UnknownNameWarnings"/> for the process's environment, logged once
+    /// the host has started. Null logs none.</param>
     public static WebApplication Build(Settings settings, HttpMessageHandler? unifi = null, Action<WebApplicationBuilder>? configure = null,
-        Func<HttpContext, Listener>? listenerOf = null, HttpMessageHandler? google = null, IEnumerable<string>? environmentNames = null)
+        Func<HttpContext, Listener>? listenerOf = null, HttpMessageHandler? google = null, IReadOnlyList<string>? unknownNameWarnings = null)
     {
         // First, so a name in UNIFI_WRITE_TOOLS that is not a write tool stops startup before anything is built.
         var catalog = OpenApiCatalog.Load();
@@ -132,7 +133,6 @@ public static class McpHost
         SetupPage.Map(app);
 
         var total = 1 + writes.Operations.Count + CountTools(typeof(GuideTools)) + CountTools(typeof(FaqTools)) + CountTools(typeof(DiagnosticTools));
-        var unknownNames = Settings.UnknownNameWarnings(environmentNames ?? []);
         app.Lifetime.ApplicationStarted.Register(() =>
         {
             var claims = app.Services.GetService<SocketClaims>();
@@ -141,7 +141,7 @@ public static class McpHost
             if (writes.Limited && !writes.On)
                 app.Logger.LogInformation("UNIFI_WRITE_TOOLS has no effect while UNIFI_ALLOW_WRITES is not true: no write tools are registered.");
             // A misspelt setting is otherwise ignored without a word; names only, never values.
-            foreach (var warning in unknownNames)
+            foreach (var warning in unknownNameWarnings ?? [])
                 app.Logger.LogWarning("{Warning}", warning);
             if (settings.SetupPage)
                 app.Logger.LogWarning("Setup page: {Link} (opens the sign-in code and checks; the key changes on each start)",
@@ -186,18 +186,20 @@ public static class McpHost
     /// typo in MCP_LAN_ACCESS_TOKEN makes MCP_LAN_LISTEN refuse to start), and the started host's log never comes then, so
     /// on a startup error the unknown-name warnings go to <paramref name="stderr"/> beside it. Names only, never values.
     /// </summary>
-    public static async Task RunAsync(Func<string, string?> env, IEnumerable<string> environmentNames, TextWriter stderr)
+    /// <param name="environment">The process's environment. Its comparer is how the system compares names, which decides
+    /// both what is read and which names count as unknown.</param>
+    public static async Task RunAsync(Dictionary<string, string> environment, TextWriter stderr)
     {
-        var names = environmentNames.ToList();
+        var warnings = Settings.UnknownNameWarnings(environment.Keys, environment.Comparer);
         WebApplication? app = null;
         try
         {
-            app = Build(Settings.FromEnvironment(env), environmentNames: names);
+            app = Build(Settings.FromEnvironment(name => environment.GetValueOrDefault(name)), unknownNameWarnings: warnings);
             await app.StartAsync();
         }
         catch
         {
-            foreach (var warning in Settings.UnknownNameWarnings(names))
+            foreach (var warning in warnings)
                 await stderr.WriteLineAsync(warning);
             if (app is not null) await app.DisposeAsync();
             throw;

@@ -10,6 +10,9 @@ namespace UnifiMcp.Tests;
 /// </summary>
 public sealed partial class EnvironmentNamesTests
 {
+    // Linux (the image) compares environment names case-sensitively, so these tests do too unless they say otherwise.
+    private static IReadOnlyList<string> Warnings(params string[] names) => Settings.UnknownNameWarnings(names, StringComparer.Ordinal);
+
     [Theory]
     [InlineData("MCP_SETUP_PAGES", "MCP_SETUP_PAGE")]
     [InlineData("UNIFI_STE", "UNIFI_SITE")]
@@ -19,7 +22,7 @@ public sealed partial class EnvironmentNamesTests
     [InlineData("Unifi_Ste", "UNIFI_SITE")]
     public void A_typo_warns_with_the_closest_setting(string typo, string meant)
     {
-        var warning = Assert.Single(Settings.UnknownNameWarnings([typo]));
+        var warning = Assert.Single(Warnings(typo));
         Assert.Contains(typo, warning);
         Assert.Contains($"Did you mean {meant}?", warning);
     }
@@ -27,7 +30,7 @@ public sealed partial class EnvironmentNamesTests
     [Fact]
     public void A_name_far_from_every_setting_warns_without_a_guess()
     {
-        var warning = Assert.Single(Settings.UnknownNameWarnings(["UNIFI_SOMETHING_ELSE"]));
+        var warning = Assert.Single(Warnings("UNIFI_SOMETHING_ELSE"));
         Assert.Contains("UNIFI_SOMETHING_ELSE", warning);
         Assert.DoesNotContain("Did you mean", warning);
         Assert.Contains(".env.example", warning);
@@ -35,16 +38,17 @@ public sealed partial class EnvironmentNamesTests
 
     [Fact]
     public void Known_names_do_not_warn() =>
-        Assert.Empty(Settings.UnknownNameWarnings([.. Settings.EnvironmentNames, .. Settings.OtherContainerNames]));
+        Assert.Empty(Warnings([.. Settings.EnvironmentNames, .. Settings.OtherContainerNames]));
 
     [Fact]
-    public void A_known_name_in_other_case_warns_only_where_it_is_not_read()
-    {
-        // Linux (the image) reads environment names case-sensitively: mcp_setup_page=off leaves the setup page on.
-        var warnings = Settings.UnknownNameWarnings(["mcp_setup_page"]);
-        if (OperatingSystem.IsWindows()) Assert.Empty(warnings);
-        else Assert.Contains("Did you mean MCP_SETUP_PAGE?", Assert.Single(warnings));
-    }
+    public void A_known_name_in_other_case_warns_where_names_are_case_sensitive() =>
+        // On Linux (the image) mcp_setup_page=off is never read and leaves the setup page on.
+        Assert.Contains("Did you mean MCP_SETUP_PAGE?", Assert.Single(Settings.UnknownNameWarnings(["mcp_setup_page"], StringComparer.Ordinal)));
+
+    [Fact]
+    public void A_known_name_in_other_case_does_not_warn_where_names_ignore_case() =>
+        // Windows reads mcp_setup_page as MCP_SETUP_PAGE.
+        Assert.Empty(Settings.UnknownNameWarnings(["mcp_setup_page"], StringComparer.OrdinalIgnoreCase));
 
     [Fact]
     public void The_new_write_tools_setting_is_known() => Assert.Contains("UNIFI_WRITE_TOOLS", Settings.EnvironmentNames);
@@ -57,11 +61,11 @@ public sealed partial class EnvironmentNamesTests
     [InlineData("ASPNETCORE_URLS")]
     [InlineData("GOOGLE_APPLICATION_CREDENTIALS")]
     [InlineData("XMCP_SETUP_PAGES")]
-    public void Other_prefixes_do_not_warn(string name) => Assert.Empty(Settings.UnknownNameWarnings([name]));
+    public void Other_prefixes_do_not_warn(string name) => Assert.Empty(Warnings(name));
 
     [Fact]
     public void Each_unknown_name_warns_once() =>
-        Assert.Single(Settings.UnknownNameWarnings(["MCP_SETUP_PAGES", "MCP_SETUP_PAGES", "UNIFI_URL"]));
+        Assert.Single(Warnings("MCP_SETUP_PAGES", "MCP_SETUP_PAGES", "UNIFI_URL"));
 
     [Fact]
     public async Task The_host_logs_each_unknown_name_at_warning_and_never_a_value()
@@ -77,7 +81,8 @@ public sealed partial class EnvironmentNamesTests
         var logs = new LogCapture();
         var dir = Directory.CreateTempSubdirectory("unifi-mcp-env").FullName;
         await using (var app = McpHost.Build(Harness.NewSettings(dir), new FakeUnifi(),
-            b => { b.WebHost.UseTestServer(); b.Logging.AddProvider(logs); }, environmentNames: environment.Keys))
+            b => { b.WebHost.UseTestServer(); b.Logging.AddProvider(logs); },
+            unknownNameWarnings: Settings.UnknownNameWarnings(environment.Keys, StringComparer.Ordinal)))
         {
             await app.StartAsync();
             await app.StopAsync();
@@ -101,7 +106,7 @@ public sealed partial class EnvironmentNamesTests
             ["MCP_LAN_ACESS_TOKEN"] = secret,
         };
         var stderr = new StringWriter();
-        await Assert.ThrowsAsync<ArgumentException>(() => McpHost.RunAsync(n => environment.GetValueOrDefault(n), environment.Keys, stderr));
+        await Assert.ThrowsAsync<ArgumentException>(() => McpHost.RunAsync(environment, stderr));
         Assert.Contains("MCP_LAN_ACESS_TOKEN", stderr.ToString());
         Assert.Contains("Did you mean MCP_LAN_ACCESS_TOKEN?", stderr.ToString());
         Assert.DoesNotContain(secret, stderr.ToString());
@@ -112,7 +117,7 @@ public sealed partial class EnvironmentNamesTests
     {
         var environment = new Dictionary<string, string> { ["UNIFI_WRITE_TOOLS"] = "no_such_tool", ["UNIFI_ALLOW_WRITE"] = "true" };
         var stderr = new StringWriter();
-        await Assert.ThrowsAsync<ArgumentException>(() => McpHost.RunAsync(n => environment.GetValueOrDefault(n), environment.Keys, stderr));
+        await Assert.ThrowsAsync<ArgumentException>(() => McpHost.RunAsync(environment, stderr));
         Assert.Contains("Did you mean UNIFI_ALLOW_WRITES?", stderr.ToString());
     }
 
@@ -121,12 +126,12 @@ public sealed partial class EnvironmentNamesTests
     {
         var environment = new Dictionary<string, string> { ["MCP_LAN_LISTEN"] = "http://0.0.0.0:7420" };
         var stderr = new StringWriter();
-        await Assert.ThrowsAsync<ArgumentException>(() => McpHost.RunAsync(n => environment.GetValueOrDefault(n), environment.Keys, stderr));
+        await Assert.ThrowsAsync<ArgumentException>(() => McpHost.RunAsync(environment, stderr));
         Assert.Equal("", stderr.ToString());
     }
 
     [Fact]
-    public async Task Without_environment_names_the_host_checks_nothing()
+    public async Task Without_warnings_the_host_logs_none()
     {
         var logs = new LogCapture();
         var dir = Directory.CreateTempSubdirectory("unifi-mcp-env").FullName;
@@ -139,29 +144,55 @@ public sealed partial class EnvironmentNamesTests
         Assert.DoesNotContain(logs.Lines, l => l.Contains("is not a setting"));
     }
 
-    // env("NAME") in Settings.FromEnvironment, Environment.GetEnvironmentVariable("NAME") anywhere else.
-    [GeneratedRegex(@"(?:\benv|\bGetEnvironmentVariable)\(""([A-Za-z0-9_]+)""\)")]
-    private static partial Regex EnvRead();
-
     [GeneratedRegex(@"\b(?:UNIFI|MCP)_[A-Z0-9_]*[A-Z0-9]\b")]
     private static partial Regex PrefixedName();
 
     /// <summary>
-    /// Every name the server reads is in the list, so a new setting cannot be added without it, and every name in the
-    /// list is read, so a removed one does not linger. DOTNET_* names belong to the runtime and image, not to the owner.
+    /// The known names are the ones FromEnvironment asks for with nothing set. That is all of them only if every read is
+    /// made whatever the values, so a full environment, with every listener and option on, must ask for exactly the same.
     /// </summary>
     [Fact]
-    public void The_known_names_are_exactly_the_names_the_code_reads()
+    public void A_full_environment_reads_exactly_the_known_names()
     {
-        var src = Path.Combine(RepoRoot(), "src", "UnifiMcp");
-        var read = Directory.EnumerateFiles(src, "*.cs", SearchOption.AllDirectories)
-            .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}") && !f.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}"))
-            .SelectMany(f => EnvRead().Matches(File.ReadAllText(f)).Select(m => m.Groups[1].Value))
-            .Where(n => !n.StartsWith("DOTNET_", StringComparison.Ordinal))
-            .ToHashSet();
-        Assert.True(read.Count > 20, $"the scan found only {read.Count} names; has the way settings are read changed?");
-        Assert.Empty(read.Except(Settings.EnvironmentNames));
-        Assert.Empty(Settings.EnvironmentNames.Except(read));
+        var full = new Dictionary<string, string>
+        {
+            ["UNIFI_URL"] = "https://192.0.2.1", ["UNIFI_SITE"] = "home", ["UNIFI_API_KEY"] = "key", ["UNIFI_API_KEY_FILE"] = "/k",
+            ["UNIFI_CERT_SHA256"] = new string('A', 64), ["UNIFI_CERT_SHA256_FILE"] = "/c", ["UNIFI_CERT_TRUST"] = "pin",
+            ["UNIFI_ALLOW_WRITES"] = "true", ["UNIFI_WRITE_TOOLS"] = "create_dns_policy", ["UNIFI_REVEAL_SECRETS"] = "voucher-codes",
+            ["UNIFI_ALLOW_CONFIRM_FALLBACK"] = "true", ["UNIFI_MCP_DATA_KEY"] = new string('d', 32),
+            ["MCP_PUBLIC_BASE_URL"] = "https://unifi.example.com", ["MCP_SIGNIN"] = "code", ["MCP_ACCESS_TOKEN"] = new string('a', 32),
+            ["MCP_ALLOWED_LOGINS"] = "owner@example.com", ["MCP_ALLOWED_LOGINS_FILE"] = "/l",
+            ["MCP_ALLOWED_GOOGLE_EMAILS"] = "owner@example.com", ["MCP_ALLOWED_GOOGLE_EMAILS_FILE"] = "/g",
+            ["MCP_LISTEN"] = "unix:/run/a/mcp.sock", ["MCP_PUBLIC_LISTEN"] = "unix:/run/b/public.sock", ["MCP_ALLOW_LOOPBACK_TCP"] = "true",
+            ["MCP_DATA_DIR"] = "/d", ["MCP_SETUP_PAGE"] = "on", ["MCP_SETUP_LISTEN"] = "http://127.0.0.1:5198",
+            ["MCP_LAN_LISTEN"] = "http://0.0.0.0:7420", ["MCP_LAN_ACCESS_TOKEN"] = new string('b', 32),
+            ["GOOGLE_CLIENT_ID"] = "id", ["GOOGLE_CLIENT_SECRET"] = "secret",
+        };
+        var read = new HashSet<string>(StringComparer.Ordinal);
+        var settings = Settings.FromEnvironment(n => { read.Add(n); return full.GetValueOrDefault(n); });
+        Assert.NotNull(settings.LanListen); // it parsed with every option on
+        Assert.Equal(Settings.EnvironmentNames.Order(StringComparer.Ordinal), read.Order(StringComparer.Ordinal));
+        Assert.Equal(full.Keys.Order(StringComparer.Ordinal), read.Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void The_known_names_include_the_settings_the_warnings_matter_for()
+    {
+        Assert.True(Settings.EnvironmentNames.Count > 20, $"only {Settings.EnvironmentNames.Count} names; has the way settings are read changed?");
+        Assert.Contains("MCP_SETUP_PAGE", Settings.EnvironmentNames);
+        Assert.Contains("MCP_LAN_ACCESS_TOKEN", Settings.EnvironmentNames);
+    }
+
+    /// <summary>The warning sends the owner to the README's Settings reference, so every setting must be there.</summary>
+    [Fact]
+    public void Every_known_name_is_in_the_readme_settings_reference()
+    {
+        var readme = File.ReadAllText(Path.Combine(RepoRoot(), "README.md")).ReplaceLineEndings("\n");
+        var start = readme.IndexOf("\n## Settings reference\n", StringComparison.Ordinal);
+        Assert.True(start >= 0, "README.md has no '## Settings reference' section");
+        var end = readme.IndexOf("\n## ", start + 1, StringComparison.Ordinal);
+        var section = end < 0 ? readme[start..] : readme[start..end];
+        Assert.Empty(Settings.EnvironmentNames.Where(n => !Regex.IsMatch(section, $@"\b{n}\b")));
     }
 
     [Theory]
