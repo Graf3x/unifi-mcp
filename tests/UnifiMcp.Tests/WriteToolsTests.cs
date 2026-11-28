@@ -7,7 +7,7 @@ namespace UnifiMcp.Tests;
 public class WriteToolsTests
 {
     private const int GuideAndFaqTools = 15;
-    private const int AllWrites = 32;
+    private static readonly int AllWrites = OpenApiCatalog.Load().Operations.Count(o => o.IsWrite);
     private const string Policy = "22222222-2222-2222-2222-222222222222";
 
     private static Settings Parse(string? value) => Settings.FromEnvironment(k => k == "UNIFI_WRITE_TOOLS" ? value : null);
@@ -162,7 +162,7 @@ public class WriteToolsTests
     public void The_startup_summary_says_the_writes_are_limited()
     {
         var dir = Directory.CreateTempSubdirectory().FullName;
-        var text = McpHost.StartupSummary(Harness.NewSettings(dir, writes: true, writeTools: ["create_dns_policy", "create_dns_policy"]), 16);
+        var text = Harness.Summary(Harness.NewSettings(dir, writes: true, writeTools: ["create_dns_policy", "create_dns_policy"]), 16);
         Assert.Contains("writes ON (1 tool, UNIFI_WRITE_TOOLS)", text);
     }
 }

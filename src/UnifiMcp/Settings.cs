@@ -39,7 +39,7 @@ public sealed partial record Settings
     public bool AllowWrites { get; init; }
     /// <summary>
     /// UNIFI_WRITE_TOOLS: the only write tools to register, by exact tool name, as the owner wrote them. Null (unset or
-    /// blank) means every write tool. The names are checked against the catalog when the host is built (<see cref="McpHost.EnabledWrites"/>).
+    /// blank) means every write tool. The names are checked against the catalog when the host is built (<see cref="UnifiMcp.EnabledWrites"/>).
     /// </summary>
     public IReadOnlyList<string>? WriteTools { get; init; }
     /// <summary>UNIFI_REVEAL_SECRETS=voucher-codes: hotspot voucher codes reach the client. Off by default; see <see cref="Redaction"/>.</summary>

@@ -41,8 +41,8 @@ public sealed class LanListenerTests
         Assert.Equal("http://0.0.0.0:7420", s.LanListen);
         Assert.Equal(Token, s.LanAccessToken);
         Assert.DoesNotContain(Token, s.ToString());
-        Assert.Contains("LAN http://0.0.0.0:7420", McpHost.StartupSummary(s, 5));
-        Assert.DoesNotContain(Token, McpHost.StartupSummary(s, 5));
+        Assert.Contains("LAN http://0.0.0.0:7420", Harness.Summary(s, 5));
+        Assert.DoesNotContain(Token, Harness.Summary(s, 5));
     }
 
     [Fact]

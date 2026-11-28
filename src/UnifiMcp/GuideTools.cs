@@ -7,7 +7,7 @@ namespace UnifiMcp;
 
 /// <summary>Onboarding and discovery: how Claude finds its way around before calling the API.</summary>
 [McpServerToolType]
-public sealed class GuideTools(Settings settings, UnifiClient client, OpenApiCatalog catalog)
+public sealed class GuideTools(Settings settings, UnifiClient client, OpenApiCatalog catalog, EnabledWrites enabled)
 {
     [McpServerTool(Name = "getting_started", Title = "Getting started", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
     [Description("[Start] Read this first: whether the server is configured, whether writes are on, conventions for siteId, filters and paging, and which tools to use. Makes no calls to the console.")]
@@ -35,11 +35,11 @@ public sealed class GuideTools(Settings settings, UnifiClient client, OpenApiCat
         sb.AppendLine("- Tool descriptions start with their category, e.g. `[Firewall]`.");
         sb.AppendLine($"- The diagnostics tools (system_log and the last five above) read the console's internal API, which its own UI uses. It is limited to {ConsoleReads.PerMinute} calls a minute (bursts of {ConsoleReads.Burst}) and repeats within {ConsoleReads.CacheFor.TotalSeconds:0} s are served from cache, because heavy polling can destabilise the console. Do not loop on them.").AppendLine();
         sb.AppendLine("## Changes");
-        var writes = catalog.Operations.Count(o => o.IsWrite);
-        var listed = settings.WriteTools is null
+        var writes = enabled.AllWrites;
+        var listed = !enabled.Limited
             ? $"{writes} write tools are listed"
-            : $"{EnabledWrites.Count} of {writes} write tools are listed, because the owner limited them with UNIFI_WRITE_TOOLS; the others cannot be called, and `describe_operation` still shows them";
-        sb.AppendLine(!settings.AllowWrites
+            : $"{enabled.Operations.Count} of {writes} write tools are listed, because the owner limited them with UNIFI_WRITE_TOOLS; the others cannot be called, and `describe_operation` still shows them";
+        sb.AppendLine(!enabled.On
             ? $"This server is read-only: {writes} write operations exist but are not listed, because UNIFI_ALLOW_WRITES is off. `describe_operation` still shows them."
             : $"Writes are on: {listed}. Each is marked destructive and asks the owner to approve it on a confirmation form that shows the whole change; a change too big for the form is refused, so make smaller changes. "
               + (settings.AllowConfirmFallback
@@ -88,12 +88,12 @@ public sealed class GuideTools(Settings settings, UnifiClient client, OpenApiCat
         !o.IsWrite ? $"{ReadOperationTool.ToolName}" : Disabled(o) ?? $"its own tool {o.ToolName} (destructive, needs the owner's approval)";
 
     /// <summary>Why a write has no tool, or null when it has one.</summary>
-    private string? Disabled(ApiOperation o) =>
-        !settings.AllowWrites ? "disabled (writes off)" : !EnabledWrites.Contains(o) ? "disabled (not in UNIFI_WRITE_TOOLS)" : null;
-
-    // The same list the host registered tools for; the host already refused any bad name, so this does not throw.
-    private IReadOnlyList<ApiOperation> EnabledWrites => _enabledWrites ??= McpHost.EnabledWrites(settings, catalog);
-    private IReadOnlyList<ApiOperation>? _enabledWrites;
+    private string? Disabled(ApiOperation o) => enabled.StateOf(o) switch
+    {
+        WriteState.WritesOff => "disabled (writes off)",
+        WriteState.NotListed => "disabled (not in UNIFI_WRITE_TOOLS)",
+        _ => null,
+    };
 
     [McpServerTool(Name = "describe_operation", Title = "Describe an API operation", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
     [Description("[Start] Full detail for one operation: parameters plus the complete request body schema, and for a read its complete response schema, with references inlined. A write names the read that returns its result, or lists the result's fields. Use before composing a write body.")]
@@ -111,6 +111,6 @@ public sealed class GuideTools(Settings settings, UnifiClient client, OpenApiCat
     {
         var missing = settings.Missing();
         var state = missing.Count == 0 ? "Configured." : "**The server is not configured**, so it will not call the console. Still needed:\n- " + string.Join("\n- ", missing);
-        return $"{state}\n\nConsole: {settings.BaseUrl}. Mode: {(settings.AllowWrites ? "writes enabled" : "read-only")}.";
+        return $"{state}\n\nConsole: {settings.BaseUrl}. Mode: {(enabled.On ? "writes enabled" : "read-only")}.";
     }
 }

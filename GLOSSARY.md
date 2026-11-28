@@ -50,6 +50,10 @@ _Avoid_: user, admin, account
 The owner's yes to one change to the network, given for that change alone on a confirmation form that shows the whole change. A yes holds once, for that exact request and arguments, and lapses within minutes. A change too big to show whole is refused, and so is any write from a client that cannot show the form. Not the same as consent, which lets a client connect at all.
 _Avoid_: consent, permission, confirmation (except the form itself)
 
+**Enabled write**:
+A write operation that has its own tool under the current settings: writes are on (UNIFI_ALLOW_WRITES), and the owner named it in UNIFI_WRITE_TOOLS, or set no such list. A write that is not enabled has no tool at all, so nothing can call it; describing it still works. Each call to an enabled write still needs a write approval.
+_Avoid_: allowed write, active write
+
 **Confirm fallback**:
 The owner's opt-in (UNIFI_ALLOW_CONFIRM_FALLBACK) that lets a client without the form write when the model repeats the call with the tool's own name in `confirm`. It is not a write approval: the model gives it in the same call it makes, so the model approves its own writes. Without the opt-in, such a client is refused every write.
 _Avoid_: preview approval, confirm approval
